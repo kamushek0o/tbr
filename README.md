@@ -17,16 +17,16 @@
 # скриншоты
 
 ### 1. Раздачи
-![Раздачи](interfaces/interfaces1.png)
+![Раздачи](interfaces/interface1.png)
 
 ### 2. Подменщик
-![Подменщик](interfaces/interfaces2.png)
+![Подменщик](interfaces/interface2.png)
 
 ### 3. Сводка
-![Сводка](interfaces/interfaces3.png)
+![Сводка](interfaces/interface3.png)
 
 ### 4. Аналитика и прогноз
-![Аналитика](interfaces/interfaces4.png)
+![Аналитика](interfaces/interface4.png)
 
 # почему я должен скачать твой нейрокод?
 
