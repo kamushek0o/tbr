@@ -1,0 +1,8 @@
+build/
+dist/
+*.spec
+*.rar
+*.zip
+.idea/
+__pycache__/
+*.pyc

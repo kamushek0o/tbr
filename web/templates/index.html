@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token }}">
+    <title>tbr PRO — Швейцарский нож qBittorrent</title>
+    <link rel="stylesheet" href="/static/style.css?v={{ v }}">
+</head>
+<body>
+<header>
+    <div class="row-gap">
+        <svg class="logo-svg" viewBox="0 0 48 48" fill="none">
+            <rect width="48" height="48" rx="10" fill="#1A1A20"/>
+            <path d="M26 6L12 26H24L20 42L36 22H24L26 6Z" fill="#2ECC71" stroke="#2ECC71" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="logo-text">tbr PRO</span>
+        <span id="qb-status-badge" class="badge badge-pause pointer" onclick="toggleQbPower()">⏳ qB...</span>
+    </div>
+    <div class="nav-tabs">
+        <button class="tab-btn active" data-tab="torrents" onclick="switchTab('torrents')">⚡ Раздачи</button>
+        <button class="tab-btn" data-tab="merger" onclick="switchTab('merger')">🔀 Подменщик</button>
+        <button class="tab-btn" data-tab="summary" onclick="switchTab('summary')">📊 Сводка</button>
+        <button class="tab-btn" data-tab="analytics" onclick="switchTab('analytics')">📈 Аналитика</button>
+    </div>
+    <div class="row-gap">
+        <button class="btn btn-secondary" onclick="openSettingsModal()">⚙️ Настройки</button>
+        <button class="btn btn-secondary" onclick="restartQb()">🔄 Перезапуск qB</button>
+        {% if auth_enabled %}
+        <a href="/logout" class="btn btn-danger">🚪 Выйти</a>
+        {% endif %}
+    </div>
+</header>
+
+<main>
+    <!-- TAB 1: Раздачи -->
+    <div id="tab-torrents" class="tab-content active">
+        <div class="torrent-left">
+            <div class="table-toolbar">
+                <input type="text" id="search-box" class="search-input" placeholder="🔍 Поиск раздач..." oninput="filterTorrents()">
+                <button class="btn btn-secondary" onclick="loadTorrents(true)">🔄 Обновить</button>
+            </div>
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th onclick="sortTable('name')">Имя раздачи <span id="sort-icon-name"></span></th>
+                            <th onclick="sortTable('size')">Размер <span id="sort-icon-size"></span></th>
+                            <th onclick="sortTable('uploaded')">Отдано <span id="sort-icon-uploaded"></span></th>
+                            <th onclick="sortTable('ratio')">Ratio <span id="sort-icon-ratio"></span></th>
+                            <th onclick="sortTable('state')">Состояние <span id="sort-icon-state"></span></th>
+                            <th onclick="sortTable('save_path')">Путь <span id="sort-icon-save_path"></span></th>
+                        </tr>
+                    </thead>
+                    <tbody id="torrents-tbody">
+                        <tr><td colspan="6" class="center-msg">Загрузка раздач...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="torrent-right">
+            <div class="card">
+                <div class="card-title">ВЫБРАННАЯ РАЗДАЧА</div>
+                <div id="selected-title" class="muted-text" style="margin-bottom: 10px; overflow:hidden; text-overflow:ellipsis;">Выберите раздачу слева</div>
+                <div class="grid-3 mb-10">
+                    <button class="btn btn-secondary" onclick="torrentAction('stop')">⏸️ Пауза</button>
+                    <button class="btn btn-secondary" onclick="torrentAction('start')">▶️ Пуск</button>
+                    <button class="btn btn-secondary" onclick="torrentAction('setForceStart')">⚡ Форс</button>
+                </div>
+                <button class="btn w-full center-btn" onclick="goToAnalyticsWithTorrent()">🔮 Рассчитать прогноз</button>
+            </div>
+
+            <div class="card danger-border">
+                <div class="card-title" style="color: var(--danger);">УПРАВЛЕНИЕ ВСЕМ СИДБОКСОМ</div>
+                <p class="muted-text mb-10">Остановить или запустить все раздачи в клиенте:</p>
+                <div class="col-gap">
+                    <button class="btn btn-danger w-full center-btn" onclick="globalTorrentAction('stop')">⏸️ ОСТАНОВИТЬ ВСЕ</button>
+                    <button class="btn w-full center-btn" onclick="globalTorrentAction('start')">▶️ ВОЗОБНОВИТЬ ВСЕ</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- TAB 2: Подменщик -->
+    <div id="tab-merger" class="tab-content col-center">
+        <div class="card">
+            <div class="card-title">🔄 ПОДМЕНЩИК РАЗДАЧ (.FASTRESUME)</div>
+            <p class="muted-text mb-10">qBittorrent выгружается перед подменой и перезапускается автоматически — бенкод не пострадает.</p>
+            <div class="form-group"><label>1. Старая раздача (источник):</label><select id="merger-old" class="form-control"></select></div>
+            <div class="form-group"><label>2. Новая раздача (приёмник):</label><select id="merger-new" class="form-control"></select></div>
+            <button class="btn w-full center-btn mt-10" onclick="runMerger()">🚀 ПЕРЕНЕСТИ СТАТИСТИКУ</button>
+        </div>
+        <div class="card mt-12">
+            <div class="card-title">ЛОГ ОПЕРАЦИИ</div>
+            <div id="merger-log" class="terminal">Готов к работе...</div>
+        </div>
+    </div>
+
+    <!-- TAB 3: Сводка -->
+    <div id="tab-summary" class="tab-content col-wide">
+        <div class="grid-cards mb-12">
+            <div class="card"><div class="lbl-sm">Раздач:</div><div id="sum-count" class="val-lg">-</div></div>
+            <div class="card"><div class="lbl-sm">Общий объем:</div><div id="sum-size" class="val-lg">-</div></div>
+            <div class="card"><div class="lbl-sm">Всего отдано:</div><div id="sum-uploaded" class="val-lg accent-txt">-</div></div>
+            <div class="card">
+                <div class="lbl-sm">Сумма за 1 час:</div>
+                <div id="sum-global-hour" class="val-md purple-txt">-</div>
+                <div id="sum-global-hour-speed" class="lbl-xs purple-txt">-</div>
+                <div id="sum-global-hour-note" class="lbl-xs muted-text"></div>
+            </div>
+            <div class="card">
+                <div class="lbl-sm">Объем в день:</div>
+                <div id="sum-global-day" class="val-md orange-txt">-</div>
+                <div id="sum-global-day-speed" class="lbl-xs orange-txt">-</div>
+            </div>
+            <div class="card"><div class="lbl-sm">Ratio/ч (всего / 24ч):</div><div id="sum-ratio-h" class="val-sm blue-txt">-</div></div>
+        </div>
+
+        <div class="card row-wrap mb-12">
+            <div class="grow-1"><label class="lbl-sm">Поиск:</label><input type="text" id="sum-filter-search" class="form-control" placeholder="Фильтр..." oninput="applySummaryFilters()"></div>
+            <div style="width:120px"><label class="lbl-sm">Мин. Ratio:</label><input type="number" step="0.5" id="sum-filter-ratio" class="form-control" oninput="applySummaryFilters()"></div>
+            <div style="width:140px"><label class="lbl-sm">Мин. отдано (ГБ):</label><input type="number" id="sum-filter-uploaded" class="form-control" oninput="applySummaryFilters()"></div>
+            <div class="row-gap" style="align-self:flex-end;">
+                <button class="btn btn-secondary" onclick="resetSummaryFilters()">Сброс</button>
+                <button class="btn" onclick="exportFilteredSummaryCSV()">📥 Экспорт выборки</button>
+            </div>
+        </div>
+
+        <div class="card flex-scroll">
+            <table>
+                <thead>
+                    <tr>
+                        <th onclick="sortSummary('name')">Имя раздачи <span id="sum-sort-name"></span></th>
+                        <th onclick="sortSummary('size')">Размер <span id="sum-sort-size"></span></th>
+                        <th onclick="sortSummary('uploaded')">Отдано <span id="sum-sort-uploaded"></span></th>
+                        <th onclick="sortSummary('ratio')" class="accent-txt">Ratio <span id="sum-sort-ratio"></span></th>
+                        <th onclick="sortSummary('speed_all_time')" class="blue-txt">Ср. скорость <span id="sum-sort-speed_all_time"></span></th>
+                        <th onclick="sortSummary('speed_1h')" class="purple-txt">Скор. 1ч <span id="sum-sort-speed_1h"></span></th>
+                        <th onclick="sortSummary('speed_24h')" class="orange-txt">Скор. 24ч <span id="sum-sort-speed_24h"></span></th>
+                        <th onclick="sortSummary('vol_hour')" class="purple-txt">МБ/ч <span id="sum-sort-vol_hour"></span></th>
+                        <th onclick="sortSummary('vol_day')" class="orange-txt">МБ/день <span id="sum-sort-vol_day"></span></th>
+                        <th onclick="sortSummary('ratio_h_all')">Ratio/ч <span id="sum-sort-ratio_h_all"></span></th>
+                        <th onclick="sortSummary('created')">Дата <span id="sum-sort-created"></span></th>
+                    </tr>
+                </thead>
+                <tbody id="summary-tbody"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- TAB 4: Аналитика -->
+    <div id="tab-analytics" class="tab-content col-wide">
+        <div class="card">
+            <div class="card-title">🔮 УМНЫЙ КАЛЬКУЛЯТОР ПРОГНОЗОВ</div>
+            <div class="grid-calc mb-10">
+                <div><label class="lbl-sm">Объект:</label><select id="smart-calc-target-type" class="form-control" onchange="onSmartCalcTargetChange()"><option value="all">🌐 Весь сидбокс</option></select></div>
+                <div><label id="smart-calc-goal-label" class="lbl-sm">Цель (напр: 50 тиб или 2.0x):</label><input type="text" id="smart-calc-goal" class="form-control" placeholder="50 тиб / 2.0x"></div>
+                <div><label class="lbl-sm">Скорость (авто или МБ/с):</label><input type="text" id="smart-calc-speed" class="form-control" placeholder="авто (или 25 мб/с)"></div>
+                <div style="align-self:flex-end;"><button class="btn w-full center-btn" style="padding:8px;" onclick="runSmartCalc()">🔮 Рассчитать</button></div>
+            </div>
+
+            <div class="row-between mb-8">
+                <span class="lbl-sm accent-txt" style="font-weight:700;">🖥️ ЭКРАН ВЫВОДА:</span>
+                <div class="row-gap">
+                    <button id="btn-toggle-forecast-table" class="btn btn-secondary btn-xs hidden" onclick="toggleForecastTable()">📅 Почасовой прогноз</button>
+                    <button id="btn-export-forecast-csv" class="btn btn-secondary btn-xs hidden" onclick="exportForecastCSV()">📥 Скачать CSV</button>
+                </div>
+            </div>
+            <div id="smart-calc-terminal" class="terminal">Ожидание ввода параметров...</div>
+            <div id="smart-res-table-wrap" class="hidden mt-12 scroll-box">
+                <table>
+                    <thead><tr><th>Дата</th><th>Час</th><th>Объём</th><th>Скорость</th><th>Веса/База</th></tr></thead>
+                    <tbody id="smart-res-tbody"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">⏱️ ПОЧАСОВАЯ ИСТОРИЯ ОТДАЧИ</div>
+            <div class="row-gap mb-10">
+                <select id="history-torrent-select" class="form-control grow-1" onchange="loadTorrentHourlyHistory()"></select>
+                <button class="btn btn-secondary" onclick="loadTorrentHourlyHistory()">Обновить</button>
+            </div>
+            <div class="scroll-box">
+                <table>
+                    <thead><tr><th>Время снимка</th><th>Всего отдано</th><th>Прибавка за час</th><th>Скорость</th></tr></thead>
+                    <tbody id="torrent-history-tbody"><tr><td colspan="4" class="center-msg">Выберите раздачу...</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">📂 АРХИВ ВЫГРУЗОК (ПОСЛЕДНИЕ 20 ФАЙЛОВ)</div>
+            <div class="row-wrap mb-10">
+                <select id="log-file-select" class="form-control grow-1" onchange="onLogSelectChange()"></select>
+                <button class="btn btn-secondary" title="Показывает последние 300 строк выбранного файла в окне ниже без скачивания на компьютер" onclick="loadLogContent()">Просмотр</button>
+                <a id="download-log-btn" class="btn hidden" href="#">Скачать файл</a>
+            </div>
+            <div id="log-view-terminal" class="terminal">Выберите файл из списка выше и нажмите «Просмотр»...</div>
+        </div>
+    </div>
+</main>
+
+<!-- МОДАЛЬНОЕ ОКНО НАСТРОЕК -->
+<div id="settings-modal" class="modal-backdrop">
+    <div class="modal">
+        <div class="card-title">⚙️ НАСТРОЙКИ СЕТИ И УМНОГО РАСЧЁТА</div>
+        <div class="autostart-box">
+            <div><div style="font-size:13px;font-weight:700;">Автозагрузка Windows</div><div class="lbl-xs muted-text">Автостарт при включении ПК</div></div>
+            <button id="autostart-toggle-btn" class="btn btn-secondary" onclick="toggleAutostart()">...</button>
+        </div>
+        <div class="grid-2">
+            <div class="form-group"><label>Хост (127.0.0.1 или 0.0.0.0):</label><input type="text" id="setting-web-host" class="form-control"></div>
+            <div class="form-group"><label>Порт (1..65535):</label><input type="number" id="setting-web-port" class="form-control"></div>
+        </div>
+        <div class="form-group"><label>Пароль для веб-доступа (обязателен при 0.0.0.0):</label><input type="password" id="setting-web-password" class="form-control" placeholder="Оставьте пустым, чтобы не менять"></div>
+        <div class="grid-2">
+            <div class="form-group"><label>qBittorrent IP (локальный/NetBird):</label><input type="text" id="setting-qb-ip" class="form-control" placeholder="авто"></div>
+            <div class="form-group"><label>qBittorrent Порт:</label><input type="number" id="setting-qb-port" class="form-control" placeholder="авто"></div>
+        </div>
+        <div class="card-title mt-10">⚖️ ВЕСА УМНОГО ПРОГНОЗА (ПРИВОДЯТСЯ К 100%)</div>
+        <div class="grid-3">
+            <div class="form-group"><label>1 неделя (168ч):</label><input type="number" min="0" id="setting-w1" class="form-control"></div>
+            <div class="form-group"><label>2 неделя (336ч):</label><input type="number" min="0" id="setting-w2" class="form-control"></div>
+            <div class="form-group"><label>3 неделя (504ч):</label><input type="number" min="0" id="setting-w3" class="form-control"></div>
+        </div>
+        <div class="row-end mt-12">
+            <button class="btn btn-secondary" onclick="closeSettingsModal()">Закрыть</button>
+            <button class="btn" onclick="saveSettings()">💾 Сохранить</button>
+        </div>
+    </div>
+</div>
+
+<script src="/static/common.js?v={{ v }}"></script>
+<script src="/static/torrents.js?v={{ v }}"></script>
+<script src="/static/summary.js?v={{ v }}"></script>
+<script src="/static/analytics.js?v={{ v }}"></script>
+</body>
+</html>
