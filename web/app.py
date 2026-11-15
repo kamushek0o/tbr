@@ -13,9 +13,9 @@ import time
 import shutil
 import urllib.parse
 from flask import Flask, request, jsonify, render_template, redirect, session, Response
-from utils.helpers import format_file_size, sanitize_csv_cell, LOG_FOLDER, BT_BACKUP_PATH, write_error_log
+
 from utils.config import cfg
-from utils.helpers import format_file_size, sanitize_csv_cell, LOG_FOLDER, write_error_log
+from utils.helpers import format_file_size, sanitize_csv_cell, LOG_FOLDER, BT_BACKUP_PATH, write_error_log
 from utils.bencode import decode_bencode, encode_bencode
 from core.torrent_parser import get_all_torrents, force_clear_cache, get_global_torrent_summaries
 from core.qb_api import (
@@ -39,7 +39,6 @@ app = Flask(
     static_folder=get_resource_path(os.path.join('web', 'static'))
 )
 app.secret_key = os.urandom(24)
-
 
 BUILD_VER = str(int(time.time()))
 
@@ -490,6 +489,37 @@ def api_automation_add_rule():
 
     rid = automation_engine.add_rule(name, min_ratio, min_days, action_pause, action_tag, notify)
     return jsonify({'success': bool(rid), 'id': rid})
+
+
+@app.route('/api/automation/rules/update', methods=['POST'])
+def api_automation_update_rule():
+    data = request.get_json(silent=True) or {}
+    rid = data.get('id')
+    if not rid:
+        return jsonify({'success': False, 'error': 'Не указан ID правила'}), 400
+    try:
+        rid_int = int(rid)
+    except (ValueError, TypeError):
+        return jsonify({'success': False, 'error': 'Некорректный ID правила'}), 400
+
+    name = str(data.get('name', '')).strip()[:64] or 'Правило'
+    try:
+        min_ratio = max(0.0, float(data.get('min_ratio') or 0))
+        min_days = max(0.0, float(data.get('min_seed_days') or 0))
+    except (ValueError, TypeError):
+        return jsonify({'success': False, 'error': 'Некорректные числа Ratio или дней'}), 400
+
+    if min_ratio <= 0 and min_days <= 0:
+        return jsonify({'success': False, 'error': 'Укажите хотя бы Ratio > 0 или Дней > 0'}), 400
+
+    action_pause = bool(data.get('action_pause', False))
+    action_tag = str(data.get('action_tag', '')).strip()[:32]
+    notify = bool(data.get('notify', True))
+
+    ok = automation_engine.update_rule(rid_int, name, min_ratio, min_days, action_pause, action_tag, notify)
+    if not ok:
+        return jsonify({'success': False, 'error': 'Правило не найдено'}), 404
+    return jsonify({'success': True})
 
 
 @app.route('/api/automation/rules/toggle', methods=['POST'])
