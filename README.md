@@ -20,6 +20,8 @@
 
 7. **convenient (for me) file structure**
 
+8. **personal spam bot disguised as automation (tg & discord):** set rules (min ratio / seeding days) so torrents auto-pause or get tagged—or just drop a discord webhook into your friends' server and forcibly subject them to your upload achievements
+   
 # screenshots
 
 ### 1. torrents
