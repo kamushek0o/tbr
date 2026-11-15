@@ -1,26 +1,33 @@
-// web/static/summary.js
 let rawSummaryItems = [];
 let filteredSummaryItems = [];
 let summarySortCol = 'uploaded';
 let summarySortAsc = false;
+let lastSummaryMeta = null;
 
 async function loadSummary() {
     const res = await api('/api/summary');
     const d = await res.json();
-    document.getElementById('sum-count').textContent = d.total_torrents;
-    document.getElementById('sum-size').textContent = d.total_size_fmt;
-    document.getElementById('sum-uploaded').textContent = d.total_uploaded_fmt;
-
-    document.getElementById('sum-global-hour').textContent = d.global_hour_volume_fmt || '-';
-    document.getElementById('sum-global-hour-speed').textContent = d.global_hour_speed_fmt || '-';
-    document.getElementById('sum-global-hour-note').textContent = d.global_hour_note || '';
-    document.getElementById('sum-global-day').textContent = d.global_day_volume_fmt || '-';
-    document.getElementById('sum-global-day-speed').textContent = d.global_day_speed_fmt || '-';
-    document.getElementById('sum-ratio-h').textContent = `${d.global_ratio_h_all_fmt} / ${d.global_ratio_h_day_fmt}`;
+    lastSummaryMeta = d;
+    renderSummaryMeta();
 
     rawSummaryItems = d.items || [];
     if (typeof populateAnalyticsSelectors === 'function') populateAnalyticsSelectors();
     applySummaryFilters();
+}
+
+function renderSummaryMeta() {
+    const d = lastSummaryMeta;
+    if (!d) return;
+    document.getElementById('sum-count').textContent = d.total_torrents;
+    document.getElementById('sum-size').textContent = d.total_size_fmt;
+    document.getElementById('sum-uploaded').textContent = d.total_uploaded_fmt;
+
+    document.getElementById('sum-global-hour').textContent = trBackend(d.global_hour_volume_fmt || '-');
+    document.getElementById('sum-global-hour-speed').textContent = d.global_hour_speed_fmt || '-';
+    document.getElementById('sum-global-hour-note').textContent = trBackend(d.global_hour_note || '');
+    document.getElementById('sum-global-day').textContent = trBackend(d.global_day_volume_fmt || '-');
+    document.getElementById('sum-global-day-speed').textContent = d.global_day_speed_fmt || '-';
+    document.getElementById('sum-ratio-h').textContent = `${trBackend(d.global_ratio_h_all_fmt)} / ${trBackend(d.global_ratio_h_day_fmt)}`;
 }
 
 function applySummaryFilters() {
@@ -81,10 +88,10 @@ function applySummarySortAndRender() {
             <td class="blue-txt" style="font-weight:600;">${escapeHtml(i.speed_all_time_fmt)}</td>
             <td class="purple-txt" style="font-weight:600;">${escapeHtml(i.speed_1h_fmt)}</td>
             <td class="orange-txt" style="font-weight:600;">${escapeHtml(i.speed_24h_fmt)}</td>
-            <td class="purple-txt" style="font-weight:700;">${escapeHtml(i.vol_hour_fmt)}</td>
-            <td class="orange-txt" style="font-weight:700;">${escapeHtml(i.vol_day_fmt)}</td>
-            <td class="muted-text" style="font-size:11px;">${escapeHtml(i.ratio_h_all_fmt)}</td>
-            <td class="muted-text" style="font-size:11px;">${escapeHtml(i.created)}</td>
+            <td class="purple-txt" style="font-weight:700;">${escapeHtml(trBackend(i.vol_hour_fmt))}</td>
+            <td class="orange-txt" style="font-weight:700;">${escapeHtml(trBackend(i.vol_day_fmt))}</td>
+            <td class="muted-text" style="font-size:11px;">${escapeHtml(trBackend(i.ratio_h_all_fmt))}</td>
+            <td class="muted-text" style="font-size:11px;">${escapeHtml(trBackend(i.created))}</td>
         `;
         frag.appendChild(tr);
     });
@@ -93,7 +100,7 @@ function applySummarySortAndRender() {
 
 async function exportFilteredSummaryCSV() {
     const res = await api('/api/export_csv', 'POST', { items: filteredSummaryItems });
-    if (!res.ok) return alert('Ошибка экспорта');
+    if (!res.ok) return alert(t('export_err'));
     const blob = await res.blob();
     const a = document.createElement('a');
     a.href = window.URL.createObjectURL(blob);

@@ -2,6 +2,7 @@
 import os
 import sys
 
+
 def get_exe_or_script_command():
     if getattr(sys, 'frozen', False):
         return f'"{sys.executable}"'
@@ -9,7 +10,10 @@ def get_exe_or_script_command():
         main_script = os.path.abspath(sys.argv[0])
         return f'"{sys.executable}" "{main_script}"'
 
+
 def set_autostart(enable=True):
+    if os.name != 'nt':
+        return False, "Автозагрузка через реестр доступна только на Windows"
     try:
         import winreg
         key = winreg.OpenKey(
@@ -31,7 +35,10 @@ def set_autostart(enable=True):
     except Exception as e:
         return False, str(e)
 
+
 def is_autostart_enabled():
+    if os.name != 'nt':
+        return False
     try:
         import winreg
         key = winreg.OpenKey(

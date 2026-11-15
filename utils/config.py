@@ -13,6 +13,7 @@ else:
 CONFIG_FILE = os.path.join(APP_DATA_DIR, 'config.ini')
 OLD_CONFIG_FILE = os.path.join(OLD_BASE_DIR, 'config.ini')
 
+
 class AppConfig:
     def __init__(self):
         self.config_file = CONFIG_FILE
@@ -49,9 +50,16 @@ class AppConfig:
             'AutoOpenBrowser': 'False',
             'WebUI_Address': '',
             'WebUI_Port': '',
+            'WebUI_User': 'admin',
+            'WebUI_Password': '',
             'Weight_W1': '70',
             'Weight_W2': '30',
-            'Weight_W3': '0'
+            'Weight_W3': '0',
+            'Auto_Enabled': 'False',
+            'Auto_Interval_Min': '5',
+            'TG_Bot_Token': '',
+            'TG_Chat_ID': '',
+            'Discord_Webhook': ''
         }
         changed = False
         for k, v in defaults.items():
@@ -89,5 +97,6 @@ class AppConfig:
         if 'Settings' not in self.config:
             self.config['Settings'] = {}
         self.config['Settings'][key] = str(value)
+
 
 cfg = AppConfig()

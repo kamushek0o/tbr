@@ -4,12 +4,33 @@ import datetime
 import traceback
 import re
 
-LOCAL_APP_DATA = os.environ.get('LOCALAPPDATA', os.path.join(os.path.expanduser('~'), 'AppData', 'Local'))
-APP_DATA_DIR = os.path.join(LOCAL_APP_DATA, 'tbr')
+
+def _get_app_data_dir():
+    env_dir = os.environ.get('TBR_DATA_DIR', '').strip()
+    if env_dir:
+        return env_dir
+    if os.name == 'nt':
+        local_app = os.environ.get('LOCALAPPDATA', os.path.join(os.path.expanduser('~'), 'AppData', 'Local'))
+        return os.path.join(local_app, 'tbr')
+    return os.path.join(os.path.expanduser('~'), '.config', 'tbr')
+
+
+def _get_bt_backup_path():
+    env_bt = os.environ.get('TBR_BT_BACKUP', '').strip()
+    if env_bt:
+        return env_bt
+    if os.name == 'nt':
+        return os.path.join(os.path.expanduser('~'), 'AppData', 'Local', 'qBittorrent', 'BT_backup')
+    return os.path.join(os.path.expanduser('~'), '.local', 'share', 'qBittorrent', 'BT_backup')
+
+
+APP_DATA_DIR = _get_app_data_dir()
+BT_BACKUP_PATH = _get_bt_backup_path()
 LOG_FOLDER = os.path.join(APP_DATA_DIR, 'logs')
 
 os.makedirs(APP_DATA_DIR, exist_ok=True)
 os.makedirs(LOG_FOLDER, exist_ok=True)
+
 
 def write_log(category, message):
     try:
@@ -19,6 +40,7 @@ def write_log(category, message):
             f.write(f"[{ts}] {message}\n")
     except Exception:
         pass
+
 
 def write_error_log(context, error):
     try:
@@ -30,12 +52,14 @@ def write_error_log(context, error):
     except Exception:
         pass
 
+
 def sanitize_csv_cell(val):
     """Защита от CSV Formula Injection."""
     s = str(val) if val is not None else ''
     if s and s[0] in ('=', '+', '-', '@', '\t', '\r'):
         return "'" + s
     return s
+
 
 def format_file_size(size_bytes):
     if size_bytes is None:
@@ -53,6 +77,7 @@ def format_file_size(size_bytes):
             return f"{size:.2f} {unit}"
         size /= 1024.0
     return f"{size:.2f} EiB"
+
 
 def parse_bytes(text, torrent_size=0):
     if not text:
@@ -86,6 +111,7 @@ def parse_bytes(text, torrent_size=0):
         raise ValueError(f"Неизвестная единица измерения: {unit}")
 
     return int(val * multipliers[unit])
+
 
 def parse_speed(text, default_bytes_sec=0):
     if not text or text.strip().lower() in ('авто', 'auto'):

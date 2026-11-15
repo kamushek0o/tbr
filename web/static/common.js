@@ -1,5 +1,4 @@
-// web/static/common.js
-const VALID_TABS = ['torrents', 'merger', 'summary', 'analytics'];
+const VALID_TABS = ['torrents', 'merger', 'summary', 'analytics', 'automation'];
 const CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]')?.content || '';
 
 function escapeHtml(str) {
@@ -58,6 +57,7 @@ function switchTab(name, updateHash = true) {
     if (name === 'merger') loadMergerLists();
     if (name === 'summary') loadSummary();
     if (name === 'analytics') loadAnalyticsTab();
+    if (name === 'automation') loadAutomation();
 }
 
 function syncTabWithHash() {
@@ -117,6 +117,9 @@ async function openSettingsModal() {
     document.getElementById('setting-web-password').placeholder = d.has_password ? 'Пароль задан (введите новый для смены)' : 'Задайте пароль (обязательно для 0.0.0.0)';
     document.getElementById('setting-qb-ip').value = d.qb_ip;
     document.getElementById('setting-qb-port').value = d.qb_port;
+    document.getElementById('setting-qb-user').value = d.qb_user || 'admin';
+    document.getElementById('setting-qb-password').value = '';
+    document.getElementById('setting-qb-password').placeholder = d.has_qb_password ? 'Пароль задан (пусто = не менять)' : 'Пароль WebUI (если включён)';
     document.getElementById('setting-w1').value = d.w1;
     document.getElementById('setting-w2').value = d.w2;
     document.getElementById('setting-w3').value = d.w3;
@@ -134,6 +137,8 @@ async function saveSettings() {
         web_password: document.getElementById('setting-web-password').value,
         qb_ip: document.getElementById('setting-qb-ip').value.trim(),
         qb_port: document.getElementById('setting-qb-port').value.trim(),
+        qb_user: document.getElementById('setting-qb-user').value.trim() || 'admin',
+        qb_password: document.getElementById('setting-qb-password').value,
         w1: parseInt(document.getElementById('setting-w1').value) || 0,
         w2: parseInt(document.getElementById('setting-w2').value) || 0,
         w3: parseInt(document.getElementById('setting-w3').value) || 0
@@ -144,6 +149,7 @@ async function saveSettings() {
     alert(d.message);
     closeSettingsModal();
     if (d.port_changed) setTimeout(() => { window.location.port = payload.web_port; }, 1500);
+    else loadTorrents(true);
 }
 
 window.onload = () => {

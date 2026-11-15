@@ -1,12 +1,9 @@
 # core/torrent_parser.py
 import os
-import glob
 import time
 import datetime
 from utils.bencode import decode_bencode
-from utils.helpers import write_error_log, write_log
-
-BT_BACKUP_PATH = os.path.join(os.path.expanduser('~'), 'AppData', 'Local', 'qBittorrent', 'BT_backup')
+from utils.helpers import BT_BACKUP_PATH, write_error_log
 
 _CACHE = None
 _CACHE_TIME = 0
@@ -74,7 +71,6 @@ def parse_single_torrent(fastresume_path):
 
     info_dict = _get_field(tor_data, 'info') or {}
 
-    # 1. Извлечение названия
     name = ""
     tor_name = _extract_str(_get_field(info_dict, 'name.utf-8', 'name'))
     if tor_name and tor_name.lower() != t_hash:
@@ -99,7 +95,6 @@ def parse_single_torrent(fastresume_path):
     if not name:
         name = t_hash
 
-    # 2. Извлечение размера
     size = 0
     if 'length' in info_dict or b'length' in info_dict:
         size = int(_get_field(info_dict, 'length') or 0)
@@ -110,11 +105,9 @@ def parse_single_torrent(fastresume_path):
     if size <= 0:
         size = int(_get_field(fr_data, 'total_size', 'total_downloaded') or 1)
 
-    # 3. Статистика
     uploaded = int(_get_field(fr_data, 'total_uploaded') or 0)
     active_seconds = int(_get_field(fr_data, 'active_time', 'seeding_time') or 0)
 
-    # 4. Дата и числовой таймштамп для точной сортировки
     added_time = _get_field(fr_data, 'added_time', 'completed_time', 'creation date')
     if added_time and int(added_time) > 0:
         created_ts = int(added_time)
@@ -128,7 +121,6 @@ def parse_single_torrent(fastresume_path):
             created_ts = 0
             created_str = "Дата неизвестна"
 
-    # 5. Трекеры
     trackers = []
     raw_trackers = _get_field(fr_data, 'trackers')
     if raw_trackers and isinstance(raw_trackers, list):
@@ -200,6 +192,7 @@ def copy_torrent_to_watch(t_hash):
         return False, f"Файл {t_hash}.torrent не найден"
 
     watch_dir = os.path.join(os.path.expanduser('~'), 'Downloads')
+    os.makedirs(watch_dir, exist_ok=True)
     import shutil
     try:
         dest = os.path.join(watch_dir, os.path.basename(tor_path))

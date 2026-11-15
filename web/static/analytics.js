@@ -1,10 +1,75 @@
-// web/static/analytics.js
 let lastForecastData = null;
+let chartDaily = null;
+let chartTop5 = null;
+let chartHourly = null;
 
 async function loadAnalyticsTab() {
     loadLogsList();
+    loadAnalyticsCharts();
     if (!rawSummaryItems.length) await loadSummary();
     else populateAnalyticsSelectors();
+}
+
+async function loadAnalyticsCharts() {
+    if (typeof Chart === 'undefined') return;
+    try {
+        const res = await api('/api/analytics/charts');
+        const d = await res.json();
+
+        const commonOpts = {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+                x: { ticks: { color: '#95a5a6', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } },
+                y: { ticks: { color: '#95a5a6', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' }, beginAtZero: true }
+            }
+        };
+
+        if (chartDaily) chartDaily.destroy();
+        chartDaily = new Chart(document.getElementById('chart-daily'), {
+            type: 'bar',
+            data: {
+                labels: d.daily?.labels || [],
+                datasets: [{ data: d.daily?.values || [], backgroundColor: 'rgba(46, 204, 113, 0.7)', borderColor: '#2ecc71', borderWidth: 1, borderRadius: 4 }]
+            },
+            options: commonOpts
+        });
+
+        if (chartTop5) chartTop5.destroy();
+        chartTop5 = new Chart(document.getElementById('chart-top5'), {
+            type: 'bar',
+            data: {
+                labels: d.top5?.labels || [],
+                datasets: [{ data: d.top5?.values || [], backgroundColor: 'rgba(230, 126, 34, 0.7)', borderColor: '#e67e22', borderWidth: 1, borderRadius: 4 }]
+            },
+            options: {
+                ...commonOpts,
+                indexAxis: 'y',
+                scales: {
+                    x: { ticks: { color: '#95a5a6', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' }, beginAtZero: true },
+                    y: { ticks: { color: '#95a5a6', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } }
+                }
+            }
+        });
+
+        if (chartHourly) chartHourly.destroy();
+        chartHourly = new Chart(document.getElementById('chart-hourly'), {
+            type: 'line',
+            data: {
+                labels: d.hourly?.labels || [],
+                datasets: [{
+                    data: d.hourly?.values || [],
+                    borderColor: '#3498db',
+                    backgroundColor: 'rgba(52, 152, 219, 0.18)',
+                    fill: true,
+                    tension: 0.35,
+                    pointRadius: 2
+                }]
+            },
+            options: commonOpts
+        });
+    } catch (e) {}
 }
 
 function populateAnalyticsSelectors() {

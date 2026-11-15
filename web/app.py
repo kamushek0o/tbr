@@ -13,17 +13,19 @@ import time
 import shutil
 import urllib.parse
 from flask import Flask, request, jsonify, render_template, redirect, session, Response
-
+from utils.helpers import format_file_size, sanitize_csv_cell, LOG_FOLDER, BT_BACKUP_PATH, write_error_log
 from utils.config import cfg
 from utils.helpers import format_file_size, sanitize_csv_cell, LOG_FOLDER, write_error_log
 from utils.bencode import decode_bencode, encode_bencode
 from core.torrent_parser import get_all_torrents, force_clear_cache, get_global_torrent_summaries
 from core.qb_api import (
     detect_qbittorrent_port, get_live_torrent_info, send_qb_command,
-    is_qb_running, close_qbittorrent, launch_qbittorrent, get_qb_executable_path
+    is_qb_running, close_qbittorrent, launch_qbittorrent, get_qb_executable_path,
+    reset_qb_session, scan_dead_torrents
 )
 from core.summary_tracker import summary_tracker, AUTO_FOLDER, MANUAL_FOLDER
 from core.autostart import set_autostart, is_autostart_enabled
+from core.automation import automation_engine
 
 
 def get_resource_path(relative_path):
@@ -38,10 +40,9 @@ app = Flask(
 )
 app.secret_key = os.urandom(24)
 
-BT_BACKUP_PATH = os.path.join(os.path.expanduser('~'), 'AppData', 'Local', 'qBittorrent', 'BT_backup')
+
 BUILD_VER = str(int(time.time()))
 
-# Поддерживает как SHA-1 (40 hex, v1), так и SHA-256 (64 hex, v2/hybrid в qBittorrent 5.0+)
 HASH_RE = re.compile(r'^[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?$')
 
 
@@ -234,18 +235,34 @@ def api_torrents_refresh():
     return jsonify({'status': 'ok'})
 
 
+@app.route('/api/torrents/scan_dead', methods=['POST'])
+def api_torrents_scan_dead():
+    ip, port = detect_qbittorrent_port(cfg.config)
+    if not port:
+        return jsonify({'success': False, 'error': 'qBittorrent недоступен'}), 400
+    res = scan_dead_torrents(ip, port)
+    if res.get('success'):
+        for item in res.get('items', []):
+            item['size_fmt'] = format_file_size(item.get('size', 0))
+    return jsonify(res)
+
+
 @app.route('/api/torrents/action', methods=['POST'])
 def api_torrent_action():
     data = request.get_json(silent=True) or {}
     action = data.get('action')
     t_hash = data.get('hash', '')
-    if action not in ('stop', 'start', 'setForceStart') or not HASH_RE.fullmatch(str(t_hash)):
-        return jsonify({'success': False, 'error': 'Некорректные параметры команды'}), 400
+    if action not in ('stop', 'start', 'setForceStart'):
+        return jsonify({'success': False, 'error': 'Неизвестная команда'}), 400
+
+    hashes = [h.strip() for h in str(t_hash).split('|') if h.strip()]
+    if not hashes or not all(HASH_RE.fullmatch(h) for h in hashes):
+        return jsonify({'success': False, 'error': 'Некорректные хэши'}), 400
 
     ip, port = detect_qbittorrent_port(cfg.config)
     if not port:
         return jsonify({'success': False, 'error': 'qBittorrent недоступен'}), 400
-    return jsonify({'success': send_qb_command(ip, port, action, t_hash)})
+    return jsonify({'success': send_qb_command(ip, port, action, '|'.join(hashes))})
 
 
 @app.route('/api/torrents/action_all', methods=['POST'])
@@ -394,6 +411,105 @@ def api_analytics_history():
     return jsonify(summary_tracker.get_torrent_hourly_history(t_hash, limit_hours=limit))
 
 
+@app.route('/api/analytics/charts')
+def api_analytics_charts():
+    summaries = get_global_torrent_summaries()
+    return jsonify(summary_tracker.get_charts_data(summaries))
+
+
+@app.route('/api/automation', methods=['GET'])
+def api_automation_get():
+    return jsonify({
+        'settings': {
+            'enabled': cfg.getboolean('Auto_Enabled', False),
+            'interval': cfg.getint('Auto_Interval_Min', 5),
+            'has_tg_token': bool(cfg.get('TG_Bot_Token', '').strip()),
+            'tg_chat_id': cfg.get('TG_Chat_ID', ''),
+            'has_discord': bool(cfg.get('Discord_Webhook', '').strip())
+        },
+        'rules': automation_engine.get_rules()
+    })
+
+
+@app.route('/api/automation/settings', methods=['POST'])
+def api_automation_settings():
+    data = request.get_json(silent=True) or {}
+    enabled = bool(data.get('enabled', False))
+    try:
+        interval = max(1, min(1440, int(data.get('interval', 5))))
+    except (ValueError, TypeError):
+        return jsonify({'success': False, 'error': 'Интервал должен быть от 1 до 1440 мин.'}), 400
+
+    tg_token = str(data.get('tg_token', '')).strip()
+    tg_chat = str(data.get('tg_chat_id', '')).strip()
+    discord = str(data.get('discord_webhook', '')).strip()
+
+    if discord and not (discord.startswith('https://discord.com/api/webhooks/') or discord.startswith('https://discordapp.com/api/webhooks/')):
+        return jsonify({'success': False, 'error': 'Некорректный URL Discord Webhook!'}), 400
+
+    cfg.set('Auto_Enabled', str(enabled))
+    cfg.set('Auto_Interval_Min', str(interval))
+    if tg_token:
+        cfg.set('TG_Bot_Token', tg_token)
+    cfg.set('TG_Chat_ID', tg_chat)
+    if discord:
+        cfg.set('Discord_Webhook', discord)
+    cfg.save()
+
+    return jsonify({'success': True, 'message': 'Настройки автопилота сохранены!'})
+
+
+@app.route('/api/automation/test', methods=['POST'])
+def api_automation_test():
+    ok, results = automation_engine.test_notifications()
+    return jsonify({'success': ok, 'message': ' | '.join(results)})
+
+
+@app.route('/api/automation/run_now', methods=['POST'])
+def api_automation_run_now():
+    cnt = automation_engine.run_cycle()
+    return jsonify({'success': True, 'triggered': cnt, 'message': f'Проверка завершена. Сработало раздач: {cnt}'})
+
+
+@app.route('/api/automation/rules', methods=['POST'])
+def api_automation_add_rule():
+    data = request.get_json(silent=True) or {}
+    name = str(data.get('name', '')).strip()[:64] or 'Правило'
+    try:
+        min_ratio = max(0.0, float(data.get('min_ratio') or 0))
+        min_days = max(0.0, float(data.get('min_seed_days') or 0))
+    except (ValueError, TypeError):
+        return jsonify({'success': False, 'error': 'Некорректные числа Ratio или дней'}), 400
+
+    if min_ratio <= 0 and min_days <= 0:
+        return jsonify({'success': False, 'error': 'Укажите хотя бы Ratio > 0 или Дней > 0'}), 400
+
+    action_pause = bool(data.get('action_pause', False))
+    action_tag = str(data.get('action_tag', '')).strip()[:32]
+    notify = bool(data.get('notify', True))
+
+    rid = automation_engine.add_rule(name, min_ratio, min_days, action_pause, action_tag, notify)
+    return jsonify({'success': bool(rid), 'id': rid})
+
+
+@app.route('/api/automation/rules/toggle', methods=['POST'])
+def api_automation_toggle_rule():
+    data = request.get_json(silent=True) or {}
+    rid = data.get('id')
+    if not rid:
+        return jsonify({'success': False}), 400
+    return jsonify({'success': automation_engine.toggle_rule(rid)})
+
+
+@app.route('/api/automation/rules/delete', methods=['POST'])
+def api_automation_delete_rule():
+    data = request.get_json(silent=True) or {}
+    rid = data.get('id')
+    if not rid:
+        return jsonify({'success': False}), 400
+    return jsonify({'success': automation_engine.delete_rule(rid)})
+
+
 @app.route('/api/export_csv', methods=['GET', 'POST'])
 def api_export_csv():
     if request.method == 'POST':
@@ -506,6 +622,8 @@ def api_settings():
             'has_password': bool(cfg.get('Web_Password', '').strip()),
             'qb_ip': cfg.get('WebUI_Address', ''),
             'qb_port': cfg.get('WebUI_Port', ''),
+            'qb_user': cfg.get('WebUI_User', 'admin'),
+            'has_qb_password': bool(cfg.get('WebUI_Password', '').strip()),
             'w1': cfg.getint('Weight_W1', 70),
             'w2': cfg.getint('Weight_W2', 30),
             'w3': cfg.getint('Weight_W3', 0),
@@ -555,18 +673,25 @@ def api_settings():
     if new_host not in ('127.0.0.1', 'localhost') and not effective_pass:
         return jsonify({'success': False, 'error': 'Для внешнего хоста обязательно задайте пароль!'}), 400
 
+    qb_user = str(data.get('qb_user', 'admin')).strip() or 'admin'
+    qb_pass = str(data.get('qb_password', ''))
+
     cfg.set('Web_Port', new_p)
     cfg.set('Web_Host', new_host)
     if new_pass:
         cfg.set('Web_Password', new_pass)
     cfg.set('WebUI_Address', qb_ip)
     cfg.set('WebUI_Port', qb_port_raw)
+    cfg.set('WebUI_User', qb_user)
+    if qb_pass:
+        cfg.set('WebUI_Password', qb_pass)
     cfg.set('Weight_W1', w1)
     cfg.set('Weight_W2', w2)
     cfg.set('Weight_W3', w3)
     cfg.save()
 
-    # Горячий перезапуск сокета, если изменился хост или порт
+    reset_qb_session()
+
     net_changed = (old_p != new_p) or (old_h != new_host)
     if net_changed:
         web_server.restart(new_host, new_p)
@@ -606,6 +731,7 @@ class WebServerController:
         self.current_port = p
 
         summary_tracker.start_auto_export(get_global_torrent_summaries)
+        automation_engine.start()
 
         try:
             self.server_instance = make_server(h, p, app, threaded=True)
@@ -624,7 +750,6 @@ class WebServerController:
             print(f"❌ Ошибка запуска веб-сервера на {h}:{p}: {e}")
 
     def restart(self, new_host, new_port):
-        """Безопасный асинхронный перезапуск сокета (дает Flask отдать ответ клиенту перед остановкой)."""
         def do_restart():
             time.sleep(0.5)
             with self._lock:

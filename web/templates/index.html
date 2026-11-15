@@ -6,6 +6,7 @@
     <meta name="csrf-token" content="{{ csrf_token }}">
     <title>tbr PRO — Швейцарский нож qBittorrent</title>
     <link rel="stylesheet" href="/static/style.css?v={{ v }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
 <header>
@@ -22,6 +23,7 @@
         <button class="tab-btn" data-tab="merger" onclick="switchTab('merger')">🔀 Подменщик</button>
         <button class="tab-btn" data-tab="summary" onclick="switchTab('summary')">📊 Сводка</button>
         <button class="tab-btn" data-tab="analytics" onclick="switchTab('analytics')">📈 Аналитика</button>
+        <button class="tab-btn" data-tab="automation" onclick="switchTab('automation')">🤖 Автопилот</button>
     </div>
     <div class="row-gap">
         <button class="btn btn-secondary" onclick="openSettingsModal()">⚙️ Настройки</button>
@@ -38,6 +40,7 @@
         <div class="torrent-left">
             <div class="table-toolbar">
                 <input type="text" id="search-box" class="search-input" placeholder="🔍 Поиск раздач..." oninput="filterTorrents()">
+                <button class="btn btn-secondary" onclick="scanDeadTorrents()">🩺 Мёртвые раздачи</button>
                 <button class="btn btn-secondary" onclick="loadTorrents(true)">🔄 Обновить</button>
             </div>
             <div class="table-container">
@@ -152,6 +155,27 @@
     <!-- TAB 4: Аналитика -->
     <div id="tab-analytics" class="tab-content col-wide">
         <div class="card">
+            <div class="row-between mb-10">
+                <div class="card-title" style="margin-bottom:0;">📊 ГРАФИКИ АКТИВНОСТИ (SQLITE)</div>
+                <button class="btn btn-secondary btn-xs" onclick="loadAnalyticsCharts()">🔄 Обновить графики</button>
+            </div>
+            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px;">
+                <div style="background: var(--bg-input); padding: 10px; border-radius: 6px; border: 1px solid var(--border);">
+                    <div class="lbl-sm mb-8">Отдача по дням (GiB)</div>
+                    <div style="height: 200px;"><canvas id="chart-daily"></canvas></div>
+                </div>
+                <div style="background: var(--bg-input); padding: 10px; border-radius: 6px; border: 1px solid var(--border);">
+                    <div class="lbl-sm mb-8">Топ-5 раздач за 24ч / всего (GiB)</div>
+                    <div style="height: 200px;"><canvas id="chart-top5"></canvas></div>
+                </div>
+                <div style="background: var(--bg-input); padding: 10px; border-radius: 6px; border: 1px solid var(--border);">
+                    <div class="lbl-sm mb-8">Нагрузка по часам суток (МБ/ч)</div>
+                    <div style="height: 200px;"><canvas id="chart-hourly"></canvas></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
             <div class="card-title">🔮 УМНЫЙ КАЛЬКУЛЯТОР ПРОГНОЗОВ</div>
             <div class="grid-calc mb-10">
                 <div><label class="lbl-sm">Объект:</label><select id="smart-calc-target-type" class="form-control" onchange="onSmartCalcTargetChange()"><option value="all">🌐 Весь сидбокс</option></select></div>
@@ -200,6 +224,69 @@
             <div id="log-view-terminal" class="terminal">Выберите файл из списка выше и нажмите «Просмотр»...</div>
         </div>
     </div>
+
+    <!-- TAB 5: Автопилот -->
+    <div id="tab-automation" class="tab-content col-wide">
+        <div class="card">
+            <div class="row-between mb-10">
+                <div class="card-title" style="margin-bottom:0;">🤖 АВТОПИЛОТ И УВЕДОМЛЕНИЯ (TELEGRAM / DISCORD)</div>
+                <span id="auto-status-msg" class="lbl-xs accent-txt"></span>
+            </div>
+            <div class="grid-2 mb-10">
+                <div class="autostart-box" style="margin-bottom:0;">
+                    <label class="row-gap pointer" style="font-size:13px; font-weight:700;">
+                        <input type="checkbox" id="auto-enabled"> Включить фоновый автопилот
+                    </label>
+                    <div class="row-gap">
+                        <span class="lbl-xs muted-text">Раз в (мин):</span>
+                        <input type="number" id="auto-interval" class="form-control" style="width:70px;" min="1" max="1440" value="5">
+                    </div>
+                </div>
+                <div class="row-gap" style="justify-content: flex-end;">
+                    <button class="btn btn-secondary" onclick="testNotifications()">🔔 Тест</button>
+                    <button class="btn btn-secondary" onclick="runAutomationNow()">⚡ Проверить сейчас</button>
+                    <button class="btn" onclick="saveAutomationSettings()">💾 Сохранить</button>
+                </div>
+            </div>
+            <div class="grid-3">
+                <div class="form-group"><label>Telegram Bot Token:</label><input type="password" id="auto-tg-token" class="form-control" placeholder="123456:ABC-DEF..."></div>
+                <div class="form-group"><label>Telegram Chat ID:</label><input type="text" id="auto-tg-chat" class="form-control" placeholder="123456789"></div>
+                <div class="form-group"><label>Discord Webhook URL:</label><input type="password" id="auto-discord" class="form-control" placeholder="https://discord.com/api/webhooks/..."></div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">➕ ДОБАВИТЬ ПРАВИЛО</div>
+            <div class="row-wrap mb-10">
+                <div class="grow-1"><label class="lbl-sm">Название:</label><input type="text" id="rule-name" class="form-control" placeholder="Напр: Стоп после 2.0x и 14 дней"></div>
+                <div style="width:110px;"><label class="lbl-sm">Мин. Ratio:</label><input type="number" step="0.1" min="0" id="rule-ratio" class="form-control" placeholder="2.0"></div>
+                <div style="width:110px;"><label class="lbl-sm">Мин. дней:</label><input type="number" step="0.5" min="0" id="rule-days" class="form-control" placeholder="14"></div>
+                <div style="width:130px;"><label class="lbl-sm">Повесить тег:</label><input type="text" id="rule-tag" class="form-control" placeholder="done (опц.)"></div>
+                <div class="row-gap" style="align-self:flex-end; padding-bottom: 4px;">
+                    <label class="row-gap pointer lbl-xs"><input type="checkbox" id="rule-pause"> ⏸️ Пауза</label>
+                    <label class="row-gap pointer lbl-xs"><input type="checkbox" id="rule-notify" checked> 📣 Уведомить</label>
+                    <button class="btn" onclick="addAutomationRule()">➕ Добавить</button>
+                </div>
+            </div>
+
+            <div class="scroll-box" style="max-height: 320px;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Название</th>
+                            <th>Условие (Ratio / Дни)</th>
+                            <th>Действия</th>
+                            <th>Статус</th>
+                            <th>Управление</th>
+                        </tr>
+                    </thead>
+                    <tbody id="rules-tbody">
+                        <tr><td colspan="5" class="center-msg">Нет правил</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
 </main>
 
 <!-- МОДАЛЬНОЕ ОКНО НАСТРОЕК -->
@@ -214,10 +301,14 @@
             <div class="form-group"><label>Хост (127.0.0.1 или 0.0.0.0):</label><input type="text" id="setting-web-host" class="form-control"></div>
             <div class="form-group"><label>Порт (1..65535):</label><input type="number" id="setting-web-port" class="form-control"></div>
         </div>
-        <div class="form-group"><label>Пароль для веб-доступа (обязателен при 0.0.0.0):</label><input type="password" id="setting-web-password" class="form-control" placeholder="Оставьте пустым, чтобы не менять"></div>
+        <div class="form-group"><label>Пароль для веб-доступа tbr (обязателен при 0.0.0.0):</label><input type="password" id="setting-web-password" class="form-control" placeholder="Оставьте пустым, чтобы не менять"></div>
         <div class="grid-2">
             <div class="form-group"><label>qBittorrent IP (локальный/NetBird):</label><input type="text" id="setting-qb-ip" class="form-control" placeholder="авто"></div>
             <div class="form-group"><label>qBittorrent Порт:</label><input type="number" id="setting-qb-port" class="form-control" placeholder="авто"></div>
+        </div>
+        <div class="grid-2">
+            <div class="form-group"><label>Логин WebUI qBittorrent:</label><input type="text" id="setting-qb-user" class="form-control" placeholder="admin"></div>
+            <div class="form-group"><label>Пароль WebUI qBittorrent:</label><input type="password" id="setting-qb-password" class="form-control" placeholder="если есть"></div>
         </div>
         <div class="card-title mt-10">⚖️ ВЕСА УМНОГО ПРОГНОЗА (ПРИВОДЯТСЯ К 100%)</div>
         <div class="grid-3">
@@ -232,9 +323,39 @@
     </div>
 </div>
 
+<!-- МОДАЛЬНОЕ ОКНО МЁРТВЫХ РАЗДАЧ -->
+<div id="dead-torrents-modal" class="modal-backdrop">
+    <div class="modal" style="max-width: 780px; max-height: 85vh; display: flex; flex-direction: column;">
+        <div class="row-between mb-10">
+            <div class="card-title" style="margin-bottom:0;">🩺 СКАНЕР МЁРТВЫХ РАЗДАЧ И ОШИБОК ТРЕКЕРОВ</div>
+            <button id="btn-pause-all-dead" class="btn btn-danger btn-xs hidden" onclick="pauseAllDeadTorrents()">⏸️ На паузу все найденные</button>
+        </div>
+        <div id="dead-summary-badges" class="row-wrap mb-10"></div>
+        <div class="scroll-box" style="flex:1; max-height: 55vh; border: 1px solid var(--border); border-radius: 6px;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Имя раздачи</th>
+                        <th>Размер</th>
+                        <th>Ошибка трекера</th>
+                        <th>Действие</th>
+                    </tr>
+                </thead>
+                <tbody id="dead-torrents-tbody">
+                    <tr><td colspan="4" class="center-msg">Сканирование...</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <div class="row-end mt-12">
+            <button class="btn btn-secondary" onclick="closeDeadModal()">Закрыть</button>
+        </div>
+    </div>
+</div>
+
 <script src="/static/common.js?v={{ v }}"></script>
 <script src="/static/torrents.js?v={{ v }}"></script>
 <script src="/static/summary.js?v={{ v }}"></script>
 <script src="/static/analytics.js?v={{ v }}"></script>
+<script src="/static/automation.js?v={{ v }}"></script>
 </body>
 </html>

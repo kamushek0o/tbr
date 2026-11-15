@@ -1,2 +1,2 @@
 flask>=3.0.0
-# pyinstaller>=6.0.0  # нужно только если будешь сам собирать .exe через build.bat
+werkzeug>=3.0.0

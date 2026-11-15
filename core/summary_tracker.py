@@ -154,7 +154,6 @@ class SummaryTracker:
                             tor_rows
                         )
 
-                    # Ротация: удаляем снимки старше 35 дней
                     cutoff = now - (35 * 86400)
                     cur.execute("DELETE FROM snapshots WHERE timestamp < ?", (cutoff,))
                     conn.commit()
@@ -180,7 +179,6 @@ class SummaryTracker:
             try:
                 with self._get_connection() as conn:
                     cur = conn.cursor()
-                    # Последние 2 снимка
                     cur.execute("SELECT id, timestamp, total_uploaded FROM snapshots ORDER BY timestamp DESC LIMIT 2")
                     last_rows = cur.fetchall()
                     if last_rows:
@@ -188,7 +186,6 @@ class SummaryTracker:
                         if len(last_rows) > 1:
                             prev_snap = dict(last_rows[1])
 
-                    # Снимок ~1ч назад (от 30 мин до 2 ч)
                     cur.execute("""
                         SELECT id, timestamp, total_uploaded FROM snapshots
                         WHERE timestamp BETWEEN ? AND ?
@@ -201,7 +198,6 @@ class SummaryTracker:
                         cur.execute("SELECT hash_id, uploaded FROM torrent_snapshots WHERE snapshot_id = ?", (snap_1h['id'],))
                         snap_1h_torrents = {row['hash_id']: row['uploaded'] for row in cur.fetchall()}
 
-                    # Снимок ~24ч назад (от 20 до 28 ч)
                     cur.execute("""
                         SELECT id, timestamp, total_uploaded FROM snapshots
                         WHERE timestamp BETWEEN ? AND ?
@@ -283,6 +279,7 @@ class SummaryTracker:
                 sp_24h = 0
             item['speed_24h'] = sp_24h
             item['speed_24h_fmt'] = fmt_speed(sp_24h)
+            item['delta_24h'] = delta_24h
 
             vol_1h_bytes = delta_1h if delta_1h > 0 else int(avg_all * 3600)
             vol_24h_bytes = delta_24h if delta_24h > 0 else int(avg_all * 86400)
@@ -318,6 +315,109 @@ class SummaryTracker:
             'global_ratio_h_day_fmt': fmt_ratio_h(global_ratio_h_day),
             'global_ratio_h_hour_fmt': fmt_ratio_h(global_ratio_h_hour),
             'items': enhanced_items
+        }
+
+    def get_charts_data(self, summaries):
+        """Собирает данные из SQLite для графиков: по дням, по часам суток и топ-5 за 24ч."""
+        now_ts = time.time()
+        cutoff_14d = now_ts - (14 * 86400)
+
+        rows = []
+        with self._lock:
+            try:
+                with self._get_connection() as conn:
+                    cur = conn.cursor()
+                    cur.execute(
+                        "SELECT timestamp, datetime, total_uploaded FROM snapshots WHERE timestamp >= ? ORDER BY timestamp ASC",
+                        (cutoff_14d,)
+                    )
+                    rows = [dict(r) for r in cur.fetchall()]
+            except Exception as e:
+                write_error_log("Ошибка get_charts_data из SQLite", e)
+
+        daily_map = {}
+        hourly_buckets = {h: [] for h in range(24)}
+        prev_up = None
+
+        for r in rows:
+            up = r['total_uploaded']
+            dt_str = r['datetime'] or ''
+            if prev_up is not None and len(dt_str) >= 13:
+                delta = max(0, up - prev_up)
+                day_key = dt_str[:10]
+                daily_map[day_key] = daily_map.get(day_key, 0) + delta
+                try:
+                    hour_key = int(dt_str[11:13])
+                    if 0 <= hour_key <= 23:
+                        hourly_buckets[hour_key].append(delta)
+                except ValueError:
+                    pass
+            prev_up = up
+
+        sorted_days = sorted(daily_map.keys())[-14:]
+        daily_labels = [f"{d[8:10]}.{d[5:7]}" for d in sorted_days]
+        daily_values_gb = [round(daily_map[d] / (1024 ** 3), 3) for d in sorted_days]
+
+        hourly_labels = [f"{h:02d}:00" for h in range(24)]
+        hourly_values_mb = [
+            round((sum(hourly_buckets[h]) / len(hourly_buckets[h])) / (1024 ** 2), 1)
+            if hourly_buckets[h] else 0.0
+            for h in range(24)
+        ]
+
+        # Топ-5 раздач за последние 24 часа (с фолбэком, если база свежая <20ч)
+        stats = self.get_stats(summaries)
+        items = stats.get('items', [])
+        top_items = sorted(items, key=lambda x: x.get('delta_24h', 0), reverse=True)[:5]
+
+        if all(it.get('delta_24h', 0) <= 0 for it in top_items):
+            oldest_24h_torrents = {}
+            with self._lock:
+                try:
+                    with self._get_connection() as conn:
+                        cur = conn.cursor()
+                        cur.execute(
+                            "SELECT id FROM snapshots WHERE timestamp >= ? ORDER BY timestamp ASC LIMIT 1",
+                            (now_ts - 86400,)
+                        )
+                        r_old = cur.fetchone()
+                        if r_old:
+                            cur.execute(
+                                "SELECT hash_id, uploaded FROM torrent_snapshots WHERE snapshot_id = ?",
+                                (r_old['id'],)
+                            )
+                            oldest_24h_torrents = {row['hash_id']: row['uploaded'] for row in cur.fetchall()}
+                except Exception:
+                    pass
+
+            if oldest_24h_torrents:
+                for it in items:
+                    h_id = (it.get('hash_id') or it.get('hash') or '').lower()
+                    if h_id in oldest_24h_torrents:
+                        it['delta_24h'] = max(0, it.get('uploaded', 0) - oldest_24h_torrents[h_id])
+                top_items = sorted(items, key=lambda x: x.get('delta_24h', 0), reverse=True)[:5]
+
+        top_labels = []
+        top_values_gb = []
+        if any(it.get('delta_24h', 0) > 0 for it in top_items):
+            for it in top_items:
+                if it.get('delta_24h', 0) > 0:
+                    nm = str(it.get('name', ''))
+                    top_labels.append((nm[:28] + '…') if len(nm) > 29 else nm)
+                    top_values_gb.append(round(it['delta_24h'] / (1024 ** 3), 3))
+        else:
+            # Крайний фолбэк (если снимков ещё мало или раздачи стояли): топ-5 по общей отдаче
+            top_all = sorted(items, key=lambda x: x.get('uploaded', 0), reverse=True)[:5]
+            for it in top_all:
+                if it.get('uploaded', 0) > 0:
+                    nm = str(it.get('name', ''))
+                    top_labels.append((nm[:28] + '…') if len(nm) > 29 else nm)
+                    top_values_gb.append(round(it['uploaded'] / (1024 ** 3), 2))
+
+        return {
+            'daily': {'labels': daily_labels, 'values': daily_values_gb},
+            'hourly': {'labels': hourly_labels, 'values': hourly_values_mb},
+            'top5': {'labels': top_labels, 'values': top_values_gb}
         }
 
     def calculate_smart_forecast(self, target_type, target_hash, target_str, speed_str, summaries):
@@ -662,7 +762,6 @@ class SummaryTracker:
             except Exception as e:
                 write_error_log("Ошибка get_torrent_hourly_history из SQLite", e)
 
-        # Выстраиваем хронологически (от старого к новому) для расчёта дельты
         rows.reverse()
         result = []
         prev_up = None

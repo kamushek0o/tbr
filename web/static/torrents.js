@@ -1,8 +1,8 @@
-// web/static/torrents.js
 let torrentsData = [];
 let currentSortCol = 'name';
 let currentSortAsc = true;
 let selectedHash = null;
+let lastDeadHashes = [];
 
 const STATUS_MAP = {
     'downloading': { text: 'Скачивается', badge: 'badge-dl' },
@@ -119,6 +119,95 @@ function goToAnalyticsWithTorrent() {
         onSmartCalcTargetChange();
         document.getElementById('smart-calc-goal').focus();
     }, 150);
+}
+
+async function scanDeadTorrents() {
+    const modal = document.getElementById('dead-torrents-modal');
+    const tbody = document.getElementById('dead-torrents-tbody');
+    const badges = document.getElementById('dead-summary-badges');
+    const pauseAllBtn = document.getElementById('btn-pause-all-dead');
+
+    modal.style.display = 'flex';
+    badges.innerHTML = '<span class="badge badge-pause">⏳ Опрашиваем трекеры в многопотоке...</span>';
+    tbody.innerHTML = '<tr><td colspan="4" class="center-msg">Сканирование...</td></tr>';
+    pauseAllBtn.classList.add('hidden');
+    lastDeadHashes = [];
+
+    try {
+        const res = await api('/api/torrents/scan_dead', 'POST');
+        const d = await res.json();
+
+        if (!res.ok || !d.success) {
+            badges.innerHTML = '';
+            tbody.innerHTML = `<tr><td colspan="4" class="center-msg" style="color:var(--danger);">${escapeHtml(d.error || 'Ошибка сканирования')}</td></tr>`;
+            return;
+        }
+
+        badges.innerHTML = `<span class="badge badge-dl">Проверено: ${d.total_scanned}</span>` +
+            `<span class="badge ${d.dead_count > 0 ? 'badge-err' : 'badge-up'}">Проблемных: ${d.dead_count}</span>`;
+
+        (d.groups || []).forEach(g => {
+            const sp = document.createElement('span');
+            sp.className = 'badge badge-stall';
+            sp.textContent = `${g.error_msg}: ${g.count}`;
+            badges.appendChild(sp);
+        });
+
+        if (!d.items || !d.items.length) {
+            tbody.innerHTML = '<tr><td colspan="4" class="center-msg" style="color:var(--accent);">🎉 Мёртвых раздач и ошибок трекеров не найдено!</td></tr>';
+            return;
+        }
+
+        lastDeadHashes = d.items.map(i => i.hash);
+        pauseAllBtn.classList.remove('hidden');
+
+        tbody.innerHTML = '';
+        const frag = document.createDocumentFragment();
+        d.items.forEach(item => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td style="max-width:260px; overflow:hidden; text-overflow:ellipsis;" title="${escapeHtml(item.name)}"><strong>${escapeHtml(item.name)}</strong></td>
+                <td>${escapeHtml(item.size_fmt)}</td>
+                <td><span class="badge badge-err">${escapeHtml(item.error_msg)}</span></td>
+                <td><button class="btn btn-secondary btn-xs" onclick="pauseSingleDead('${escapeHtml(item.hash)}', this)">⏸️ Пауза</button></td>
+            `;
+            frag.appendChild(tr);
+        });
+        tbody.appendChild(frag);
+    } catch (e) {
+        badges.innerHTML = '';
+        tbody.innerHTML = `<tr><td colspan="4" class="center-msg" style="color:var(--danger);">${escapeHtml(e.message)}</td></tr>`;
+    }
+}
+
+async function pauseSingleDead(hash, btn) {
+    const res = await api('/api/torrents/action', 'POST', { hash, action: 'stop' });
+    const d = await res.json();
+    if (d.success) {
+        btn.textContent = '✅ На паузе';
+        btn.disabled = true;
+        loadTorrents();
+    } else {
+        alert(d.error || 'Не удалось остановить');
+    }
+}
+
+async function pauseAllDeadTorrents() {
+    if (!lastDeadHashes.length) return;
+    if (!confirm(`Поставить на паузу все найденные раздачи (${lastDeadHashes.length} шт.)?`)) return;
+    const res = await api('/api/torrents/action', 'POST', { hash: lastDeadHashes.join('|'), action: 'stop' });
+    const d = await res.json();
+    if (d.success) {
+        alert(`Поставлено на паузу: ${lastDeadHashes.length} шт.`);
+        closeDeadModal();
+        loadTorrents();
+    } else {
+        alert(d.error || 'Ошибка остановки');
+    }
+}
+
+function closeDeadModal() {
+    document.getElementById('dead-torrents-modal').style.display = 'none';
 }
 
 function loadMergerLists() {
