@@ -1,3 +1,4 @@
+// web/static/torrents.js
 let torrentsData = [];
 let currentSortCol = 'name';
 let currentSortAsc = true;
@@ -5,25 +6,25 @@ let selectedHash = null;
 let lastDeadHashes = [];
 
 const STATUS_MAP = {
-    'downloading': { text: 'Скачивается', badge: 'badge-dl' },
-    'seeding': { text: 'Раздаётся', badge: 'badge-up' },
-    'uploading': { text: 'Раздаётся', badge: 'badge-up' },
-    'stalledup': { text: 'Раздача (нет пиров)', badge: 'badge-stall' },
-    'stalleddl': { text: 'Ожидание сидов', badge: 'badge-stall' },
-    'pausedup': { text: 'На паузе (завершён)', badge: 'badge-pause' },
-    'pauseddl': { text: 'На паузе (загрузка)', badge: 'badge-pause' },
-    'stoppedup': { text: 'Остановлен', badge: 'badge-stop' },
-    'stoppeddl': { text: 'Остановлен', badge: 'badge-stop' },
-    'forcedup': { text: 'Форс-раздача', badge: 'badge-force' },
-    'forceddl': { text: 'Форс-загрузка', badge: 'badge-force' },
-    'checkingup': { text: 'Проверка файлов', badge: 'badge-pause' },
-    'checkingdl': { text: 'Проверка файлов', badge: 'badge-pause' },
-    'queuedup': { text: 'В очереди', badge: 'badge-pause' },
-    'queueddl': { text: 'В очереди', badge: 'badge-pause' },
-    'error': { text: 'Ошибка', badge: 'badge-err' },
-    'missingfiles': { text: 'Файлы не найдены', badge: 'badge-err' },
-    'moving': { text: 'Перемещение', badge: 'badge-dl' },
-    'unknown': { text: 'Активен', badge: 'badge-up' }
+    'downloading': { key: 'st_downloading', badge: 'badge-dl' },
+    'seeding': { key: 'st_seeding', badge: 'badge-up' },
+    'uploading': { key: 'st_seeding', badge: 'badge-up' },
+    'stalledup': { key: 'st_stalledup', badge: 'badge-stall' },
+    'stalleddl': { key: 'st_stalleddl', badge: 'badge-stall' },
+    'pausedup': { key: 'st_pausedup', badge: 'badge-pause' },
+    'pauseddl': { key: 'st_pauseddl', badge: 'badge-pause' },
+    'stoppedup': { key: 'st_stoppedup', badge: 'badge-stop' },
+    'stoppeddl': { key: 'st_stoppeddl', badge: 'badge-stop' },
+    'forcedup': { key: 'st_forcedup', badge: 'badge-force' },
+    'forceddl': { key: 'st_forceddl', badge: 'badge-force' },
+    'checkingup': { key: 'st_checking', badge: 'badge-pause' },
+    'checkingdl': { key: 'st_checking', badge: 'badge-pause' },
+    'queuedup': { key: 'st_queued', badge: 'badge-pause' },
+    'queueddl': { key: 'st_queued', badge: 'badge-pause' },
+    'error': { key: 'st_error', badge: 'badge-err' },
+    'missingfiles': { key: 'st_missing', badge: 'badge-err' },
+    'moving': { key: 'st_moving', badge: 'badge-dl' },
+    'unknown': { key: 'st_unknown', badge: 'badge-up' }
 };
 
 async function loadTorrents(force = false) {
@@ -67,34 +68,34 @@ function renderTorrents(list) {
     tbody.innerHTML = '';
     const frag = document.createDocumentFragment();
 
-    list.forEach(t => {
+    list.forEach(item => {
         const tr = document.createElement('tr');
-        if (t.hash === selectedHash) tr.classList.add('selected');
-        tr.addEventListener('click', () => selectTorrent(t, tr));
+        if (item.hash === selectedHash) tr.classList.add('selected');
+        tr.addEventListener('click', () => selectTorrent(item, tr));
 
-        const st = STATUS_MAP[(t.state || '').toLowerCase()] || STATUS_MAP['unknown'];
+        const st = STATUS_MAP[(item.state || '').toLowerCase()] || STATUS_MAP['unknown'];
         tr.innerHTML = `
-            <td><strong>${escapeHtml(t.name)}</strong></td>
-            <td>${escapeHtml(t.size_fmt)}</td>
-            <td>${escapeHtml(t.uploaded_fmt)}</td>
-            <td><strong class="accent-txt">${Number(t.ratio).toFixed(2)}x</strong></td>
-            <td><span class="badge ${st.badge}">${st.text}</span></td>
-            <td class="muted-text" style="font-size:11px;">${escapeHtml(t.save_path)}</td>
+            <td><strong>${escapeHtml(item.name)}</strong></td>
+            <td>${escapeHtml(item.size_fmt)}</td>
+            <td>${escapeHtml(item.uploaded_fmt)}</td>
+            <td><strong class="accent-txt">${Number(item.ratio).toFixed(2)}x</strong></td>
+            <td><span class="badge ${st.badge}">${t(st.key)}</span></td>
+            <td class="muted-text" style="font-size:11px;">${escapeHtml(item.save_path)}</td>
         `;
         frag.appendChild(tr);
     });
     tbody.appendChild(frag);
 }
 
-function selectTorrent(t, tr) {
-    selectedHash = t.hash;
+function selectTorrent(item, tr) {
+    selectedHash = item.hash;
     document.querySelectorAll('#torrents-tbody tr').forEach(r => r.classList.remove('selected'));
     if (tr) tr.classList.add('selected');
-    document.getElementById('selected-title').textContent = `${t.name} (${t.size_fmt})`;
+    document.getElementById('selected-title').textContent = `${item.name} (${item.size_fmt})`;
 }
 
 async function torrentAction(action) {
-    if (!selectedHash) return alert("Сначала выберите раздачу!");
+    if (!selectedHash) return alert(t('err_select_torrent'));
     const res = await api('/api/torrents/action', 'POST', { hash: selectedHash, action });
     const d = await res.json();
     if (!d.success && d.error) alert(d.error);
@@ -102,8 +103,8 @@ async function torrentAction(action) {
 }
 
 async function globalTorrentAction(action) {
-    const title = action === 'stop' ? "поставить ВСЕ раздачи на паузу" : "возобновить ВСЕ раздачи";
-    if (!confirm(`Вы действительно хотите ${title}?`)) return;
+    const msg = action === 'stop' ? t('confirm_pause_all') : t('confirm_start_all');
+    if (!confirm(msg)) return;
     const res = await api('/api/torrents/action_all', 'POST', { action });
     const d = await res.json();
     alert(d.message || d.error);
@@ -111,7 +112,7 @@ async function globalTorrentAction(action) {
 }
 
 function goToAnalyticsWithTorrent() {
-    if (!selectedHash) return alert("Сначала выберите раздачу в таблице!");
+    if (!selectedHash) return alert(t('err_select_torrent_tbl'));
     switchTab('analytics');
     setTimeout(() => {
         const sel = document.getElementById('smart-calc-target-type');
@@ -128,8 +129,8 @@ async function scanDeadTorrents() {
     const pauseAllBtn = document.getElementById('btn-pause-all-dead');
 
     modal.style.display = 'flex';
-    badges.innerHTML = '<span class="badge badge-pause">⏳ Опрашиваем трекеры в многопотоке...</span>';
-    tbody.innerHTML = '<tr><td colspan="4" class="center-msg">Сканирование...</td></tr>';
+    badges.innerHTML = `<span class="badge badge-pause">${t('dead_scanning_badge')}</span>`;
+    tbody.innerHTML = `<tr><td colspan="4" class="center-msg">${t('scanning')}</td></tr>`;
     pauseAllBtn.classList.add('hidden');
     lastDeadHashes = [];
 
@@ -139,12 +140,12 @@ async function scanDeadTorrents() {
 
         if (!res.ok || !d.success) {
             badges.innerHTML = '';
-            tbody.innerHTML = `<tr><td colspan="4" class="center-msg" style="color:var(--danger);">${escapeHtml(d.error || 'Ошибка сканирования')}</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="4" class="center-msg" style="color:var(--danger);">${escapeHtml(d.error || 'Error')}</td></tr>`;
             return;
         }
 
-        badges.innerHTML = `<span class="badge badge-dl">Проверено: ${d.total_scanned}</span>` +
-            `<span class="badge ${d.dead_count > 0 ? 'badge-err' : 'badge-up'}">Проблемных: ${d.dead_count}</span>`;
+        badges.innerHTML = `<span class="badge badge-dl">${t('dead_scanned', { n: d.total_scanned })}</span>` +
+            `<span class="badge ${d.dead_count > 0 ? 'badge-err' : 'badge-up'}">${t('dead_found', { n: d.dead_count })}</span>`;
 
         (d.groups || []).forEach(g => {
             const sp = document.createElement('span');
@@ -154,7 +155,7 @@ async function scanDeadTorrents() {
         });
 
         if (!d.items || !d.items.length) {
-            tbody.innerHTML = '<tr><td colspan="4" class="center-msg" style="color:var(--accent);">🎉 Мёртвых раздач и ошибок трекеров не найдено!</td></tr>';
+            tbody.innerHTML = `<tr><td colspan="4" class="center-msg" style="color:var(--accent);">${t('dead_none')}</td></tr>`;
             return;
         }
 
@@ -169,7 +170,7 @@ async function scanDeadTorrents() {
                 <td style="max-width:260px; overflow:hidden; text-overflow:ellipsis;" title="${escapeHtml(item.name)}"><strong>${escapeHtml(item.name)}</strong></td>
                 <td>${escapeHtml(item.size_fmt)}</td>
                 <td><span class="badge badge-err">${escapeHtml(item.error_msg)}</span></td>
-                <td><button class="btn btn-secondary btn-xs" onclick="pauseSingleDead('${escapeHtml(item.hash)}', this)">⏸️ Пауза</button></td>
+                <td><button class="btn btn-secondary btn-xs" onclick="pauseSingleDead('${escapeHtml(item.hash)}', this)">${t('btn_pause')}</button></td>
             `;
             frag.appendChild(tr);
         });
@@ -184,25 +185,25 @@ async function pauseSingleDead(hash, btn) {
     const res = await api('/api/torrents/action', 'POST', { hash, action: 'stop' });
     const d = await res.json();
     if (d.success) {
-        btn.textContent = '✅ На паузе';
+        btn.textContent = t('dead_paused');
         btn.disabled = true;
         loadTorrents();
     } else {
-        alert(d.error || 'Не удалось остановить');
+        alert(d.error || 'Error');
     }
 }
 
 async function pauseAllDeadTorrents() {
     if (!lastDeadHashes.length) return;
-    if (!confirm(`Поставить на паузу все найденные раздачи (${lastDeadHashes.length} шт.)?`)) return;
+    if (!confirm(t('dead_pause_confirm', { n: lastDeadHashes.length }))) return;
     const res = await api('/api/torrents/action', 'POST', { hash: lastDeadHashes.join('|'), action: 'stop' });
     const d = await res.json();
     if (d.success) {
-        alert(`Поставлено на паузу: ${lastDeadHashes.length} шт.`);
+        alert(t('dead_paused_msg', { n: lastDeadHashes.length }));
         closeDeadModal();
         loadTorrents();
     } else {
-        alert(d.error || 'Ошибка остановки');
+        alert(d.error || 'Error');
     }
 }
 
@@ -218,10 +219,10 @@ function loadMergerLists() {
         return;
     }
     o.innerHTML = ''; n.innerHTML = '';
-    torrentsData.forEach(t => {
-        const txt = `${t.name} [${t.hash.substring(0, 8)}]`;
+    torrentsData.forEach(item => {
+        const txt = `${item.name} [${item.hash.substring(0, 8)}]`;
         const opt1 = document.createElement('option');
-        opt1.value = t.hash; opt1.textContent = txt;
+        opt1.value = item.hash; opt1.textContent = txt;
         const opt2 = opt1.cloneNode(true);
         o.appendChild(opt1); n.appendChild(opt2);
     });
@@ -232,9 +233,9 @@ async function runMerger() {
     const logBox = document.getElementById('merger-log');
     const old_hash = document.getElementById('merger-old').value;
     const new_hash = document.getElementById('merger-new').value;
-    if (!old_hash || !new_hash) return alert("Выберите обе раздачи!");
+    if (!old_hash || !new_hash) return alert(t('err_select_both'));
 
-    logBox.textContent = '⏳ Безопасная остановка qBittorrent и перенос статистики...';
+    logBox.textContent = t('merger_running');
     const res = await api('/api/merger/run', 'POST', { old_hash, new_hash });
     const d = await res.json();
     logBox.textContent = (d.log || []).join('\n');

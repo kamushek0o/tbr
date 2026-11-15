@@ -1,3 +1,4 @@
+// web/static/automation.js
 let currentRules = [];
 let editingRuleId = null;
 
@@ -9,10 +10,10 @@ async function loadAutomation() {
     document.getElementById('auto-enabled').checked = Boolean(s.enabled);
     document.getElementById('auto-interval').value = s.interval || 5;
     document.getElementById('auto-tg-token').value = '';
-    document.getElementById('auto-tg-token').placeholder = s.has_tg_token ? 'Токен задан (пусто = не менять)' : '123456:ABC-DEF...';
+    document.getElementById('auto-tg-token').placeholder = s.has_tg_token ? t('token_set_ph') : '123456:ABC-DEF...';
     document.getElementById('auto-tg-chat').value = s.tg_chat_id || '';
     document.getElementById('auto-discord').value = '';
-    document.getElementById('auto-discord').placeholder = s.has_discord ? 'Webhook задан (пусто = не менять)' : 'https://discord.com/api/webhooks/...';
+    document.getElementById('auto-discord').placeholder = s.has_discord ? t('webhook_set_ph') : 'https://discord.com/api/webhooks/...';
 
     currentRules = d.rules || [];
     renderRules(currentRules);
@@ -22,30 +23,30 @@ function renderRules(rules) {
     const tbody = document.getElementById('rules-tbody');
     tbody.innerHTML = '';
     if (!rules.length) {
-        tbody.innerHTML = '<tr><td colspan="5" class="center-msg">Правила пока не добавлены</td></tr>';
+        tbody.innerHTML = `<tr><td colspan="5" class="center-msg">${t('no_rules')}</td></tr>`;
         return;
     }
     const frag = document.createDocumentFragment();
     rules.forEach(r => {
         const conds = [];
         if (r.min_ratio > 0) conds.push(`Ratio >= ${r.min_ratio}x`);
-        if (r.min_seed_days > 0) conds.push(`Сид >= ${r.min_seed_days} дн.`);
+        if (r.min_seed_days > 0) conds.push(`Seed >= ${r.min_seed_days} ${t('rule_days_unit')}`);
 
         const acts = [];
-        if (r.action_pause) acts.push('⏸️ Пауза');
+        if (r.action_pause) acts.push(t('chk_pause'));
         if (r.action_tag) acts.push(`🏷️ ${r.action_tag}`);
-        if (r.notify) acts.push('📣 Бот');
+        if (r.notify) acts.push(t('rule_bot'));
 
         const tr = document.createElement('tr');
         tr.innerHTML = `
             <td><strong>${escapeHtml(r.name)}</strong></td>
-            <td>${escapeHtml(conds.join(' И '))}</td>
+            <td>${escapeHtml(conds.join(t('rule_and')))}</td>
             <td>${escapeHtml(acts.join(', ') || '—')}</td>
-            <td><span class="badge ${r.enabled ? 'badge-up' : 'badge-pause'}">${r.enabled ? 'Вкл' : 'Выкл'}</span></td>
+            <td><span class="badge ${r.enabled ? 'badge-up' : 'badge-pause'}">${r.enabled ? t('rule_on') : t('rule_off')}</span></td>
             <td class="row-gap">
-                <button class="btn btn-secondary btn-xs" title="Редактировать" onclick="editRule(${r.id})">✏️</button>
-                <button class="btn btn-secondary btn-xs" onclick="toggleRule(${r.id})">${r.enabled ? 'Выкл' : 'Вкл'}</button>
-                <button class="btn btn-danger btn-xs" title="Удалить" onclick="deleteRule(${r.id})">🗑️</button>
+                <button class="btn btn-secondary btn-xs" onclick="editRule(${r.id})">✏️</button>
+                <button class="btn btn-secondary btn-xs" onclick="toggleRule(${r.id})">${r.enabled ? t('rule_off') : t('rule_on')}</button>
+                <button class="btn btn-danger btn-xs" onclick="deleteRule(${r.id})">🗑️</button>
             </td>
         `;
         frag.appendChild(tr);
@@ -70,8 +71,8 @@ function editRule(id) {
     const canBtn = document.getElementById('btn-rule-cancel');
     const cardEl = document.getElementById('rule-form-card');
 
-    if (titleEl) titleEl.textContent = `✏️ РЕДАКТИРОВАНИЕ ПРАВИЛА #${id}`;
-    if (subBtn) subBtn.textContent = '💾 Сохранить';
+    if (titleEl) titleEl.textContent = t('card_edit_rule', { id });
+    if (subBtn) subBtn.textContent = t('btn_save');
     if (canBtn) canBtn.classList.remove('hidden');
     if (cardEl) cardEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
@@ -89,8 +90,8 @@ function cancelEditRule() {
     const subBtn = document.getElementById('btn-rule-submit');
     const canBtn = document.getElementById('btn-rule-cancel');
 
-    if (titleEl) titleEl.textContent = '➕ ДОБАВИТЬ ПРАВИЛО';
-    if (subBtn) subBtn.textContent = '➕ Добавить';
+    if (titleEl) titleEl.textContent = t('card_add_rule');
+    if (subBtn) subBtn.textContent = t('btn_add');
     if (canBtn) canBtn.classList.add('hidden');
 }
 
@@ -104,14 +105,14 @@ async function saveAutomationSettings() {
     };
     const res = await api('/api/automation/settings', 'POST', payload);
     const d = await res.json();
-    if (!res.ok) return alert(d.error || 'Ошибка сохранения');
+    if (!res.ok) return alert(d.error || t('save_err'));
     document.getElementById('auto-status-msg').textContent = d.message;
     loadAutomation();
 }
 
 async function testNotifications() {
     const msgEl = document.getElementById('auto-status-msg');
-    msgEl.textContent = '⏳ Отправка теста...';
+    msgEl.textContent = t('auto_testing');
     const res = await api('/api/automation/test', 'POST');
     const d = await res.json();
     msgEl.textContent = d.message;
@@ -120,7 +121,7 @@ async function testNotifications() {
 
 async function runAutomationNow() {
     const msgEl = document.getElementById('auto-status-msg');
-    msgEl.textContent = '⏳ Проверка правил...';
+    msgEl.textContent = t('auto_checking');
     const res = await api('/api/automation/run_now', 'POST');
     const d = await res.json();
     msgEl.textContent = d.message;
@@ -147,12 +148,12 @@ async function submitAutomationRule() {
         let d = {};
         try { d = await res.json(); } catch (_) {}
         if (!res.ok || d.success === false) {
-            return alert(d.error || `Ошибка HTTP ${res.status} при сохранении правила`);
+            return alert(d.error || `HTTP ${res.status}`);
         }
         cancelEditRule();
         loadAutomation();
     } catch (e) {
-        alert('Ошибка сети: ' + e.message);
+        alert(e.message);
     }
 }
 
@@ -166,7 +167,7 @@ async function toggleRule(id) {
 }
 
 async function deleteRule(id) {
-    if (!confirm('Удалить правило?')) return;
+    if (!confirm(t('rule_del_confirm'))) return;
     if (editingRuleId === id) cancelEditRule();
     await api('/api/automation/rules/delete', 'POST', { id });
     loadAutomation();

@@ -1,3 +1,4 @@
+// web/static/analytics.js
 let lastForecastData = null;
 let chartDaily = null;
 let chartTop5 = null;
@@ -80,12 +81,12 @@ function populateAnalyticsSelectors() {
         sel.innerHTML = '';
         const frag = document.createDocumentFragment();
         const def = document.createElement('option');
-        def.value = 'all'; def.textContent = '🌐 Весь сидбокс (суммарно)';
+        def.value = 'all'; def.textContent = t('whole_seedbox');
         frag.appendChild(def);
-        rawSummaryItems.forEach(t => {
+        rawSummaryItems.forEach(item => {
             const opt = document.createElement('option');
-            opt.value = t.hash_id;
-            opt.textContent = `📦 ${t.name}`;
+            opt.value = item.hash_id;
+            opt.textContent = `📦 ${item.name}`;
             frag.appendChild(opt);
         });
         sel.appendChild(frag);
@@ -100,11 +101,11 @@ function onSmartCalcTargetChange() {
     const lbl = document.getElementById('smart-calc-goal-label');
     const inp = document.getElementById('smart-calc-goal');
     if (val === 'all') {
-        lbl.textContent = 'Цель сидбокса (напр: 50 тиб или 100 гиб):';
-        inp.placeholder = '50 тиб или 100 GiB';
+        lbl.textContent = t('goal_lbl_all');
+        inp.placeholder = t('goal_ph_all');
     } else {
-        lbl.textContent = 'Цель раздачи (напр: 2.0x или 80 гиб):';
-        inp.placeholder = '2.0x или 80 гиб';
+        lbl.textContent = t('goal_lbl_one');
+        inp.placeholder = t('goal_ph_one');
     }
 }
 
@@ -116,11 +117,11 @@ async function runSmartCalc() {
     const speed = document.getElementById('smart-calc-speed').value.trim();
 
     if (!goal) {
-        term.textContent = '[ОШИБКА]\nУкажите цель (например: 50 тиб или 2.0x)!';
+        term.textContent = t('err_no_goal');
         return;
     }
 
-    term.textContent = '⏳ Выполняется расчёт прогноза...';
+    term.textContent = t('calc_running');
     let d;
     try {
         const res = await api('/api/smart_calc', 'POST', {
@@ -130,12 +131,12 @@ async function runSmartCalc() {
             speed: speed
         });
         if (!res.ok) {
-            term.textContent = `[ОШИБКА СЕРВЕРА HTTP ${res.status}]`;
+            term.textContent = t('http_err', { status: res.status });
             return;
         }
         d = await res.json();
     } catch (err) {
-        term.textContent = `[ОШИБКА СЕТИ]\n${err.message}`;
+        term.textContent = t('net_err', { msg: err.message });
         return;
     }
 
@@ -150,13 +151,10 @@ async function runSmartCalc() {
         if (d.need_manual) {
             term.textContent =
                 `=================================================================\n` +
-                `[МАЛО ДАННЫХ ДЛЯ УМНОЙ МОДЕЛИ]\n` +
-                `Накоплено: ${d.days_available} из ${d.req_days} требуемых дней истории.\n\n` +
-                `👉 Укажите скорость вручную (напр: 25 мб/с), либо уберите 2/3-ю неделю\n` +
-                `   в ⚙️ Настройки (оставив вес только у 1-й недели — тогда хватит 7 дн.).\n` +
+                t('need_manual_msg', { avail: d.days_available, req: d.req_days }) + `\n` +
                 `=================================================================`;
         } else {
-            term.textContent = `[ОШИБКА]\n${d.error}`;
+            term.textContent = t('err_prefix', { msg: d.error });
         }
         return;
     }
@@ -166,24 +164,24 @@ async function runSmartCalc() {
 
     if (d.achieved) {
         btnTable.classList.add('hidden');
-        term.textContent = `[ЦЕЛЬ ДОСТИГНУТА!]\nОбъект: ${d.name}\nОтдано: ${d.current_up_fmt} | Цель: ${d.target_fmt}`;
+        term.textContent = t('goal_achieved', { name: d.name, cur: d.current_up_fmt, tgt: d.target_fmt });
         return;
     }
 
     btnTable.classList.remove('hidden');
-    const modeTxt = d.is_manual ? 'Ручной ввод скорости' : `Умная модель (веса ${d.weights_desc})`;
+    const modeTxt = d.is_manual ? t('mode_manual') : t('mode_smart', { w: d.weights_desc });
     let out =
         `=================================================================\n` +
-        `[РЕЗУЛЬТАТ ПРОГНОЗА]\n` +
-        `Объект:        ${d.name}\n` +
-        `Отдано сейчас: ${d.current_up_fmt}  -->  Цель: ${d.target_fmt}\n` +
-        `Осталось:      ${d.remaining_fmt}\n`;
-    if (!d.is_seedbox) out += `Ratio сейчас:  ${d.ratio_current}x  -->  к завтра: ~${d.ratio_after_24h}x\n`;
+        `${t('res_header')}\n` +
+        `${t('obj_lbl')}        ${d.name}\n` +
+        `${t('up_now_lbl')} ${d.current_up_fmt}  -->  ${t('goal_lbl')} ${d.target_fmt}\n` +
+        `${t('rem_lbl')}      ${d.remaining_fmt}\n`;
+    if (!d.is_seedbox) out += `${t('ratio_lbl', { cur: d.ratio_current, nxt: d.ratio_after_24h })}\n`;
     out +=
         `-----------------------------------------------------------------\n` +
-        `Режим: ${modeTxt}\n` +
-        `Прогноз за 24ч: +${d.forecast_24h_vol_fmt}\n` +
-        `ТОЧНЫЙ ФИНИШ:   ${d.eta_str}\n` +
+        `${t('mode_lbl')} ${modeTxt}\n` +
+        `${t('f24_lbl')} +${d.forecast_24h_vol_fmt}\n` +
+        `${t('eta_lbl')}   ${d.eta_str}\n` +
         `=================================================================`;
     term.textContent = out;
 
@@ -195,7 +193,7 @@ async function runSmartCalc() {
         tr.innerHTML = `
             <td>${escapeHtml(r.date)}</td>
             <td><strong>${escapeHtml(r.hour)}</strong></td>
-            <td class="purple-txt" style="font-weight:700;">+${escapeHtml(r.volume_mb)}</td>
+            <td class="purple-txt" style="font-weight:700;">+${escapeHtml(trBackend(r.volume_mb))}</td>
             <td class="blue-txt" style="font-weight:600;">${escapeHtml(r.speed_fmt)}</td>
             <td class="muted-text" style="font-size:11px;">${escapeHtml(r.basis)}</td>
         `;
@@ -208,13 +206,13 @@ function toggleForecastTable() {
     const wrap = document.getElementById('smart-res-table-wrap');
     const btn = document.getElementById('btn-toggle-forecast-table');
     const isHidden = wrap.classList.toggle('hidden');
-    btn.textContent = isHidden ? '📅 Почасовой прогноз' : '🔼 Скрыть прогноз';
+    btn.textContent = isHidden ? t('btn_hourly_show') : t('btn_hourly_hide');
 }
 
 async function exportForecastCSV() {
     if (!lastForecastData) return;
     const res = await api('/api/smart_calc/export', 'POST', { forecast_data: lastForecastData });
-    if (!res.ok) return alert('Ошибка экспорта');
+    if (!res.ok) return alert(t('export_err'));
     const blob = await res.blob();
     const a = document.createElement('a');
     a.href = window.URL.createObjectURL(blob);
@@ -230,7 +228,7 @@ async function loadTorrentHourlyHistory() {
     const tbody = document.getElementById('torrent-history-tbody');
     tbody.innerHTML = '';
     if (!list.length) {
-        tbody.innerHTML = '<tr><td colspan="4" class="center-msg">Нет накопленных почасовых снимков</td></tr>';
+        tbody.innerHTML = `<tr><td colspan="4" class="center-msg">${t('no_hourly_snaps')}</td></tr>`;
         return;
     }
     const frag = document.createDocumentFragment();
@@ -239,7 +237,7 @@ async function loadTorrentHourlyHistory() {
         tr.innerHTML = `
             <td>${escapeHtml(r.datetime)}</td>
             <td>${escapeHtml(r.uploaded_fmt)}</td>
-            <td class="purple-txt" style="font-weight:700;">+${escapeHtml(r.delta_mb)}</td>
+            <td class="purple-txt" style="font-weight:700;">+${escapeHtml(trBackend(r.delta_mb))}</td>
             <td class="blue-txt" style="font-weight:600;">${escapeHtml(r.speed_fmt)}</td>
         `;
         frag.appendChild(tr);
@@ -256,7 +254,7 @@ async function loadLogsList() {
     const frag = document.createDocumentFragment();
     const placeholder = document.createElement('option');
     placeholder.value = '';
-    placeholder.textContent = '-- Выберите файл (показаны 20 свежих) --';
+    placeholder.textContent = t('select_log_ph');
     frag.appendChild(placeholder);
 
     files.forEach(f => {
@@ -268,7 +266,7 @@ async function loadLogsList() {
     sel.appendChild(frag);
 
     document.getElementById('download-log-btn').classList.add('hidden');
-    document.getElementById('log-view-terminal').textContent = 'Выберите файл из списка выше и нажмите «Просмотр»...';
+    document.getElementById('log-view-terminal').textContent = t('log_view_hint');
 }
 
 function onLogSelectChange() {
@@ -276,7 +274,7 @@ function onLogSelectChange() {
     const dlBtn = document.getElementById('download-log-btn');
     if (!name) {
         dlBtn.classList.add('hidden');
-        document.getElementById('log-view-terminal').textContent = 'Выберите файл из списка выше и нажмите «Просмотр»...';
+        document.getElementById('log-view-terminal').textContent = t('log_view_hint');
         return;
     }
     dlBtn.href = `/api/logs/download?name=${encodeURIComponent(name)}`;
@@ -285,9 +283,9 @@ function onLogSelectChange() {
 
 async function loadLogContent() {
     const name = document.getElementById('log-file-select').value;
-    if (!name) return alert('Сначала выберите файл из списка!');
+    if (!name) return alert(t('err_select_file'));
     onLogSelectChange();
     const res = await api(`/api/logs/view?name=${encodeURIComponent(name)}`);
     const d = await res.json();
-    document.getElementById('log-view-terminal').textContent = d.content || d.error || 'Файл пуст';
+    document.getElementById('log-view-terminal').textContent = d.content || d.error || t('file_empty');
 }
