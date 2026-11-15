@@ -1,3 +1,5 @@
+> [читать на русском](README_RU.md)
+
 # tbr pro — qbittorrent swiss-army knife
 
 > supports **en / ru** ui toggle right in the header!
