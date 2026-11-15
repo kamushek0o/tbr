@@ -44,13 +44,13 @@
 
 # what do i need to make it work?
 
-1. **qbittorrent webui with no password** (or enable *"bypass authentication for clients on localhost"* in qb webui settings)
+1. **qbittorrent webui** — password is now supported! just enter your qb webui login/password in `⚙️ settings` (or leave it bypassed on localhost, up to you)
 
 2. **qbittorrent** — haven't tested other clients (transmission doesn't count, it's kinda creepy). and if you don't use qb, why are you even here, normie?
 
-3. **windows** — built and tested on win 11, no idea if it runs on anything else
+3. **windows / linux / docker** — `.exe` is built for windows (tested on win 11), and now it also runs on linux & docker in headless web mode (`python main.py --headless` or `Dockerfile`)
 
-4. **paranoid about random `.exe` files?** fair enough! check the source, install `pip install -r requirements.txt` and run `python main.py`, or compile it yourself with `build.bat`
+4. **paranoid about random `.exe` files?** fair enough! the `.exe` in releases is now auto-compiled by **github actions** straight from this open-source code (no sketchy local builds). or just run `pip install -r requirements.txt` -> `python main.py`, or build it yourself via `build.bat`
 
 # outro
 
