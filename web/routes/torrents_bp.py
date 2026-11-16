@@ -175,13 +175,17 @@ def api_merger_run():
     try:
         if was_running:
             log.append("🛑 Завершаем qBittorrent во избежание порчи данных...")
-            close_qbittorrent()
-            time.sleep(1.5)
+            if not close_qbittorrent():
+                raise RuntimeError("Не удалось завершить qBittorrent (возможно, клиент запущен от имени Администратора).")
+            time.sleep(1.0)
 
         with open(old_file, 'rb') as f:
             old_data = decode_bencode(f.read())
         with open(new_file, 'rb') as f:
             new_data = decode_bencode(f.read())
+
+        if not isinstance(old_data, dict) or not isinstance(new_data, dict):
+            raise ValueError("Повреждённый формат .fastresume (ожидался словарь bencode).")
 
         fields = ['total_uploaded', 'total_downloaded', 'active_time', 'seeding_time', 'added_time', 'completed_time']
         copied = 0
@@ -202,15 +206,34 @@ def api_merger_run():
             raise ValueError("Не найдено подходящих полей статистики для копирования!")
 
         encoded_bytes = encode_bencode(new_data)
+
+        # Контрольная перепроверка собранного bencode перед записью на диск
+        validated = decode_bencode(encoded_bytes)
+        if not isinstance(validated, dict) or len(validated) != len(new_data):
+            raise ValueError("Контрольная проверка нового bencode не пройдена!")
+        log.append("🔍 Валидация нового bencode пройдена.")
+
         bak = new_file + '.bak'
         if not os.path.exists(bak):
             shutil.copy2(new_file, bak)
             log.append(f"📦 Бэкап создан: {os.path.basename(bak)}")
 
-        with open(new_file, 'wb') as f:
-            f.write(encoded_bytes)
-        log.append("🎉 Статистика успешно записана в .fastresume!")
+        # Атомарная запись через временный файл + fsync + replace
+        tmp_file = new_file + '.tmp'
+        try:
+            with open(tmp_file, 'wb') as f:
+                f.write(encoded_bytes)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_file, new_file)
+        finally:
+            if os.path.exists(tmp_file):
+                try:
+                    os.remove(tmp_file)
+                except OSError:
+                    pass
 
+        log.append("🎉 Статистика успешно и атомарно записана в .fastresume!")
         return jsonify({'success': True, 'log': log})
     except Exception as e:
         write_error_log("Ошибка merger API", e)
