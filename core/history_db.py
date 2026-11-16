@@ -110,8 +110,6 @@ class HistoryDB:
                 write_error_log("Ошибка миграции summary_history.json в SQLite", e)
 
     def _migrate_old_csvs_if_needed(self):
-        """Импортирует старые почасовые CSV (13 или 15 колонок) из logs/ и auto_hourly/ в SQLite без дублей."""
-        cutoff = time.time() - (35 * 86400)
         candidates = []
         for folder in (LOG_FOLDER, self.auto_folder):
             if not os.path.exists(folder):
@@ -131,9 +129,6 @@ class HistoryDB:
                     cur = conn.cursor()
                     for path in sorted(candidates):
                         try:
-                            if os.path.getmtime(path) < cutoff:
-                                continue
-
                             with open(path, 'r', encoding='utf-8-sig', errors='ignore') as f:
                                 lines = f.readlines()
 
@@ -162,10 +157,6 @@ class HistoryDB:
                                     snap_ts = os.path.getmtime(path)
                                     snap_dt_str = datetime.datetime.fromtimestamp(snap_ts).strftime('%Y-%m-%d %H:%M:%S')
 
-                            if snap_ts < cutoff:
-                                continue
-
-                            # Пропускаем, если снимок в пределах +-3 минут уже есть в БД
                             cur.execute("SELECT 1 FROM snapshots WHERE ABS(timestamp - ?) < 180 LIMIT 1", (snap_ts,))
                             if cur.fetchone():
                                 continue
@@ -209,17 +200,34 @@ class HistoryDB:
             except Exception as e:
                 write_error_log("Ошибка _migrate_old_csvs_if_needed", e)
 
-    def record_snapshot(self, summaries):
+    def get_last_snapshot_ts(self):
+        with self._lock:
+            try:
+                with self._get_connection() as conn:
+                    cur = conn.cursor()
+                    cur.execute("SELECT MAX(timestamp) FROM snapshots")
+                    row = cur.fetchone()
+                    return row[0] if row and row[0] is not None else None
+            except Exception:
+                return None
+
+    def record_snapshot(self, summaries, min_delta_sec=60):
         with self._lock:
             try:
                 now = time.time()
-                dt_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                tot_up = sum(s.get('uploaded', 0) for s in summaries)
-                tot_sz = sum(s.get('size', 0) for s in summaries)
-                count = len(summaries)
-
                 with self._get_connection() as conn:
                     cur = conn.cursor()
+                    cur.execute("SELECT MAX(timestamp) FROM snapshots")
+                    row = cur.fetchone()
+                    last_ts = row[0] if row and row[0] is not None else None
+                    if last_ts is not None and (now - last_ts) < min_delta_sec:
+                        return False
+
+                    dt_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    tot_up = sum(s.get('uploaded', 0) for s in summaries)
+                    tot_sz = sum(s.get('size', 0) for s in summaries)
+                    count = len(summaries)
+
                     cur.execute(
                         "INSERT INTO snapshots (timestamp, datetime, total_uploaded, total_size, count) VALUES (?, ?, ?, ?, ?)",
                         (now, dt_str, tot_up, tot_sz, count)
@@ -237,12 +245,63 @@ class HistoryDB:
                             "INSERT INTO torrent_snapshots (snapshot_id, hash_id, uploaded) VALUES (?, ?, ?)",
                             tor_rows
                         )
-
-                    cutoff = now - (35 * 86400)
-                    cur.execute("DELETE FROM snapshots WHERE timestamp < ?", (cutoff,))
                     conn.commit()
+                    return True
             except Exception as e:
                 write_error_log("Ошибка записи record_snapshot в SQLite", e)
+                return False
+
+    def downsample_old_snapshots(self):
+        """
+        3-уровневое хранение:
+        - < 30 дней: исходная частота T
+        - 30..365 дней: даунсэмплинг до почасовых (1 снимок на час)
+        - > 365 дней: даунсэмплинг до суточных (1 снимок в сутки)
+        """
+        now = time.time()
+        cutoff_hourly = now - (30 * 86400)
+        cutoff_daily = now - (365 * 86400)
+
+        with self._lock:
+            try:
+                with self._get_connection() as conn:
+                    cur = conn.cursor()
+                    cur.execute(
+                        "SELECT id, timestamp, datetime FROM snapshots WHERE timestamp < ? ORDER BY timestamp ASC",
+                        (cutoff_hourly,)
+                    )
+                    rows = cur.fetchall()
+                    if not rows:
+                        return 0
+
+                    buckets = {}
+                    for r in rows:
+                        ts = r['timestamp']
+                        dt_str = r['datetime'] or datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
+                        if ts < cutoff_daily:
+                            key = ('day', dt_str[:10])
+                        else:
+                            key = ('hour', dt_str[:13])
+                        buckets.setdefault(key, []).append((ts, r['id']))
+
+                    delete_ids = []
+                    for items in buckets.values():
+                        if len(items) > 1:
+                            # Оставляем самый свежий снимок в бакете, остальные удаляем
+                            items.sort(key=lambda x: x[0])
+                            delete_ids.extend(item[1] for item in items[:-1])
+
+                    if delete_ids:
+                        for i in range(0, len(delete_ids), 500):
+                            chunk = delete_ids[i:i + 500]
+                            placeholders = ','.join('?' for _ in chunk)
+                            cur.execute(f"DELETE FROM snapshots WHERE id IN ({placeholders})", chunk)
+                        conn.commit()
+                        write_log("summary", f"Даунсэмплинг SQLite: сжато старых снимков: {len(delete_ids)}")
+                    return len(delete_ids)
+            except Exception as e:
+                write_error_log("Ошибка downsample_old_snapshots", e)
+                return 0
 
     def get_stats_snapshots(self, now_ts):
         latest_snap = None

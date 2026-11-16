@@ -1,12 +1,15 @@
 # main.py
 import sys
 import os
+import atexit
+import signal
 import argparse
 import webbrowser
 import threading
 
 from utils.config import cfg
 from web.app import web_server
+from core.summary_tracker import summary_tracker
 
 
 def parse_arguments():
@@ -40,11 +43,16 @@ def main():
     web_port = cfg.getint('Web_Port', 5000)
     web_host = cfg.get('Web_Host', '127.0.0.1')
 
-    # 1. Запуск встроенного веб-сервера в фоне
+    atexit.register(summary_tracker.flush_on_exit)
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sig, lambda s, f: (summary_tracker.flush_on_exit(), sys.exit(0)))
+        except Exception:
+            pass
+
     if not args.no_web:
         web_server.start(host=web_host, port=web_port)
 
-    # 2. Headless-режим (без Tkinter)
     if args.web_only:
         url = get_browser_url(web_host, web_port)
         if os.name == 'nt':
@@ -57,9 +65,9 @@ def main():
             while True:
                 threading.Event().wait(1)
         except KeyboardInterrupt:
+            summary_tracker.flush_on_exit()
             sys.exit(0)
 
-    # 3. Ленивый импорт GUI только когда реально нужно окно (чтобы Linux/Docker не падал без tkinter)
     import tkinter as tk
     from tkinter import messagebox
 
@@ -89,6 +97,7 @@ def main():
     root = tk.Tk()
     TorrentApp(root)
     root.mainloop()
+    summary_tracker.flush_on_exit()
 
 
 if __name__ == "__main__":

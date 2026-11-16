@@ -3,10 +3,10 @@ import os
 import time
 import csv
 import datetime
-import threading
 from utils.helpers import LOG_FOLDER, format_file_size, sanitize_csv_cell, write_log, write_error_log
 from core.history_db import HistoryDB, AUTO_FOLDER, MANUAL_FOLDER
 from core.forecaster import fmt_ratio_h, fmt_speed, calculate_smart_forecast, export_forecast_csv
+from core.scheduler import SnapshotScheduler, MIN_DELTA_SEC
 
 
 class SummaryTracker:
@@ -15,11 +15,22 @@ class SummaryTracker:
         self.auto_folder = AUTO_FOLDER
         self.manual_folder = MANUAL_FOLDER
         self.db = HistoryDB(auto_folder=self.auto_folder)
-        self._thread = None
-        self._running = False
+        self._get_summaries_fn = None
+        self.scheduler = SnapshotScheduler(
+            db=self.db,
+            on_record_fn=self.record_snapshot,
+            on_csv_fn=self._export_hourly_csv_only
+        )
 
-    def record_snapshot(self, summaries):
-        self.db.record_snapshot(summaries)
+    def record_snapshot(self, summaries, min_delta_sec=MIN_DELTA_SEC):
+        return self.db.record_snapshot(summaries, min_delta_sec=min_delta_sec)
+
+    def notify_interval_changed(self):
+        self.scheduler.notify_interval_changed()
+
+    def flush_on_exit(self):
+        if self._get_summaries_fn:
+            self.scheduler.flush_on_exit(self._get_summaries_fn)
 
     def get_stats(self, summaries):
         now_ts = time.time()
@@ -132,27 +143,40 @@ class SummaryTracker:
         rows = self.db.get_snapshots_since(now_ts - (14 * 86400))
 
         daily_map = {}
-        hourly_buckets = {h: [] for h in range(24)}
-        prev_up = None
+        day_hour_totals = {}  # (YYYY-MM-DD, hour) -> суммарные байты за этот час этого дня
+        prev_row = None
 
         for r in rows:
-            up = r['total_uploaded']
-            dt_str = r['datetime'] or ''
-            if prev_up is not None and len(dt_str) >= 13:
-                delta = max(0, up - prev_up)
-                day_key = dt_str[:10]
-                daily_map[day_key] = daily_map.get(day_key, 0) + delta
-                try:
-                    hour_key = int(dt_str[11:13])
-                    if 0 <= hour_key <= 23:
-                        hourly_buckets[hour_key].append(delta)
-                except ValueError:
-                    pass
-            prev_up = up
+            if prev_row is not None:
+                t1 = prev_row['timestamp']
+                t2 = r['timestamp']
+                dt_sec = t2 - t1
+                delta = max(0, r['total_uploaded'] - prev_row['total_uploaded'])
+
+                if dt_sec >= MIN_DELTA_SEC and delta > 0:
+                    # Распределяем delta пропорционально пересечению с каждым 1-часовым бакетом
+                    cur_dt = datetime.datetime.fromtimestamp(t1).replace(minute=0, second=0, microsecond=0)
+                    cur_ts = cur_dt.timestamp()
+                    while cur_ts < t2:
+                        bucket_end = cur_ts + 3600.0
+                        overlap = min(t2, bucket_end) - max(t1, cur_ts)
+                        if overlap > 0:
+                            part = delta * (overlap / dt_sec)
+                            b_dt = datetime.datetime.fromtimestamp(cur_ts)
+                            day_key = b_dt.strftime('%Y-%m-%d')
+                            daily_map[day_key] = daily_map.get(day_key, 0.0) + part
+                            dh_key = (day_key, b_dt.hour)
+                            day_hour_totals[dh_key] = day_hour_totals.get(dh_key, 0.0) + part
+                        cur_ts = bucket_end
+            prev_row = r
 
         sorted_days = sorted(daily_map.keys())[-14:]
         daily_labels = [f"{d[8:10]}.{d[5:7]}" for d in sorted_days]
         daily_values_gb = [round(daily_map[d] / (1024 ** 3), 3) for d in sorted_days]
+
+        hourly_buckets = {h: [] for h in range(24)}
+        for (_, h), val in day_hour_totals.items():
+            hourly_buckets[h].append(val)
 
         # Вариант Б: крайняя правая точка = ближайший ровный час + 1
         now_dt = datetime.datetime.now()
@@ -210,10 +234,9 @@ class SummaryTracker:
     def export_forecast_csv(self, forecast_data):
         return export_forecast_csv(self.manual_folder, forecast_data)
 
-    def export_hourly_csv(self, summaries):
+    def _export_hourly_csv_only(self, summaries):
         if not summaries:
             return None
-        self.record_snapshot(summaries)
         stats = self.get_stats(summaries)
 
         ts = datetime.datetime.now().strftime('%Y%m%d_%H00')
@@ -268,6 +291,12 @@ class SummaryTracker:
 
         write_log("summary", f"Авто-сводка выгружена в {filename}")
         return filepath
+
+    def export_hourly_csv(self, summaries):
+        if not summaries:
+            return None
+        self.record_snapshot(summaries, min_delta_sec=0)
+        return self._export_hourly_csv_only(summaries)
 
     def save_manual_csv(self, items):
         ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -327,38 +356,8 @@ class SummaryTracker:
         return result
 
     def start_auto_export(self, get_summaries_fn):
-        if self._running:
-            return
-        self._running = True
-
-        def loop():
-            try:
-                sums = get_summaries_fn()
-                if sums:
-                    self.export_hourly_csv(sums)
-            except Exception as e:
-                write_error_log("Ошибка начальной выгрузки сводки", e)
-
-            while self._running:
-                now = datetime.datetime.now()
-                seconds_until_next_hour = (60 - now.minute - 1) * 60 + (60 - now.second)
-                if seconds_until_next_hour <= 0:
-                    seconds_until_next_hour = 3600
-
-                for _ in range(seconds_until_next_hour):
-                    if not self._running:
-                        return
-                    time.sleep(1)
-
-                try:
-                    sums = get_summaries_fn()
-                    if sums:
-                        self.export_hourly_csv(sums)
-                except Exception as e:
-                    write_error_log("Ошибка циклической выгрузки сводки", e)
-
-        self._thread = threading.Thread(target=loop, daemon=True)
-        self._thread.start()
+        self._get_summaries_fn = get_summaries_fn
+        self.scheduler.start(get_summaries_fn)
 
 
 summary_tracker = SummaryTracker()

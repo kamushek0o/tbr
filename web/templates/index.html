@@ -126,6 +126,7 @@
             <div style="width:120px"><label class="lbl-sm" data-i18n="lbl_min_ratio">Мин. Ratio:</label><input type="number" step="0.5" id="sum-filter-ratio" class="form-control" oninput="applySummaryFilters()"></div>
             <div style="width:140px"><label class="lbl-sm" data-i18n="lbl_min_up">Мин. отдано (ГБ):</label><input type="number" id="sum-filter-uploaded" class="form-control" oninput="applySummaryFilters()"></div>
             <div class="row-gap" style="align-self:flex-end;">
+                <button class="btn btn-secondary" onclick="loadSummary(true)" data-i18n="btn_refresh">🔄 Обновить</button>
                 <button class="btn btn-secondary" onclick="resetSummaryFilters()" data-i18n="btn_reset">Сброс</button>
                 <button class="btn" onclick="exportFilteredSummaryCSV()" data-i18n="btn_export_csv">📥 Экспорт выборки</button>
             </div>
@@ -311,6 +312,30 @@
         <div class="grid-2">
             <div class="form-group"><label data-i18n="lbl_qb_user">Логин WebUI qBittorrent:</label><input type="text" id="setting-qb-user" class="form-control" placeholder="admin"></div>
             <div class="form-group"><label data-i18n="lbl_qb_pass">Пароль WebUI qBittorrent:</label><input type="password" id="setting-qb-password" class="form-control" placeholder="если есть" data-i18n-ph="qb_pass_ph"></div>
+        </div>
+        <div class="form-group">
+            <label data-i18n="lbl_snap_interval">Интервал снимков статистики в SQLite (сетка суток):</label>
+            <select id="setting-snapshot-interval" class="form-control">
+                <option value="1">1 мин</option>
+                <option value="2">2 мин</option>
+                <option value="3">3 мин</option>
+                <option value="4">4 мин</option>
+                <option value="5">5 мин</option>
+                <option value="6">6 мин</option>
+                <option value="10">10 мин</option>
+                <option value="12">12 мин</option>
+                <option value="15">15 мин</option>
+                <option value="20">20 мин</option>
+                <option value="30">30 мин</option>
+                <option value="60">60 мин (1 ч)</option>
+                <option value="120">120 мин (2 ч)</option>
+                <option value="180">180 мин (3 ч)</option>
+                <option value="240">240 мин (4 ч)</option>
+                <option value="360">360 мин (6 ч)</option>
+                <option value="480">480 мин (8 ч)</option>
+                <option value="720">720 мин (12 ч)</option>
+                <option value="1440">1440 мин (24 ч)</option>
+            </select>
         </div>
         <div class="card-title mt-10" data-i18n="modal_weights">⚖️ ВЕСА УМНОГО ПРОГНОЗА (ПРИВОДЯТСЯ К 100%)</div>
         <div class="grid-3">

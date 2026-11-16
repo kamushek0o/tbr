@@ -133,6 +133,7 @@ const I18N = {
         lbl_qb_user: 'Логин WebUI qBittorrent:',
         lbl_qb_pass: 'Пароль WebUI qBittorrent:',
         qb_pass_ph: 'если есть',
+        lbl_snap_interval: 'Интервал снимков статистики в SQLite (сетка суток):',
         modal_weights: '⚖️ ВЕСА УМНОГО ПРОГНОЗА (ПРИВОДЯТСЯ К 100%)',
         lbl_w1: '1 неделя (168ч):',
         lbl_w2: '2 неделя (336ч):',
@@ -148,7 +149,7 @@ const I18N = {
         dead_scanned: 'Проверено: {n}',
         dead_found: 'Проблемных: {n}',
         dead_none: '🎉 Мёртвых раздач и ошибок трекеров не найдено!',
-        dead_paused: '✅ На паузу',
+        dead_paused: '✅ На паузе',
         dead_pause_confirm: 'Поставить на паузу все найденные раздачи ({n} шт.)?',
         dead_paused_msg: 'Поставлено на паузу: {n} шт.',
         confirm_qb_stop: 'Закрыть qBittorrent?',
@@ -350,6 +351,7 @@ const I18N = {
         lbl_qb_user: 'qBittorrent WebUI User:',
         lbl_qb_pass: 'qBittorrent WebUI Password:',
         qb_pass_ph: 'if enabled',
+        lbl_snap_interval: 'SQLite Snapshot Interval (daily grid):',
         modal_weights: '⚖️ SMART FORECAST WEIGHTS (NORMALIZED TO 100%)',
         lbl_w1: 'Week 1 (168h):',
         lbl_w2: 'Week 2 (336h):',
@@ -616,6 +618,7 @@ async function openSettingsModal() {
     document.getElementById('setting-qb-user').value = d.qb_user || 'admin';
     document.getElementById('setting-qb-password').value = '';
     document.getElementById('setting-qb-password').placeholder = d.has_qb_password ? t('qb_pwd_set_ph') : t('qb_pass_ph');
+    document.getElementById('setting-snapshot-interval').value = d.snapshot_interval || 60;
     document.getElementById('setting-w1').value = d.w1;
     document.getElementById('setting-w2').value = d.w2;
     document.getElementById('setting-w3').value = d.w3;
@@ -635,6 +638,7 @@ async function saveSettings() {
         qb_port: document.getElementById('setting-qb-port').value.trim(),
         qb_user: document.getElementById('setting-qb-user').value.trim() || 'admin',
         qb_password: document.getElementById('setting-qb-password').value,
+        snapshot_interval: parseInt(document.getElementById('setting-snapshot-interval').value) || 60,
         w1: parseInt(document.getElementById('setting-w1').value) || 0,
         w2: parseInt(document.getElementById('setting-w2').value) || 0,
         w3: parseInt(document.getElementById('setting-w3').value) || 0

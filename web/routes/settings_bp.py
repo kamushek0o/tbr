@@ -5,6 +5,8 @@ from flask import Blueprint, request, jsonify, render_template, redirect, sessio
 from utils.config import cfg
 from core.qb_api import reset_qb_session
 from core.autostart import is_autostart_enabled
+from core.summary_tracker import summary_tracker
+from core.scheduler import ALLOWED_INTERVALS, normalize_interval
 from web.security import get_csrf_token, is_allowed_qb_ip
 
 settings_bp = Blueprint('settings_bp', __name__)
@@ -52,6 +54,7 @@ def api_settings():
             'w1': cfg.getint('Weight_W1', 70),
             'w2': cfg.getint('Weight_W2', 30),
             'w3': cfg.getint('Weight_W3', 0),
+            'snapshot_interval': normalize_interval(cfg.getint('Snapshot_Interval_Min', 60)),
             'autostart': is_autostart_enabled()
         })
 
@@ -91,6 +94,13 @@ def api_settings():
     except (ValueError, TypeError):
         return jsonify({'success': False, 'error': 'Веса должны быть >= 0, и хотя бы один вес > 0'}), 400
 
+    try:
+        snap_iv = int(data.get('snapshot_interval', cfg.getint('Snapshot_Interval_Min', 60)))
+        if snap_iv not in ALLOWED_INTERVALS:
+            raise ValueError
+    except (ValueError, TypeError):
+        return jsonify({'success': False, 'error': 'Недопустимый интервал замеров'}), 400
+
     new_host = str(data.get('web_host', '127.0.0.1')).strip() or '127.0.0.1'
     new_pass = str(data.get('web_password', '')).strip()
     effective_pass = new_pass if new_pass else cfg.get('Web_Password', '').strip()
@@ -100,6 +110,8 @@ def api_settings():
 
     qb_user = str(data.get('qb_user', 'admin')).strip() or 'admin'
     qb_pass = str(data.get('qb_password', ''))
+
+    old_snap_iv = normalize_interval(cfg.getint('Snapshot_Interval_Min', 60))
 
     cfg.set('Web_Port', new_p)
     cfg.set('Web_Host', new_host)
@@ -113,9 +125,12 @@ def api_settings():
     cfg.set('Weight_W1', w1)
     cfg.set('Weight_W2', w2)
     cfg.set('Weight_W3', w3)
+    cfg.set('Snapshot_Interval_Min', snap_iv)
     cfg.save()
 
     reset_qb_session()
+    if old_snap_iv != snap_iv:
+        summary_tracker.notify_interval_changed()
 
     net_changed = (old_p != new_p) or (old_h != new_host)
     if net_changed:
