@@ -3,7 +3,7 @@ import os
 import time
 import csv
 import datetime
-from utils.helpers import LOG_FOLDER, format_file_size, sanitize_csv_cell, write_log, write_error_log
+from utils.helpers import LOG_FOLDER, format_file_size, sanitize_csv_cell, write_error_log
 from core.history_db import HistoryDB, AUTO_FOLDER, MANUAL_FOLDER
 from core.forecaster import fmt_ratio_h, fmt_speed, calculate_smart_forecast, export_forecast_csv
 from core.scheduler import SnapshotScheduler, MIN_DELTA_SEC
@@ -18,8 +18,7 @@ class SummaryTracker:
         self._get_summaries_fn = None
         self.scheduler = SnapshotScheduler(
             db=self.db,
-            on_record_fn=self.record_snapshot,
-            on_csv_fn=self._export_hourly_csv_only
+            on_record_fn=self.record_snapshot
         )
 
     def record_snapshot(self, summaries, min_delta_sec=MIN_DELTA_SEC):
@@ -143,7 +142,7 @@ class SummaryTracker:
         rows = self.db.get_snapshots_since(now_ts - (14 * 86400))
 
         daily_map = {}
-        day_hour_totals = {}  # (YYYY-MM-DD, hour) -> суммарные байты за этот час этого дня
+        day_hour_totals = {}
         prev_row = None
 
         for r in rows:
@@ -154,7 +153,6 @@ class SummaryTracker:
                 delta = max(0, r['total_uploaded'] - prev_row['total_uploaded'])
 
                 if dt_sec >= MIN_DELTA_SEC and delta > 0:
-                    # Распределяем delta пропорционально пересечению с каждым 1-часовым бакетом
                     cur_dt = datetime.datetime.fromtimestamp(t1).replace(minute=0, second=0, microsecond=0)
                     cur_ts = cur_dt.timestamp()
                     while cur_ts < t2:
@@ -178,7 +176,6 @@ class SummaryTracker:
         for (_, h), val in day_hour_totals.items():
             hourly_buckets[h].append(val)
 
-        # Вариант Б: крайняя правая точка = ближайший ровный час + 1
         now_dt = datetime.datetime.now()
         nearest_hour = (now_dt.hour + (1 if now_dt.minute >= 30 else 0)) % 24
         rightmost_hour = (nearest_hour + 1) % 24
@@ -192,7 +189,6 @@ class SummaryTracker:
             for h in ordered_hours
         ]
 
-        # Топ-5 раздач за 24ч (с фолбэком)
         stats = self.get_stats(summaries)
         items = stats.get('items', [])
         top_items = sorted(items, key=lambda x: x.get('delta_24h', 0), reverse=True)[:5]
@@ -233,70 +229,6 @@ class SummaryTracker:
 
     def export_forecast_csv(self, forecast_data):
         return export_forecast_csv(self.manual_folder, forecast_data)
-
-    def _export_hourly_csv_only(self, summaries):
-        if not summaries:
-            return None
-        stats = self.get_stats(summaries)
-
-        ts = datetime.datetime.now().strftime('%Y%m%d_%H00')
-        filename = f"summary_hourly_{ts}.csv"
-        filepath = os.path.join(self.auto_folder, filename)
-        latest_path = os.path.join(self.auto_folder, "summary_auto_latest.csv")
-
-        header_lines = [
-            f"# === ПОЧАСОВАЯ ВЫГРУЗКА СВОДКИ РАЗДАЧ (АВТО) ===",
-            f"# Дата выгрузки: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            f"# Всего раздач: {stats['total_torrents']}",
-            f"# Общий объем: {stats['total_size_fmt']}",
-            f"# Всего отдано: {stats['total_uploaded_fmt']}",
-            f"# Сумма за 1 час: {stats['global_hour_volume_fmt']} ({stats['global_hour_speed_fmt']})",
-            f"# Объем в день: {stats['global_day_volume_fmt']} ({stats['global_day_speed_fmt']})",
-            f"# Ratio/ч: {stats['global_ratio_h_all_fmt']} (всего) | {stats['global_ratio_h_day_fmt']} (день) | {stats['global_ratio_h_hour_fmt']} (час)",
-            f"# =========================================="
-        ]
-
-        for target in [filepath, latest_path]:
-            try:
-                with open(target, 'w', encoding='utf-8-sig', newline='') as f:
-                    f.write('\n'.join(header_lines) + '\n')
-                    w = csv.writer(f, delimiter=';')
-                    w.writerow([
-                        'Имя', 'Хэш', 'Размер (байт)', 'Отдано (байт)', 'Ratio',
-                        'Ср. скорость (всё время)', 'Скорость за 1ч', 'Скорость за 24ч',
-                        'МБ/ч', 'МБ/день',
-                        'Ratio/ч (всего)', 'Ratio/ч (1ч)', 'Ratio/ч (24ч)',
-                        'Активно (сек)', 'Дата создания'
-                    ])
-                    for s in stats['items']:
-                        w.writerow([
-                            sanitize_csv_cell(s.get('name', '')),
-                            sanitize_csv_cell(s.get('hash_id', '')),
-                            s.get('size', 0),
-                            s.get('uploaded', 0),
-                            f"{s.get('ratio', 0.0):.2f}",
-                            sanitize_csv_cell(s.get('speed_all_time_fmt', '0 B/s')),
-                            sanitize_csv_cell(s.get('speed_1h_fmt', '0 B/s')),
-                            sanitize_csv_cell(s.get('speed_24h_fmt', '0 B/s')),
-                            sanitize_csv_cell(s.get('vol_hour_fmt', '0.00 МБ/ч')),
-                            sanitize_csv_cell(s.get('vol_day_fmt', '0.00 МБ/день')),
-                            sanitize_csv_cell(s.get('ratio_h_all_fmt', '0.000 /ч')),
-                            sanitize_csv_cell(s.get('ratio_h_hour_fmt', '0.000 /ч')),
-                            sanitize_csv_cell(s.get('ratio_h_day_fmt', '0.000 /ч')),
-                            s.get('active_seconds', 0),
-                            sanitize_csv_cell(s.get('created', ''))
-                        ])
-            except Exception as e:
-                write_error_log("Ошибка экспорта почасового CSV", e)
-
-        write_log("summary", f"Авто-сводка выгружена в {filename}")
-        return filepath
-
-    def export_hourly_csv(self, summaries):
-        if not summaries:
-            return None
-        self.record_snapshot(summaries, min_delta_sec=0)
-        return self._export_hourly_csv_only(summaries)
 
     def save_manual_csv(self, items):
         ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')

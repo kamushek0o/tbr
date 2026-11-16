@@ -33,27 +33,16 @@ def compute_next_slot(now_ts, interval_min):
 
 
 class SnapshotScheduler:
-    def __init__(self, db, on_record_fn, on_csv_fn):
+    def __init__(self, db, on_record_fn):
         self.db = db
         self.on_record_fn = on_record_fn
-        self.on_csv_fn = on_csv_fn
         self._running = False
         self._thread = None
         self._wake_event = threading.Event()
-        self._last_csv_hour = None
         self._last_downsample_ts = 0.0
 
     def notify_interval_changed(self):
         self._wake_event.set()
-
-    def _should_export_csv(self, now_dt, interval_min):
-        if interval_min >= 60:
-            return True
-        cur_hour_key = now_dt.strftime('%Y%m%d_%H')
-        if self._last_csv_hour != cur_hour_key:
-            self._last_csv_hour = cur_hour_key
-            return True
-        return False
 
     def _maybe_downsample(self, now_ts):
         if now_ts - self._last_downsample_ts >= 21600:  # раз в 6 часов
@@ -71,10 +60,7 @@ class SnapshotScheduler:
                 self._last_downsample_ts = time.time()
                 sums = get_summaries_fn()
                 if sums:
-                    recorded = self.on_record_fn(sums, min_delta_sec=MIN_DELTA_SEC)
-                    if recorded or self._last_csv_hour is None:
-                        self._last_csv_hour = datetime.datetime.now().strftime('%Y%m%d_%H')
-                        self.on_csv_fn(sums)
+                    self.on_record_fn(sums, min_delta_sec=MIN_DELTA_SEC)
             except Exception as e:
                 write_error_log("Ошибка начального замера планировщика", e)
 
@@ -93,8 +79,6 @@ class SnapshotScheduler:
                         sums = get_summaries_fn()
                         if sums:
                             self.on_record_fn(sums, min_delta_sec=MIN_DELTA_SEC)
-                            if self._should_export_csv(datetime.datetime.now(), cur_interval):
-                                self.on_csv_fn(sums)
                         self._maybe_downsample(time.time())
                     except Exception as e:
                         write_error_log("Ошибка циклического замера планировщика", e)
