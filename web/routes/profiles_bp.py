@@ -45,25 +45,26 @@ def api_profiles_create():
     data = request.get_json(silent=True) or {}
     name = data.get('name', '').strip()
     role = data.get('role', 'viewer')
-    pid, raw_token = profiles_db.create_profile(name, role)
-    if not pid:
-        return jsonify({'success': False, 'error': 'Не удалось создать профиль'}), 500
-    return jsonify({'success': True, 'id': pid, 'token': raw_token})
-
-
-@profiles_bp.route('/api/profiles/reissue', methods=['POST'])
-@profiles_bp.route('/api/profiles/create', methods=['POST'])
-def api_profiles_create():
-    if g.get('role') != 'admin':
-        return jsonify({'error': 'Только для Admin'}), 403
-    data = request.get_json(silent=True) or {}
-    name = data.get('name', '').strip()
-    role = data.get('role', 'viewer')
     custom_token = data.get('token', '')
     pid, raw_token, err = profiles_db.create_profile(name, role, custom_token=custom_token)
     if not pid:
         return jsonify({'success': False, 'error': err or 'Не удалось создать профиль'}), 400
     return jsonify({'success': True, 'id': pid, 'token': raw_token})
+
+
+@profiles_bp.route('/api/profiles/reissue', methods=['POST'])
+def api_profiles_reissue():
+    if g.get('role') != 'admin':
+        return jsonify({'error': 'Только для Admin'}), 403
+    data = request.get_json(silent=True) or {}
+    pid = data.get('id')
+    if not pid:
+        return jsonify({'success': False, 'error': 'Не указан ID'}), 400
+    new_tok = profiles_db.reissue_token(pid)
+    if not new_tok:
+        return jsonify({'success': False, 'error': 'Профиль не найден'}), 404
+    return jsonify({'success': True, 'token': new_tok})
+
 
 @profiles_bp.route('/api/profiles/delete', methods=['POST'])
 def api_profiles_delete():
