@@ -32,11 +32,9 @@ exit /b 1
 echo.
 echo [🔧] Проверка среды и снятие блокировок...
 
-:: 1. Убиваем запущенный в фоне tbr.exe, чтобы не словить WinError 32
 taskkill /F /IM tbr.exe >nul 2>&1
 timeout /t 1 /nobreak >nul
 
-:: 2. Проверяем наличие Python
 python --version >nul 2>&1
 if errorlevel 1 (
     echo ❌ Python не найден в системе! Установи Python 3.10+ с галочкой Add to PATH.
@@ -44,15 +42,14 @@ if errorlevel 1 (
     exit /b 1
 )
 
-:: 3. Если нет PyInstaller или Flask — ставим сами
-python -c "import PyInstaller, flask" >nul 2>&1
+python -c "import PyInstaller, flask, pystray, PIL" >nul 2>&1
 if errorlevel 1 (
-    echo [📦] Не найдены зависимости. Доустанавливаю Flask и PyInstaller...
+    echo [📦] Доустанавливаю библиотеки из requirements.txt и PyInstaller...
     python -m pip install --upgrade pip
     if exist "%ROOT%\requirements.txt" (
         python -m pip install -r "%ROOT%\requirements.txt" pyinstaller
     ) else (
-        python -m pip install flask pyinstaller
+        python -m pip install flask pystray pillow pyinstaller
     )
     if errorlevel 1 (
         echo ❌ Не удалось установить зависимости!

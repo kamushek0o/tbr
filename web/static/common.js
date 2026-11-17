@@ -607,12 +607,15 @@ async function loadProfilesList() {
 
 async function createProfile() {
     const name = document.getElementById('new-profile-name').value.trim();
+    const token = document.getElementById('new-profile-token').value.trim();
     const role = document.getElementById('new-profile-role').value;
-    const res = await api('/api/profiles/create', 'POST', { name, role });
+    const res = await api('/api/profiles/create', 'POST', { name, role, token });
     const d = await res.json();
     if (!res.ok || !d.success) return alert(d.error || 'Ошибка');
     document.getElementById('new-profile-name').value = '';
-    prompt('Токен создан (сохрани сейчас — больше он не покажется):', d.token);
+    document.getElementById('new-profile-token').value = '';
+    const link = `${window.location.origin}/login?token=${encodeURIComponent(d.token)}`;
+    prompt(`Готово! Пароль/токен: ${d.token}\n\nМагическая ссылка для входа в 1 клик (скопируй её):`, link);
     loadProfilesList();
 }
 
@@ -621,9 +624,11 @@ async function reissueProfile(id) {
     const res = await api('/api/profiles/reissue', 'POST', { id });
     const d = await res.json();
     if (!res.ok || !d.success) return alert(d.error || 'Ошибка');
-    prompt('Новый токен (сохрани сейчас):', d.token);
+    const link = `${window.location.origin}/login?token=${encodeURIComponent(d.token)}`;
+    prompt(`Новый токен: ${d.token}\n\nМагическая ссылка для входа в 1 клик:`, link);
     loadProfilesList();
 }
+
 
 async function deleteProfile(id) {
     if (!confirm('Удалить профиль?')) return;

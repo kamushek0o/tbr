@@ -146,10 +146,20 @@ class ProfilesDB:
             except Exception:
                 return []
 
-    def create_profile(self, name, role):
+    def create_profile(self, name, role, custom_token=None):
         role = 'admin' if role == 'admin' else 'viewer'
         clean_name = str(name or '').strip()[:48] or ('Admin' if role == 'admin' else 'Viewer')
-        raw_token = "tbr_" + secrets.token_urlsafe(24)
+        custom = str(custom_token or '').strip()
+
+        if custom:
+            if len(custom) < 3:
+                return None, None, "Пароль должен быть не короче 3 символов"
+            raw_token = custom
+            prefix = (raw_token[:2] + "***") if len(raw_token) <= 6 else (raw_token[:4] + "...")
+        else:
+            raw_token = "tbr_" + secrets.token_urlsafe(24)
+            prefix = raw_token[:10] + "..."
+
         with self._lock:
             try:
                 with self._get_conn() as conn:
@@ -157,16 +167,17 @@ class ProfilesDB:
                     cur.execute(
                         """INSERT INTO profiles (name, role, token_hash, token_prefix, ui_settings_json, created_at)
                            VALUES (?, ?, ?, ?, ?, ?)""",
-                        (clean_name, role, hash_token(raw_token), raw_token[:10] + "...", json.dumps(DEFAULT_UI_SETTINGS), time.time())
+                        (clean_name, role, hash_token(raw_token), prefix, json.dumps(DEFAULT_UI_SETTINGS), time.time())
                     )
                     conn.commit()
-                    return cur.lastrowid, raw_token
+                    return cur.lastrowid, raw_token, None
+            except sqlite3.IntegrityError:
+                return None, None, "Такой пароль/токен уже занят другим профилем!"
             except Exception as e:
                 write_error_log("Ошибка create_profile", e)
-                return None, None
+                return None, None, str(e)
 
     def reissue_token(self, profile_id):
-        """Перевыпускает токен, НЕ сбрасывая ui_settings_json."""
         raw_token = "tbr_" + secrets.token_urlsafe(24)
         with self._lock:
             try:
@@ -222,7 +233,6 @@ class ProfilesDB:
                 return merged
 
     def reset_admin_token_local(self):
-        """Локальный сброс/перевыпуск токена первого Admin через GUI."""
         adm = self.get_default_admin()
         if not adm:
             self._init_db()
