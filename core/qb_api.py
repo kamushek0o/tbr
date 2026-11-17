@@ -228,6 +228,13 @@ def remove_torrent_tags(qb_ip, qb_port, hash_val, tags):
     return bool(hash_val and tags and _post_qb(qb_ip, qb_port, 'removeTags', {'hashes': hash_val, 'tags': tags}))
 
 
+def delete_torrents(qb_ip, qb_port, hashes, delete_files=False):
+    if not hashes:
+        return False
+    payload = {'hashes': hashes, 'deleteFiles': 'true' if delete_files else 'false'}
+    return _post_qb(qb_ip, qb_port, 'delete', payload)
+
+
 def send_qb_command(qb_ip, qb_port, action, hash_val):
     if not hash_val:
         return False

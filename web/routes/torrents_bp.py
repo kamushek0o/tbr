@@ -1,19 +1,16 @@
 # web/routes/torrents_bp.py
-import os
 import time
-import shutil
 from flask import Blueprint, request, jsonify
 
 from utils.config import cfg
-from utils.helpers import format_file_size, BT_BACKUP_PATH, write_error_log
-from utils.bencode import decode_bencode, encode_bencode
+from utils.helpers import format_file_size
 from core.torrent_parser import get_all_torrents, force_clear_cache
 from core.qb_api import (
     detect_qbittorrent_port, get_live_torrent_info, send_qb_command,
-    is_qb_running, close_qbittorrent, launch_qbittorrent, get_qb_executable_path,
-    scan_dead_torrents
+    is_qb_running, close_qbittorrent, launch_qbittorrent, scan_dead_torrents
 )
 from core.autostart import set_autostart, is_autostart_enabled
+from core.fastresume_merger import run_fastresume_merge, execute_source_deletion, VALID_DELETE_MODES
 from web.security import HASH_RE
 
 torrents_bp = Blueprint('torrents_bp', __name__)
@@ -81,15 +78,9 @@ def api_torrents():
             name = t_id
 
         result.append({
-            'hash': t_id,
-            'name': name,
-            'size': size,
-            'size_fmt': format_file_size(size),
-            'uploaded': uploaded,
-            'uploaded_fmt': format_file_size(uploaded),
-            'ratio': ratio,
-            'state': state,
-            'save_path': save_path,
+            'hash': t_id, 'name': name, 'size': size, 'size_fmt': format_file_size(size),
+            'uploaded': uploaded, 'uploaded_fmt': format_file_size(uploaded),
+            'ratio': ratio, 'state': state, 'save_path': save_path,
             'active_seconds': static.get('active_seconds', 0)
         })
     result.sort(key=lambda x: str(x['name']).lower())
@@ -151,95 +142,34 @@ def api_merger_run():
     data = request.get_json(silent=True) or {}
     old_hash = str(data.get('old_hash', '')).strip()
     new_hash = str(data.get('new_hash', '')).strip()
-    log = []
+    delete_mode = str(data.get('delete_mode', 'none')).strip()
+    if delete_mode not in VALID_DELETE_MODES:
+        delete_mode = 'none'
 
     if not HASH_RE.fullmatch(old_hash) or not HASH_RE.fullmatch(new_hash) or old_hash.lower() == new_hash.lower():
         return jsonify({'success': False, 'log': ['❌ Некорректные или одинаковые хэши торрентов!']}), 400
 
-    old_file, new_file = None, None
-    if os.path.exists(BT_BACKUP_PATH):
-        for f in os.listdir(BT_BACKUP_PATH):
-            if f.lower() == (old_hash.lower() + '.fastresume'):
-                old_file = os.path.join(BT_BACKUP_PATH, f)
-            if f.lower() == (new_hash.lower() + '.fastresume'):
-                new_file = os.path.join(BT_BACKUP_PATH, f)
+    ok, log, confirm_info, code = run_fastresume_merge(old_hash, new_hash, delete_mode=delete_mode)
+    return jsonify({
+        'success': ok,
+        'log': log,
+        'needs_delete_confirm': bool(ok and confirm_info),
+        'confirm_info': confirm_info
+    }), code
 
-    if not old_file or not os.path.exists(old_file):
-        return jsonify({'success': False, 'log': [f'❌ Файл {old_hash}.fastresume не найден!']}), 404
-    if not new_file or not os.path.exists(new_file):
-        return jsonify({'success': False, 'log': [f'❌ Файл {new_hash}.fastresume не найден!']}), 404
 
-    exe_path = get_qb_executable_path()
-    was_running = is_qb_running()
+@torrents_bp.route('/api/merger/delete_source', methods=['POST'])
+def api_merger_delete_source():
+    data = request.get_json(silent=True) or {}
+    old_hash = str(data.get('old_hash', '')).strip()
+    new_hash = str(data.get('new_hash', '')).strip()
+    delete_mode = str(data.get('delete_mode', '')).strip()
+    confirmed = bool(data.get('confirmed', False))
 
-    try:
-        if was_running:
-            log.append("🛑 Завершаем qBittorrent во избежание порчи данных...")
-            if not close_qbittorrent():
-                raise RuntimeError("Не удалось завершить qBittorrent (возможно, клиент запущен от имени Администратора).")
-            time.sleep(1.0)
+    if not confirmed or delete_mode not in ('safe', 'force'):
+        return jsonify({'success': False, 'log': ['❌ Удаление не подтверждено!']}), 400
+    if not HASH_RE.fullmatch(old_hash) or not HASH_RE.fullmatch(new_hash) or old_hash.lower() == new_hash.lower():
+        return jsonify({'success': False, 'log': ['❌ Некорректные или одинаковые хэши!']}), 400
 
-        with open(old_file, 'rb') as f:
-            old_data = decode_bencode(f.read())
-        with open(new_file, 'rb') as f:
-            new_data = decode_bencode(f.read())
-
-        if not isinstance(old_data, dict) or not isinstance(new_data, dict):
-            raise ValueError("Повреждённый формат .fastresume (ожидался словарь bencode).")
-
-        fields = ['total_uploaded', 'total_downloaded', 'active_time', 'seeding_time', 'added_time', 'completed_time']
-        copied = 0
-        for fld in fields:
-            fld_b = fld.encode('ascii')
-            val = old_data.get(fld) if fld in old_data else old_data.get(fld_b)
-            if val is not None:
-                if fld_b in new_data or any(isinstance(k, bytes) for k in new_data.keys()):
-                    new_data[fld_b] = val
-                    new_data.pop(fld, None)
-                else:
-                    new_data[fld] = val
-                    new_data.pop(fld_b, None)
-                log.append(f"✅ Скопировано: {fld} = {val}")
-                copied += 1
-
-        if copied == 0:
-            raise ValueError("Не найдено подходящих полей статистики для копирования!")
-
-        encoded_bytes = encode_bencode(new_data)
-
-        # Контрольная перепроверка собранного bencode перед записью на диск
-        validated = decode_bencode(encoded_bytes)
-        if not isinstance(validated, dict) or len(validated) != len(new_data):
-            raise ValueError("Контрольная проверка нового bencode не пройдена!")
-        log.append("🔍 Валидация нового bencode пройдена.")
-
-        bak = new_file + '.bak'
-        if not os.path.exists(bak):
-            shutil.copy2(new_file, bak)
-            log.append(f"📦 Бэкап создан: {os.path.basename(bak)}")
-
-        # Атомарная запись через временный файл + fsync + replace
-        tmp_file = new_file + '.tmp'
-        try:
-            with open(tmp_file, 'wb') as f:
-                f.write(encoded_bytes)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_file, new_file)
-        finally:
-            if os.path.exists(tmp_file):
-                try:
-                    os.remove(tmp_file)
-                except OSError:
-                    pass
-
-        log.append("🎉 Статистика успешно и атомарно записана в .fastresume!")
-        return jsonify({'success': True, 'log': log})
-    except Exception as e:
-        write_error_log("Ошибка merger API", e)
-        log.append(f"❌ Ошибка: {e}")
-        return jsonify({'success': False, 'log': log}), 500
-    finally:
-        if was_running and not is_qb_running():
-            log.append("🚀 Перезапуск qBittorrent...")
-            launch_qbittorrent(exe_path)
+    ok, log = execute_source_deletion(old_hash, new_hash, delete_mode)
+    return jsonify({'success': ok, 'log': log}), (200 if ok else 400)

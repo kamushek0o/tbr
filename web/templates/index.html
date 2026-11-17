@@ -94,6 +94,15 @@
             <p class="muted-text mb-10" data-i18n="merger_desc">qBittorrent выгружается перед подменой и перезапускается автоматически — бенкод не пострадает.</p>
             <div class="form-group"><label data-i18n="lbl_old_tor">1. Старая раздача (источник):</label><select id="merger-old" class="form-control"></select></div>
             <div class="form-group"><label data-i18n="lbl_new_tor">2. Новая раздача (приёмник):</label><select id="merger-new" class="form-control"></select></div>
+            <div class="form-group">
+                <label data-i18n="lbl_del_mode">3. Исходная раздача после переноса:</label>
+                <select id="merger-delete-mode" class="form-control" onchange="onMergerDeleteModeChange()">
+                    <option value="none" data-i18n="del_mode_none">Не удалять (оставить всё)</option>
+                    <option value="safe" data-i18n="del_mode_safe">Удалить всё (безопасно: с проверкой путей)</option>
+                    <option value="force" data-i18n="del_mode_force">Удалить всё (принудительно: файлы с диска)</option>
+                </select>
+            </div>
+            <div id="merger-force-warn" class="lbl-xs hidden" style="color: var(--danger); margin-bottom: 8px;" data-i18n="del_force_warn">⚠️ ОПАСНО: принудительный режим удалит файлы с диска, даже если пути исходника и получателя совпадают!</div>
             <button class="btn w-full center-btn mt-10" onclick="runMerger()" data-i18n="btn_merge">🚀 ПЕРЕНЕСТИ СТАТИСТИКУ</button>
         </div>
         <div class="card mt-12">
