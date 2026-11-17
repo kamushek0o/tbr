@@ -4,6 +4,7 @@ import sys
 import time
 import threading
 from flask import Flask
+from werkzeug.exceptions import HTTPException
 
 from utils.config import cfg
 from utils.helpers import write_error_log
@@ -32,6 +33,15 @@ app.secret_key = os.urandom(24)
 app.config['BUILD_VER'] = str(int(time.time()))
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+
+
+@app.errorhandler(Exception)
+def handle_unhandled_exception(e):
+    if isinstance(e, HTTPException):
+        return e
+    write_error_log("Flask HTTP 500", e)
+    return "Internal Server Error", 500
+
 
 register_security(app)
 app.register_blueprint(torrents_bp)
