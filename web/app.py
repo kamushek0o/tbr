@@ -15,6 +15,7 @@ from web.routes.torrents_bp import torrents_bp
 from web.routes.analytics_bp import analytics_bp
 from web.routes.automation_bp import automation_bp
 from web.routes.settings_bp import settings_bp
+from web.routes.profiles_bp import profiles_bp
 
 
 def get_resource_path(relative_path):
@@ -35,6 +36,7 @@ app.register_blueprint(torrents_bp)
 app.register_blueprint(analytics_bp)
 app.register_blueprint(automation_bp)
 app.register_blueprint(settings_bp)
+app.register_blueprint(profiles_bp)
 
 
 class WebServerController:

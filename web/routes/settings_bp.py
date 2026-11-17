@@ -7,6 +7,7 @@ from core.qb_api import reset_qb_session
 from core.autostart import is_autostart_enabled
 from core.summary_tracker import summary_tracker
 from core.scheduler import ALLOWED_INTERVALS, normalize_interval
+from core.profiles_db import profiles_db
 from web.security import get_csrf_token, is_allowed_qb_ip
 
 settings_bp = Blueprint('settings_bp', __name__)
@@ -16,17 +17,29 @@ settings_bp = Blueprint('settings_bp', __name__)
 def login():
     if request.method == 'GET':
         return render_template('login.html', csrf_token=get_csrf_token(), error=None)
-    pwd = request.form.get('password', '')
+    pwd = request.form.get('password', '').strip()
     real_pwd = cfg.get('Web_Password', '')
+
     if real_pwd and hmac.compare_digest(pwd, real_pwd):
         session['authenticated'] = True
+        adm = profiles_db.get_default_admin()
+        if adm:
+            session['profile_id'] = adm['id']
         return redirect('/')
-    return render_template('login.html', csrf_token=get_csrf_token(), error='Неверный пароль!'), 401
+
+    prof = profiles_db.authenticate_token(pwd)
+    if prof:
+        session['authenticated'] = True
+        session['profile_id'] = prof['id']
+        return redirect('/')
+
+    return render_template('login.html', csrf_token=get_csrf_token(), error='Неверный пароль или токен!'), 401
 
 
 @settings_bp.route('/logout', methods=['POST', 'GET'])
 def logout():
     session.pop('authenticated', None)
+    session.pop('profile_id', None)
     return redirect('/login')
 
 

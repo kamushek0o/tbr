@@ -17,43 +17,58 @@ async function loadAnalyticsCharts() {
         const res = await api('/api/analytics/charts');
         const d = await res.json();
 
+        const cs = getComputedStyle(document.documentElement);
+        const tickColor = cs.getPropertyValue('--text-muted').trim() || '#95a5a6';
+        const gridColor = cs.getPropertyValue('--border').trim() || 'rgba(255,255,255,0.08)';
+        const ui = typeof getUiSettings === 'function' ? getUiSettings() : {};
+        const chCfg = ui.charts || {};
+
+        const makeBg = (canvasId, key, defColor, defOp) => {
+            const c = chCfg[key] || { color: defColor, gradient: false, opacity: defOp };
+            const rgb = typeof hexToRgb === 'function' ? hexToRgb(c.color) : { r: 46, g: 204, b: 113 };
+            const op = c.opacity ?? defOp;
+            const rgbaMain = `rgba(${rgb.r},${rgb.g},${rgb.b},${op})`;
+            if (!c.gradient) return rgbaMain;
+            const ctx = document.getElementById(canvasId).getContext('2d');
+            const grad = ctx.createLinearGradient(0, 0, 0, 200);
+            grad.addColorStop(0, rgbaMain);
+            grad.addColorStop(1, `rgba(${rgb.r},${rgb.g},${rgb.b},0.02)`);
+            return grad;
+        };
+
         const commonOpts = {
             responsive: true,
             maintainAspectRatio: false,
             plugins: { legend: { display: false } },
             scales: {
-                x: { ticks: { color: '#95a5a6', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } },
-                y: { ticks: { color: '#95a5a6', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' }, beginAtZero: true }
+                x: { ticks: { color: tickColor, font: { size: 10 } }, grid: { color: gridColor } },
+                y: { ticks: { color: tickColor, font: { size: 10 } }, grid: { color: gridColor }, beginAtZero: true }
             }
         };
 
+        const cDaily = chCfg.daily || { color: '#2ecc71', opacity: 0.7 };
         if (chartDaily) chartDaily.destroy();
         chartDaily = new Chart(document.getElementById('chart-daily'), {
             type: 'bar',
             data: {
                 labels: d.daily?.labels || [],
-                datasets: [{ data: d.daily?.values || [], backgroundColor: 'rgba(46, 204, 113, 0.7)', borderColor: '#2ecc71', borderWidth: 1, borderRadius: 4 }]
+                datasets: [{ data: d.daily?.values || [], backgroundColor: makeBg('chart-daily', 'daily', '#2ecc71', 0.7), borderColor: cDaily.color, borderWidth: 1, borderRadius: 4 }]
             },
             options: commonOpts
         });
 
+        const cTop = chCfg.top5 || { color: '#e67e22', opacity: 0.7 };
         if (chartTop5) chartTop5.destroy();
         chartTop5 = new Chart(document.getElementById('chart-top5'), {
             type: 'bar',
             data: {
                 labels: d.top5?.labels || [],
-                datasets: [{ data: d.top5?.values || [], backgroundColor: 'rgba(230, 126, 34, 0.7)', borderColor: '#e67e22', borderWidth: 1, borderRadius: 4 }]
+                datasets: [{ data: d.top5?.values || [], backgroundColor: makeBg('chart-top5', 'top5', '#e67e22', 0.7), borderColor: cTop.color, borderWidth: 1, borderRadius: 4 }]
             },
-            options: {
-                ...commonOpts,
-                indexAxis: 'y',
-                scales: {
-                    x: { ticks: { color: '#95a5a6', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' }, beginAtZero: true },
-                    y: { ticks: { color: '#95a5a6', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } }
-                }
-            }
+            options: { ...commonOpts, indexAxis: 'y' }
         });
 
+        const cHour = chCfg.hourly || { color: '#3498db', opacity: 0.25 };
         if (chartHourly) chartHourly.destroy();
         chartHourly = new Chart(document.getElementById('chart-hourly'), {
             type: 'line',
@@ -61,11 +76,9 @@ async function loadAnalyticsCharts() {
                 labels: d.hourly?.labels || [],
                 datasets: [{
                     data: d.hourly?.values || [],
-                    borderColor: '#3498db',
-                    backgroundColor: 'rgba(52, 152, 219, 0.18)',
-                    fill: true,
-                    tension: 0.35,
-                    pointRadius: 2
+                    borderColor: cHour.color,
+                    backgroundColor: makeBg('chart-hourly', 'hourly', '#3498db', 0.25),
+                    fill: true, tension: 0.35, pointRadius: 2
                 }]
             },
             options: commonOpts

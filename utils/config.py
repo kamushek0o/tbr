@@ -56,6 +56,7 @@ class AppConfig:
             'Weight_W2': '30',
             'Weight_W3': '0',
             'Snapshot_Interval_Min': '60',
+            'Start_Minimized': 'False',
             'Auto_Enabled': 'False',
             'Auto_Interval_Min': '5',
             'TG_Bot_Token': '',

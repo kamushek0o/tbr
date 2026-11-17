@@ -2,9 +2,47 @@
 from flask import Blueprint, request, jsonify
 
 from utils.config import cfg
-from core.automation import automation_engine
+from core.automation import automation_engine, VALID_TIME_MODES, VALID_SPEED_OPS
 
 automation_bp = Blueprint('automation_bp', __name__)
+
+
+def _parse_rule_payload(data):
+    name = str(data.get('name', '')).strip()[:64] or 'Правило'
+    time_mode = str(data.get('time_mode', 'seeding_time')).strip()
+    if time_mode not in VALID_TIME_MODES:
+        time_mode = 'seeding_time'
+
+    try:
+        min_ratio = max(0.0, float(data.get('min_ratio') or 0))
+        min_days = max(0.0, float(data.get('min_seed_days') or 0))
+        min_up_bytes = max(0, int(data.get('min_uploaded_bytes') or 0))
+        speed_op = str(data.get('speed_op', '') or '').strip()
+        if speed_op not in VALID_SPEED_OPS:
+            speed_op = ''
+        speed_bytes = max(0.0, float(data.get('speed_bytes') or 0))
+        speed_win = max(1, min(10080, int(data.get('speed_window_min') or 60)))
+    except (ValueError, TypeError):
+        return None, 'Некорректные числовые параметры правила'
+
+    use_speed = (speed_op in ('>=', '<') and speed_bytes > 0)
+    if min_ratio <= 0 and min_days <= 0 and min_up_bytes <= 0 and not use_speed:
+        return None, 'Укажите хотя бы одно условие (Ratio, Время, Отдано или Среднюю скорость)'
+
+    return {
+        'name': name,
+        'time_mode': time_mode,
+        'min_ratio': min_ratio,
+        'min_seed_days': min_days,
+        'min_uploaded_bytes': min_up_bytes,
+        'speed_op': speed_op if use_speed else '',
+        'speed_bytes': speed_bytes if use_speed else 0.0,
+        'speed_window_min': speed_win,
+        'action_pause': bool(data.get('action_pause', False)),
+        'action_tag': str(data.get('action_tag', '')).strip()[:32],
+        'action_remove_tag': str(data.get('action_remove_tag', '')).strip()[:32],
+        'notify': bool(data.get('notify', True))
+    }, None
 
 
 @automation_bp.route('/api/automation', methods=['GET'])
@@ -64,21 +102,11 @@ def api_automation_run_now():
 @automation_bp.route('/api/automation/rules', methods=['POST'])
 def api_automation_add_rule():
     data = request.get_json(silent=True) or {}
-    name = str(data.get('name', '')).strip()[:64] or 'Правило'
-    try:
-        min_ratio = max(0.0, float(data.get('min_ratio') or 0))
-        min_days = max(0.0, float(data.get('min_seed_days') or 0))
-    except (ValueError, TypeError):
-        return jsonify({'success': False, 'error': 'Некорректные числа Ratio или дней'}), 400
+    parsed, err = _parse_rule_payload(data)
+    if err:
+        return jsonify({'success': False, 'error': err}), 400
 
-    if min_ratio <= 0 and min_days <= 0:
-        return jsonify({'success': False, 'error': 'Укажите хотя бы Ratio > 0 или Дней > 0'}), 400
-
-    action_pause = bool(data.get('action_pause', False))
-    action_tag = str(data.get('action_tag', '')).strip()[:32]
-    notify = bool(data.get('notify', True))
-
-    rid = automation_engine.add_rule(name, min_ratio, min_days, action_pause, action_tag, notify)
+    rid = automation_engine.add_rule(**parsed)
     return jsonify({'success': bool(rid), 'id': rid})
 
 
@@ -93,21 +121,11 @@ def api_automation_update_rule():
     except (ValueError, TypeError):
         return jsonify({'success': False, 'error': 'Некорректный ID правила'}), 400
 
-    name = str(data.get('name', '')).strip()[:64] or 'Правило'
-    try:
-        min_ratio = max(0.0, float(data.get('min_ratio') or 0))
-        min_days = max(0.0, float(data.get('min_seed_days') or 0))
-    except (ValueError, TypeError):
-        return jsonify({'success': False, 'error': 'Некорректные числа Ratio или дней'}), 400
+    parsed, err = _parse_rule_payload(data)
+    if err:
+        return jsonify({'success': False, 'error': err}), 400
 
-    if min_ratio <= 0 and min_days <= 0:
-        return jsonify({'success': False, 'error': 'Укажите хотя бы Ratio > 0 или Дней > 0'}), 400
-
-    action_pause = bool(data.get('action_pause', False))
-    action_tag = str(data.get('action_tag', '')).strip()[:32]
-    notify = bool(data.get('notify', True))
-
-    ok = automation_engine.update_rule(rid_int, name, min_ratio, min_days, action_pause, action_tag, notify)
+    ok = automation_engine.update_rule(rid_int, **parsed)
     if not ok:
         return jsonify({'success': False, 'error': 'Правило не найдено'}), 404
     return jsonify({'success': True})

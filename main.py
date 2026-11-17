@@ -8,6 +8,8 @@ import webbrowser
 import threading
 
 from utils.config import cfg
+from utils.helpers import write_log
+from core.single_instance import SingleInstanceLock
 from web.app import web_server
 from core.summary_tracker import summary_tracker
 
@@ -30,6 +32,25 @@ def get_browser_url(host, port):
 def main():
     args = parse_arguments()
 
+    # Проверка единственного экземпляра (ожидание ~1.5 с при рестарте)
+    instance_lock = SingleInstanceLock()
+    if not instance_lock.acquire(wait_sec=1.5):
+        msg = "tbr уже запущен (проверь системный трей)"
+        if args.web_only:
+            write_log("app", msg)
+            print(f"⚠️ {msg}")
+            sys.exit(0)
+        try:
+            import tkinter as tk
+            from tkinter import messagebox
+            tmp_root = tk.Tk()
+            tmp_root.withdraw()
+            messagebox.showinfo("tbr PRO", msg)
+            tmp_root.destroy()
+        except Exception:
+            print(f"⚠️ {msg}")
+        sys.exit(0)
+
     env_pwd = os.environ.get('TBR_WEB_PASSWORD', '').strip()
     if env_pwd:
         cfg.set('Web_Password', env_pwd)
@@ -43,10 +64,14 @@ def main():
     web_port = cfg.getint('Web_Port', 5000)
     web_host = cfg.get('Web_Host', '127.0.0.1')
 
-    atexit.register(summary_tracker.flush_on_exit)
+    def on_shutdown():
+        summary_tracker.flush_on_exit()
+        instance_lock.release()
+
+    atexit.register(on_shutdown)
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
-            signal.signal(sig, lambda s, f: (summary_tracker.flush_on_exit(), sys.exit(0)))
+            signal.signal(sig, lambda s, f: (on_shutdown(), sys.exit(0)))
         except Exception:
             pass
 
@@ -65,7 +90,7 @@ def main():
             while True:
                 threading.Event().wait(1)
         except KeyboardInterrupt:
-            summary_tracker.flush_on_exit()
+            on_shutdown()
             sys.exit(0)
 
     import tkinter as tk
@@ -85,6 +110,7 @@ def main():
             "Ошибка запуска",
             "Файл интерфейса main_window.py не найден!\nПоложите его в папку gui/main_window.py."
         )
+        on_shutdown()
         return
 
     if os.name == 'nt':
@@ -95,9 +121,9 @@ def main():
             pass
 
     root = tk.Tk()
-    TorrentApp(root)
+    TorrentApp(root, on_quit_callback=on_shutdown)
     root.mainloop()
-    summary_tracker.flush_on_exit()
+    on_shutdown()
 
 
 if __name__ == "__main__":

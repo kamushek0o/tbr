@@ -4,14 +4,32 @@ import io
 import csv
 import datetime
 import urllib.parse
-from flask import Blueprint, request, jsonify, Response
+from flask import Blueprint, request, jsonify, Response, g
 
-from utils.helpers import sanitize_csv_cell, LOG_FOLDER
+from utils.helpers import sanitize_csv_cell, format_file_size, LOG_FOLDER
 from core.torrent_parser import get_global_torrent_summaries
 from core.summary_tracker import summary_tracker, AUTO_FOLDER, MANUAL_FOLDER
 from web.security import HASH_RE, resolve_log_path
 
 analytics_bp = Blueprint('analytics_bp', __name__)
+
+
+def _parse_day_bounds(date_str):
+    try:
+        d = datetime.datetime.strptime(str(date_str).strip(), '%Y-%m-%d')
+    except ValueError:
+        d = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    start_ts = d.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    end_ts = d.replace(hour=23, minute=59, second=59, microsecond=999999).timestamp()
+    return d.strftime('%Y-%m-%d'), start_ts, end_ts
+
+
+def _is_strict_localhost():
+    if os.path.exists('/.dockerenv') or bool(os.environ.get('TBR_DATA_DIR', '').strip()):
+        return False
+    if request.headers.get('X-Forwarded-For') or request.headers.get('X-Real-IP'):
+        return False
+    return (request.remote_addr or '').strip() in ('127.0.0.1', '::1')
 
 
 @analytics_bp.route('/api/summary')
@@ -177,3 +195,61 @@ def api_logs_download():
         )
     except Exception as e:
         return f"Ошибка скачивания: {e}", 500
+
+
+@analytics_bp.route('/api/logs/can_open_folder')
+def api_logs_can_open_folder():
+    if g.get('role') != 'admin':
+        return jsonify({'can_open': False}), 403
+    return jsonify({'can_open': _is_strict_localhost() and os.name == 'nt'})
+
+
+@analytics_bp.route('/api/logs/open_folder', methods=['POST'])
+def api_logs_open_folder():
+    if g.get('role') != 'admin' or not _is_strict_localhost() or os.name != 'nt':
+        return jsonify({'success': False, 'error': 'Доступно только локально с localhost (не в Docker)'}), 403
+    try:
+        os.startfile(LOG_FOLDER)
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@analytics_bp.route('/api/logs/day')
+def api_logs_by_day():
+    if g.get('role') != 'admin':
+        return jsonify({'error': 'Только для Admin'}), 403
+    date_str, start_ts, end_ts = _parse_day_bounds(request.args.get('date', ''))
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 15, type=int)
+    res = summary_tracker.db.get_snapshots_by_day_paginated(start_ts, end_ts, page=page, per_page=per_page)
+    for it in res['items']:
+        it['uploaded_fmt'] = format_file_size(it.get('total_uploaded', 0))
+        it['size_fmt'] = format_file_size(it.get('total_size', 0))
+    res['date'] = date_str
+    return jsonify(res)
+
+
+@analytics_bp.route('/api/logs/day/download')
+def api_logs_by_day_download():
+    if g.get('role') != 'admin':
+        return "Только для Admin", 403
+    date_str, start_ts, end_ts = _parse_day_bounds(request.args.get('date', ''))
+    rows = summary_tracker.db.get_snapshots_by_day_all(start_ts, end_ts)
+
+    output = io.StringIO()
+    writer = csv.writer(output, delimiter=';')
+    writer.writerow(['Время снимка', 'Всего отдано (байт)', 'Всего отдано', 'Общий размер (байт)', 'Раздач'])
+    for r in rows:
+        writer.writerow([
+            sanitize_csv_cell(r.get('datetime', '')),
+            r.get('total_uploaded', 0),
+            sanitize_csv_cell(format_file_size(r.get('total_uploaded', 0))),
+            r.get('total_size', 0),
+            r.get('count', 0)
+        ])
+    return Response(
+        output.getvalue().encode('utf-8-sig'),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=snapshots_{date_str}.csv"}
+    )

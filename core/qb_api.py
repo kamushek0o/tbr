@@ -355,6 +355,33 @@ def add_torrent_tags(qb_ip, qb_port, hash_val, tags):
     except Exception:
         return False
 
+def remove_torrent_tags(qb_ip, qb_port, hash_val, tags):
+    if not qb_ip or not qb_port or not hash_val or not tags:
+        return False
+    if qb_ip in ('*', '0.0.0.0'):
+        qb_ip = '127.0.0.1'
+
+    base_url = f"http://{qb_ip}:{qb_port}"
+    payload = {'hashes': hash_val, 'tags': tags}
+    req = urllib.request.Request(
+        f"{base_url}/api/v2/torrents/removeTags",
+        data=urllib.parse.urlencode(payload).encode('utf-8'),
+        method='POST',
+        headers={'Content-Type': 'application/x-www-form-urlencoded', 'Referer': base_url, 'Origin': base_url}
+    )
+    try:
+        with opener.open(req, timeout=3) as resp:
+            return resp.getcode() == 200
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403) and qb_login(qb_ip, qb_port):
+            try:
+                with opener.open(req, timeout=3) as resp2:
+                    return resp2.getcode() == 200
+            except Exception:
+                pass
+        return False
+    except Exception:
+        return False
 
 def send_qb_command(qb_ip, qb_port, action, hash_val):
     if not qb_ip or not qb_port or not hash_val:

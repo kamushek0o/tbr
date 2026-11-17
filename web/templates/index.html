@@ -27,6 +27,7 @@
     </div>
     <div class="row-gap">
         <button id="lang-toggle-btn" class="btn btn-secondary" onclick="toggleLang()">🌐 RU</button>
+        <button class="btn btn-secondary" onclick="openCustomizeModal()">🎨 Оформление</button>
         <button class="btn btn-secondary" onclick="openSettingsModal()" data-i18n="btn_settings">⚙️ Настройки</button>
         <button class="btn btn-secondary" onclick="restartQb()" data-i18n="btn_restart_qb">🔄 Перезапуск qB</button>
         {% if auth_enabled %}
@@ -127,27 +128,19 @@
             <div style="width:140px"><label class="lbl-sm" data-i18n="lbl_min_up">Мин. отдано (ГБ):</label><input type="number" id="sum-filter-uploaded" class="form-control" oninput="applySummaryFilters()"></div>
             <div class="row-gap" style="align-self:flex-end;">
                 <button class="btn btn-secondary" onclick="loadSummary(true)" data-i18n="btn_refresh">🔄 Обновить</button>
+                <div style="position:relative;">
+                    <button class="btn btn-secondary" onclick="toggleSummaryColsMenu()">🧱 Столбцы</button>
+                    <div id="summary-cols-menu" class="card hidden" style="position:absolute; right:0; top:34px; z-index:50; min-width:160px;"></div>
+                </div>
                 <button class="btn btn-secondary" onclick="resetSummaryFilters()" data-i18n="btn_reset">Сброс</button>
                 <button class="btn" onclick="exportFilteredSummaryCSV()" data-i18n="btn_export_csv">📥 Экспорт выборки</button>
             </div>
         </div>
 
-        <div class="card flex-scroll">
-            <table>
-                <thead>
-                    <tr>
-                        <th onclick="sortSummary('name')"><span data-i18n="th_name">Имя раздачи</span> <span id="sum-sort-name"></span></th>
-                        <th onclick="sortSummary('size')"><span data-i18n="th_size">Размер</span> <span id="sum-sort-size"></span></th>
-                        <th onclick="sortSummary('uploaded')"><span data-i18n="th_uploaded">Отдано</span> <span id="sum-sort-uploaded"></span></th>
-                        <th onclick="sortSummary('ratio')" class="accent-txt"><span data-i18n="th_ratio">Ratio</span> <span id="sum-sort-ratio"></span></th>
-                        <th onclick="sortSummary('speed_all_time')" class="blue-txt"><span data-i18n="th_avg_speed">Ср. скорость</span> <span id="sum-sort-speed_all_time"></span></th>
-                        <th onclick="sortSummary('speed_1h')" class="purple-txt"><span data-i18n="th_speed_1h">Скор. 1ч</span> <span id="sum-sort-speed_1h"></span></th>
-                        <th onclick="sortSummary('speed_24h')" class="orange-txt"><span data-i18n="th_speed_24h">Скор. 24ч</span> <span id="sum-sort-speed_24h"></span></th>
-                        <th onclick="sortSummary('vol_hour')" class="purple-txt"><span data-i18n="th_mb_h">МБ/ч</span> <span id="sum-sort-vol_hour"></span></th>
-                        <th onclick="sortSummary('vol_day')" class="orange-txt"><span data-i18n="th_mb_day">МБ/день</span> <span id="sum-sort-vol_day"></span></th>
-                        <th onclick="sortSummary('ratio_h_all')"><span data-i18n="th_ratio_h">Ratio/ч</span> <span id="sum-sort-ratio_h_all"></span></th>
-                        <th onclick="sortSummary('created')"><span data-i18n="th_date">Дата</span> <span id="sum-sort-created"></span></th>
-                    </tr>
+        <div id="summary-table-wrap" class="card flex-scroll">
+            <table id="summary-table">
+                <thead id="summary-thead">
+                    <tr id="summary-thead-row"></tr>
                 </thead>
                 <tbody id="summary-tbody"></tbody>
             </table>
@@ -225,6 +218,29 @@
             </div>
             <div id="log-view-terminal" class="terminal" data-i18n="log_view_hint">Выберите файл из списка выше и нажмите «Просмотр»...</div>
         </div>
+
+        <div id="admin-day-logs-card" class="card">
+            <div class="row-between mb-10">
+                <div class="card-title" style="margin-bottom:0;">🗓️ ЛОГИ СНИМКОВ ПО ДНЯМ (SQLITE)</div>
+                <button id="btn-open-logs-folder" class="btn btn-secondary btn-xs hidden" onclick="openLogsFolderHost()">📁 Открыть папку логов</button>
+            </div>
+            <div class="row-wrap mb-10">
+                <input type="date" id="logs-day-picker" class="form-control" style="width:160px;" onchange="loadDayLogs(1)">
+                <button class="btn btn-secondary" onclick="loadDayLogs(1)">Показать</button>
+                <a id="btn-dl-day-logs" class="btn" href="#">📥 Скачать CSV за день</a>
+                <div class="row-gap" style="margin-left:auto;">
+                    <button class="btn btn-secondary btn-xs" onclick="loadDayLogs(dayLogsPage - 1)">◀</button>
+                    <span id="day-logs-page-info" class="lbl-xs muted-text">1 / 1</span>
+                    <button class="btn btn-secondary btn-xs" onclick="loadDayLogs(dayLogsPage + 1)">▶</button>
+                </div>
+            </div>
+            <div class="scroll-box" style="max-height:240px;">
+                <table>
+                    <thead><tr><th>Время</th><th>Всего отдано</th><th>Общий объём</th><th>Раздач</th></tr></thead>
+                    <tbody id="day-logs-tbody"><tr><td colspan="4" class="center-msg">Выберите день...</td></tr></tbody>
+                </table>
+            </div>
+        </div>
     </div>
 
     <!-- TAB 5: Автопилот -->
@@ -251,19 +267,66 @@
                 </div>
             </div>
             <div class="grid-3">
-                <div class="form-group"><label data-i18n="lbl_tg_token">Telegram Bot Token:</label><input type="password" id="auto-tg-token" class="form-control" placeholder="123456:ABC-DEF..."></div>
-                <div class="form-group"><label data-i18n="lbl_tg_chat">Telegram Chat ID:</label><input type="text" id="auto-tg-chat" class="form-control" placeholder="123456789"></div>
-                <div class="form-group"><label data-i18n="lbl_discord">Discord Webhook URL:</label><input type="password" id="auto-discord" class="form-control" placeholder="https://discord.com/api/webhooks/..."></div>
+                <div class="form-group">
+                    <label class="row-between"><span data-i18n="lbl_tg_token">Telegram Bot Token:</span><button type="button" class="btn btn-secondary btn-xs" onclick="openBotGuide('tg')">?</button></label>
+                    <input type="password" id="auto-tg-token" class="form-control" placeholder="123456:ABC-DEF...">
+                </div>
+                <div class="form-group">
+                    <label data-i18n="lbl_tg_chat">Telegram Chat ID:</label>
+                    <input type="text" id="auto-tg-chat" class="form-control" placeholder="123456789">
+                </div>
+                <div class="form-group">
+                    <label class="row-between"><span data-i18n="lbl_discord">Discord Webhook URL:</span><button type="button" class="btn btn-secondary btn-xs" onclick="openBotGuide('discord')">?</button></label>
+                    <input type="password" id="auto-discord" class="form-control" placeholder="https://discord.com/api/webhooks/...">
+                </div>
             </div>
         </div>
 
         <div id="rule-form-card" class="card">
             <div id="rule-form-title" class="card-title" data-i18n="card_add_rule">➕ ДОБАВИТЬ ПРАВИЛО</div>
-            <div class="row-wrap mb-10">
+            <div class="row-wrap mb-8">
                 <div class="grow-1"><label class="lbl-sm" data-i18n="lbl_rule_name">Название:</label><input type="text" id="rule-name" class="form-control" placeholder="Напр: Стоп после 2.0x и 14 дней" data-i18n-ph="rule_name_ph"></div>
-                <div style="width:110px;"><label class="lbl-sm" data-i18n="lbl_rule_ratio">Мин. Ratio:</label><input type="number" step="0.1" min="0" id="rule-ratio" class="form-control" placeholder="2.0"></div>
-                <div style="width:110px;"><label class="lbl-sm" data-i18n="lbl_rule_days">Мин. дней:</label><input type="number" step="0.5" min="0" id="rule-days" class="form-control" placeholder="14"></div>
+                <div style="width:140px;">
+                    <label class="lbl-sm">Метрика времени:</label>
+                    <select id="rule-time-mode" class="form-control">
+                        <option value="seeding_time">Время сида</option>
+                        <option value="time_active">Время актива</option>
+                    </select>
+                </div>
+                <div style="width:95px;"><label class="lbl-sm" data-i18n="lbl_rule_ratio">Мин. Ratio:</label><input type="number" step="0.1" min="0" id="rule-ratio" class="form-control" placeholder="2.0"></div>
+                <div style="width:95px;"><label class="lbl-sm" data-i18n="lbl_rule_days">Мин. дней:</label><input type="number" step="0.5" min="0" id="rule-days" class="form-control" placeholder="14"></div>
+                <div style="width:170px;">
+                    <label class="lbl-sm">Мин. отдано:</label>
+                    <div class="row-gap">
+                        <input type="number" step="0.1" min="0" id="rule-up-val" class="form-control" placeholder="500">
+                        <select id="rule-up-unit" class="form-control" style="width:76px;">
+                            <option value="MiB">MiB</option>
+                            <option value="GiB" selected>GiB</option>
+                            <option value="TiB">TiB</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="row-wrap mb-10">
+                <div style="width:320px;">
+                    <label class="lbl-sm">Средняя скорость (окно W мин):</label>
+                    <div class="row-gap">
+                        <select id="rule-speed-op" class="form-control" style="width:75px;">
+                            <option value="">выкл</option>
+                            <option value=">=">&gt;=</option>
+                            <option value="<">&lt;</option>
+                        </select>
+                        <input type="number" step="0.1" min="0" id="rule-speed-val" class="form-control" placeholder="100">
+                        <select id="rule-speed-unit" class="form-control" style="width:82px;">
+                            <option value="KiB">KiB/s</option>
+                            <option value="MiB">MiB/s</option>
+                        </select>
+                        <input type="number" min="1" max="10080" id="rule-speed-win" class="form-control" style="width:70px;" value="60" title="Окно W в минутах">
+                    </div>
+                </div>
                 <div style="width:130px;"><label class="lbl-sm" data-i18n="lbl_rule_tag">Повесить тег:</label><input type="text" id="rule-tag" class="form-control" placeholder="done (опц.)" data-i18n-ph="rule_tag_ph"></div>
+                <div style="width:130px;"><label class="lbl-sm">Снять тег:</label><input type="text" id="rule-remove-tag" class="form-control" placeholder="active (опц.)"></div>
                 <div class="row-gap" style="align-self:flex-end; padding-bottom: 4px;">
                     <label class="row-gap pointer lbl-xs"><input type="checkbox" id="rule-pause"> <span data-i18n="chk_pause">⏸️ Пауза</span></label>
                     <label class="row-gap pointer lbl-xs"><input type="checkbox" id="rule-notify" checked> <span data-i18n="chk_notify">📣 Уведомить</span></label>
@@ -271,13 +334,14 @@
                     <button id="btn-rule-cancel" class="btn btn-secondary hidden" onclick="cancelEditRule()" data-i18n="btn_cancel">Отмена</button>
                 </div>
             </div>
+            <div class="lbl-xs muted-text mb-10">💡 Совет: чтобы правила <code>+тег / -тег</code> не дёргались на границе скорости («качели»), оставляйте зазор (гистерезис) — например, снимать тег при &lt; 100 KiB/s, а вешать при &gt;= 500 KiB/s.</div>
 
             <div class="scroll-box" style="max-height: 320px;">
                 <table>
                     <thead>
                         <tr>
                             <th data-i18n="th_rule_name">Название</th>
-                            <th data-i18n="th_rule_cond">Условие (Ratio / Дни)</th>
+                            <th data-i18n="th_rule_cond">Условие</th>
                             <th data-i18n="th_rule_act">Действия</th>
                             <th data-i18n="th_rule_status">Статус</th>
                             <th data-i18n="th_rule_ctrl">Управление</th>
@@ -294,7 +358,7 @@
 
 <!-- МОДАЛЬНОЕ ОКНО НАСТРОЕК -->
 <div id="settings-modal" class="modal-backdrop">
-    <div class="modal">
+    <div class="modal" style="max-height: 90vh; overflow-y: auto;">
         <div class="card-title" data-i18n="modal_settings">⚙️ НАСТРОЙКИ СЕТИ И УМНОГО РАСЧЁТА</div>
         <div class="autostart-box">
             <div><div style="font-size:13px;font-weight:700;" data-i18n="autostart_win">Автозагрузка Windows</div><div class="lbl-xs muted-text" data-i18n="autostart_desc">Автостарт при включении ПК</div></div>
@@ -343,6 +407,16 @@
             <div class="form-group"><label data-i18n="lbl_w2">2 неделя (336ч):</label><input type="number" min="0" id="setting-w2" class="form-control"></div>
             <div class="form-group"><label data-i18n="lbl_w3">3 неделя (504ч):</label><input type="number" min="0" id="setting-w3" class="form-control"></div>
         </div>
+        <div class="card-title mt-10">🔑 ПРОФИЛИ И ТОКЕНЫ ДОСТУПА</div>
+        <div class="row-gap mb-8">
+            <input type="text" id="new-profile-name" class="form-control grow-1" placeholder="Имя (напр. Друг)">
+            <select id="new-profile-role" class="form-control" style="width:105px;">
+                <option value="viewer">Viewer</option>
+                <option value="admin">Admin</option>
+            </select>
+            <button class="btn" onclick="createProfile()">➕</button>
+        </div>
+        <div id="profiles-list" class="scroll-box" style="max-height:110px; font-size:12px;"></div>
         <div class="row-end mt-12">
             <button class="btn btn-secondary" onclick="closeSettingsModal()" data-i18n="btn_close">Закрыть</button>
             <button class="btn" onclick="saveSettings()" data-i18n="btn_save">💾 Сохранить</button>
@@ -379,7 +453,58 @@
     </div>
 </div>
 
+<!-- МОДАЛЬНОЕ ОКНО ГАЙДА ПО БОТАМ -->
+<div id="bot-guide-modal" class="modal-backdrop">
+    <div class="modal" style="max-width: 520px;">
+        <div id="bot-guide-title" class="card-title">Гайд</div>
+        <div id="bot-guide-body" style="font-size:13px; color:var(--text); margin-bottom:14px;"></div>
+        <div class="row-end">
+            <button class="btn btn-secondary" onclick="closeBotGuide()" data-i18n="btn_close">Закрыть</button>
+        </div>
+    </div>
+</div>
+
+<!-- МОДАЛЬНОЕ ОКНО КАСТОМИЗАЦИИ -->
+<div id="customize-modal" class="modal-backdrop">
+    <div class="modal" style="max-width: 560px; max-height: 88vh; overflow-y: auto;">
+        <div class="card-title">🎨 ОФОРМЛЕНИЕ, ШРИФТЫ И ГРАФИКИ</div>
+        <div class="grid-2 mb-8">
+            <div class="form-group">
+                <label>Тема:</label>
+                <select id="cust-theme" class="form-control" onchange="onCustThemeChange()">
+                    <option value="dark">Dark (Тёмная)</option>
+                    <option value="light">Light (Светлая)</option>
+                    <option value="oled">OLED (Чёрная)</option>
+                    <option value="custom">Custom (Свои цвета)</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Шрифт (15 + 1):</label>
+                <select id="cust-font" class="form-control" onchange="updateFontNote(AVAILABLE_FONTS.find(f=>f.name===this.value))"></select>
+            </div>
+        </div>
+        <div id="cust-font-note" class="lbl-xs orange-txt mb-8"></div>
+        <div class="row-between mb-10">
+            <label class="row-gap pointer lbl-xs"><input type="checkbox" id="cust-allow-gf"> Загружать веб-шрифты с Google Fonts (если нет локально)</label>
+            <label class="row-gap pointer lbl-xs"><input type="checkbox" id="cust-mobile-mode" checked> Мобильный режим (&lt;=768px)</label>
+        </div>
+        <div id="cust-custom-colors" class="grid-2 mb-10 hidden" style="background:var(--bg-input); padding:8px; border-radius:6px;">
+            <div><label class="lbl-xs">Фон:</label> <input type="color" id="cust-bg-main"></div>
+            <div><label class="lbl-xs">Карточки:</label> <input type="color" id="cust-bg-panel"></div>
+            <div><label class="lbl-xs">Текст:</label> <input type="color" id="cust-text"></div>
+            <div><label class="lbl-xs">Акцент:</label> <input type="color" id="cust-accent"></div>
+        </div>
+        <div class="card-title">📊 РЕДАКТОР 3 ГРАФИКОВ</div>
+        <div id="cust-charts-editors"></div>
+        <div class="row-end mt-12">
+            <button class="btn btn-secondary" onclick="closeCustomizeModal()">Закрыть</button>
+            <button class="btn" onclick="saveCustomization()">💾 Применить</button>
+        </div>
+    </div>
+</div>
+
 <script src="/static/common.js?v={{ v }}"></script>
+<script src="/static/customizer.js?v={{ v }}"></script>
 <script src="/static/torrents.js?v={{ v }}"></script>
 <script src="/static/summary.js?v={{ v }}"></script>
 <script src="/static/analytics.js?v={{ v }}"></script>

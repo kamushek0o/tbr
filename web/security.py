@@ -5,11 +5,14 @@ import hmac
 import secrets
 import ipaddress
 import urllib.parse
-from flask import request, jsonify, redirect, session
+from flask import request, jsonify, redirect, session, g
 from utils.helpers import LOG_FOLDER
 from core.summary_tracker import AUTO_FOLDER, MANUAL_FOLDER
+from core.profiles_db import profiles_db
 
 HASH_RE = re.compile(r'^[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?$')
+
+_VIEWER_BLOCKED_GET_PREFIXES = ('/api/settings', '/api/automation', '/api/logs', '/api/profiles')
 
 
 def get_csrf_token():
@@ -57,6 +60,29 @@ def resolve_log_path(filename):
     return None
 
 
+def _resolve_request_profile(is_exposed):
+    # 1. Заголовок Authorization: Bearer <token> или X-Auth-Token
+    auth_hdr = request.headers.get('Authorization', '').strip()
+    token = auth_hdr[7:].strip() if auth_hdr.lower().startswith('bearer ') else request.headers.get('X-Auth-Token', '').strip()
+    if token:
+        prof = profiles_db.authenticate_token(token)
+        if prof:
+            return prof, True  # token-based (без CSRF-сессии)
+
+    # 2. Активная сессия по profile_id
+    pid = session.get('profile_id')
+    if pid:
+        prof = profiles_db.get_by_id(pid)
+        if prof:
+            return prof, False
+
+    # 3. Вход по мастер-паролю Web_Password или локальный хост без пароля
+    if session.get('authenticated') or not is_exposed:
+        return profiles_db.get_default_admin(), False
+
+    return None, False
+
+
 def register_security(app):
     @app.before_request
     def security_middleware():
@@ -64,13 +90,31 @@ def register_security(app):
             return None
 
         is_exposed = app.config.get('IS_EXPOSED', False)
-        if is_exposed and request.path != '/login':
-            if not session.get('authenticated'):
-                if request.path.startswith('/api/'):
-                    return jsonify({'error': 'Требуется авторизация'}), 401
-                return redirect('/login')
+        prof, used_bearer = _resolve_request_profile(is_exposed)
+        g.profile = prof
+        g.role = prof['role'] if prof else None
 
-        if request.method == 'POST':
+        if request.path in ('/login', '/logout'):
+            if request.method == 'POST' and request.path == '/login':
+                expected_token = session.get('csrf_token')
+                sent_token = request.form.get('csrf_token')
+                if not (expected_token and sent_token and hmac.compare_digest(str(expected_token), str(sent_token))):
+                    return jsonify({'error': 'CSRF ошибка'}), 403
+            return None
+
+        if is_exposed and not prof:
+            if request.path.startswith('/api/'):
+                return jsonify({'error': 'Требуется авторизация'}), 401
+            return redirect('/login')
+
+        # Строгое ограничение роли Viewer
+        if g.role == 'viewer':
+            if request.method in ('POST', 'PUT', 'DELETE', 'PATCH'):
+                return jsonify({'error': 'Недостаточно прав (режим Viewer — только чтение)'}), 403
+            if any(request.path.startswith(p) for p in _VIEWER_BLOCKED_GET_PREFIXES):
+                return jsonify({'error': 'Доступ закрыт для роли Viewer'}), 403
+
+        if request.method == 'POST' and not used_bearer:
             expected_token = session.get('csrf_token')
             sent_token = request.headers.get('X-CSRF-Token') or request.form.get('csrf_token')
 

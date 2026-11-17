@@ -2,6 +2,9 @@
 const VALID_TABS = ['torrents', 'merger', 'summary', 'analytics', 'automation'];
 const CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]')?.content || '';
 
+let CURRENT_ROLE = 'admin';
+let CURRENT_UI_SETTINGS = null;
+
 const I18N = {
     ru: {
         title: 'tbr PRO — Швейцарский нож qBittorrent',
@@ -564,6 +567,72 @@ function syncTabWithHash() {
 }
 window.addEventListener('hashchange', syncTabWithHash);
 
+async function loadMeAndApplyRole() {
+    try {
+        const res = await api('/api/me');
+        const d = await res.json();
+        CURRENT_ROLE = d.role || 'viewer';
+        CURRENT_UI_SETTINGS = d.ui_settings || null;
+        if (typeof applyUiSettings === 'function' && d.ui_settings) {
+            applyUiSettings(d.ui_settings);
+        }
+        if (CURRENT_ROLE === 'viewer') {
+            document.querySelectorAll('[data-tab="merger"], [data-tab="automation"]').forEach(el => el.classList.add('hidden'));
+            document.querySelectorAll('button[onclick*="openSettingsModal"], button[onclick*="restartQb"], button[onclick*="scanDeadTorrents"], button[onclick*="torrentAction"], button[onclick*="globalTorrentAction"]').forEach(el => el.classList.add('hidden'));
+        }
+    } catch (e) {}
+}
+
+async function loadProfilesList() {
+    const box = document.getElementById('profiles-list');
+    if (!box || CURRENT_ROLE !== 'admin') return;
+    const res = await api('/api/profiles');
+    if (!res.ok) return;
+    const d = await res.json();
+    box.innerHTML = '';
+    (d.profiles || []).forEach(p => {
+        const row = document.createElement('div');
+        row.className = 'row-between mb-8';
+        row.style.cssText = 'background:var(--bg-input); padding:5px 8px; border-radius:5px;';
+        row.innerHTML = `
+            <span><b>${escapeHtml(p.name)}</b> <span class="badge ${p.role === 'admin' ? 'badge-up' : 'badge-pause'}">${p.role}</span> <span class="muted-text">${escapeHtml(p.token_prefix)}</span></span>
+            <span class="row-gap">
+                <button class="btn btn-secondary btn-xs" title="Перевыпустить токен" onclick="reissueProfile(${p.id})">🔄</button>
+                <button class="btn btn-danger btn-xs" title="Удалить" onclick="deleteProfile(${p.id})">🗑️</button>
+            </span>
+        `;
+        box.appendChild(row);
+    });
+}
+
+async function createProfile() {
+    const name = document.getElementById('new-profile-name').value.trim();
+    const role = document.getElementById('new-profile-role').value;
+    const res = await api('/api/profiles/create', 'POST', { name, role });
+    const d = await res.json();
+    if (!res.ok || !d.success) return alert(d.error || 'Ошибка');
+    document.getElementById('new-profile-name').value = '';
+    prompt('Токен создан (сохрани сейчас — больше он не покажется):', d.token);
+    loadProfilesList();
+}
+
+async function reissueProfile(id) {
+    if (!confirm('Перевыпустить токен? Старый перестанет работать, настройки внешнего вида сохранятся.')) return;
+    const res = await api('/api/profiles/reissue', 'POST', { id });
+    const d = await res.json();
+    if (!res.ok || !d.success) return alert(d.error || 'Ошибка');
+    prompt('Новый токен (сохрани сейчас):', d.token);
+    loadProfilesList();
+}
+
+async function deleteProfile(id) {
+    if (!confirm('Удалить профиль?')) return;
+    const res = await api('/api/profiles/delete', 'POST', { id });
+    const d = await res.json();
+    if (!res.ok || !d.success) return alert(d.error || 'Ошибка');
+    loadProfilesList();
+}
+
 async function checkQbStatus() {
     try {
         const res = await api('/api/qb/status');
@@ -575,6 +644,7 @@ async function checkQbStatus() {
 }
 
 async function toggleQbPower() {
+    if (CURRENT_ROLE === 'viewer') return;
     const res = await api('/api/qb/status');
     const d = await res.json();
     if (confirm(d.running ? t('confirm_qb_stop') : t('confirm_qb_start'))) {
@@ -607,6 +677,7 @@ async function toggleAutostart() {
 
 async function openSettingsModal() {
     checkAutostart();
+    loadProfilesList();
     const res = await api('/api/settings');
     const d = await res.json();
     document.getElementById('setting-web-host').value = d.web_host;
@@ -652,8 +723,9 @@ async function saveSettings() {
     else loadTorrents(true);
 }
 
-window.onload = () => {
+window.onload = async () => {
     applyI18n();
+    await loadMeAndApplyRole();
     syncTabWithHash();
     setInterval(checkQbStatus, 5000);
 };

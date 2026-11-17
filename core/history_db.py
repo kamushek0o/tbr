@@ -252,12 +252,6 @@ class HistoryDB:
                 return False
 
     def downsample_old_snapshots(self):
-        """
-        3-уровневое хранение:
-        - < 30 дней: исходная частота T
-        - 30..365 дней: даунсэмплинг до почасовых (1 снимок на час)
-        - > 365 дней: даунсэмплинг до суточных (1 снимок в сутки)
-        """
         now = time.time()
         cutoff_hourly = now - (30 * 86400)
         cutoff_daily = now - (365 * 86400)
@@ -287,7 +281,6 @@ class HistoryDB:
                     delete_ids = []
                     for items in buckets.values():
                         if len(items) > 1:
-                            # Оставляем самый свежий снимок в бакете, остальные удаляем
                             items.sort(key=lambda x: x[0])
                             delete_ids.extend(item[1] for item in items[:-1])
 
@@ -439,4 +432,67 @@ class HistoryDB:
                     return [dict(r) for r in cur.fetchall()]
             except Exception as e:
                 write_error_log("Ошибка get_torrent_history_rows из SQLite", e)
+                return []
+
+    def get_torrent_window_bounds(self, t_hash, since_ts, until_ts):
+        t_hash_lower = (t_hash or '').lower()
+        with self._lock:
+            try:
+                with self._get_connection() as conn:
+                    cur = conn.cursor()
+                    cur.execute("""
+                        SELECT s.timestamp, ts.uploaded
+                        FROM snapshots s
+                        JOIN torrent_snapshots ts ON s.id = ts.snapshot_id
+                        WHERE ts.hash_id = ? AND s.timestamp BETWEEN ? AND ?
+                        ORDER BY s.timestamp ASC
+                    """, (t_hash_lower, since_ts, until_ts))
+                    rows = cur.fetchall()
+                    if not rows:
+                        return None, None, 0
+                    first = (rows[0]['timestamp'], rows[0]['uploaded'])
+                    last = (rows[-1]['timestamp'], rows[-1]['uploaded'])
+                    return first, last, len(rows)
+            except Exception:
+                return None, None, 0
+
+    def get_snapshots_by_day_paginated(self, start_ts, end_ts, page=1, per_page=15):
+        page = max(1, int(page))
+        per_page = max(1, min(100, int(per_page)))
+        offset = (page - 1) * per_page
+        with self._lock:
+            try:
+                with self._get_connection() as conn:
+                    cur = conn.cursor()
+                    cur.execute("SELECT COUNT(*) FROM snapshots WHERE timestamp BETWEEN ? AND ?", (start_ts, end_ts))
+                    total = cur.fetchone()[0]
+                    cur.execute(
+                        """SELECT id, timestamp, datetime, total_uploaded, total_size, count
+                           FROM snapshots
+                           WHERE timestamp BETWEEN ? AND ?
+                           ORDER BY timestamp DESC
+                           LIMIT ? OFFSET ?""",
+                        (start_ts, end_ts, per_page, offset)
+                    )
+                    rows = [dict(r) for r in cur.fetchall()]
+                    total_pages = max(1, (total + per_page - 1) // per_page)
+                    return {'items': rows, 'total': total, 'page': page, 'per_page': per_page, 'total_pages': total_pages}
+            except Exception as e:
+                write_error_log("Ошибка get_snapshots_by_day_paginated", e)
+                return {'items': [], 'total': 0, 'page': 1, 'per_page': per_page, 'total_pages': 1}
+
+    def get_snapshots_by_day_all(self, start_ts, end_ts):
+        with self._lock:
+            try:
+                with self._get_connection() as conn:
+                    cur = conn.cursor()
+                    cur.execute(
+                        """SELECT datetime, total_uploaded, total_size, count
+                           FROM snapshots
+                           WHERE timestamp BETWEEN ? AND ?
+                           ORDER BY timestamp ASC""",
+                        (start_ts, end_ts)
+                    )
+                    return [dict(r) for r in cur.fetchall()]
+            except Exception:
                 return []

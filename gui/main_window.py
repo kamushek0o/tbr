@@ -10,21 +10,40 @@ from core.qb_api import detect_qbittorrent_port, is_qb_running, launch_qbittorre
 from core.autostart import set_autostart, is_autostart_enabled
 from core.summary_tracker import summary_tracker
 from core.torrent_parser import get_global_torrent_summaries
+from core.profiles_db import profiles_db
+from gui.tray import SystemTrayController
 
 
 class TorrentApp:
-    def __init__(self, root):
+    def __init__(self, root, on_quit_callback=None):
         self.root = root
+        self.on_quit_callback = on_quit_callback
         self.qb_ip, self.qb_port = detect_qbittorrent_port(cfg.config)
         self.port = cfg.getint('Web_Port', 5000)
+        self._closing = False
 
         self.root.title("tbr PRO — Control Panel")
-        self.root.geometry("480x470")
-        self.root.minsize(440, 440)
+        self.root.geometry("480x540")
+        self.root.minsize(440, 510)
         self.root.configure(bg="#121214")
 
         summary_tracker.start_auto_export(get_global_torrent_summaries)
         self.build_ui()
+
+        self.tray = SystemTrayController(
+            root=self.root,
+            on_show_window=self.restore_from_tray,
+            on_open_web=self.open_web,
+            on_exit_app=self.quit_app
+        )
+        self.tray_active = self.tray.start()
+
+        self.root.bind("<Unmap>", self._on_unmap)
+        self.root.protocol("WM_DELETE_WINDOW", self.quit_app)
+
+        if self.tray_active and cfg.getboolean('Start_Minimized', False):
+            self.root.withdraw()
+
         self.update_status()
 
     def build_ui(self):
@@ -78,7 +97,7 @@ class TorrentApp:
                   cursor="hand2", command=self.restart_qb).grid(row=0, column=1, padx=3, ipady=4, sticky="ew")
 
         bot_row = tk.Frame(f, bg="#1a1a20")
-        bot_row.pack(fill="x", padx=24, pady=(12, 0))
+        bot_row.pack(fill="x", padx=24, pady=(12, 4))
         bot_row.columnconfigure((0, 1), weight=1)
 
         self.btn_auto = tk.Button(bot_row, text="Автозагрузка", font=("Segoe UI", 8, "bold"), bd=0, bg="#262630",
@@ -88,6 +107,63 @@ class TorrentApp:
         tk.Button(bot_row, text="📁 Папка логов", font=("Segoe UI", 8, "bold"), bd=0, bg="#262630", fg="#ffffff",
                   cursor="hand2", command=lambda: os.startfile(LOG_FOLDER)).grid(row=0, column=1, padx=3, ipady=4,
                                                                                  sticky="ew")
+
+        self.var_start_min = tk.BooleanVar(value=cfg.getboolean('Start_Minimized', False))
+        tk.Checkbutton(
+            f, text="Запускать свёрнутым в трей", variable=self.var_start_min,
+            command=self.toggle_start_minimized, font=("Segoe UI", 9),
+            bg="#1a1a20", fg="#95a5a6", selectcolor="#262630",
+            activebackground="#1a1a20", activeforeground="#ffffff", bd=0
+        ).pack(pady=(6, 4))
+
+        tk.Button(f, text="🔑 Перевыпустить Admin-токен", font=("Segoe UI", 8, "bold"), bd=0, bg="#262630",
+                  fg="#f39c12", cursor="hand2", command=self.reset_admin_token).pack(fill="x", padx=24, pady=(4, 0),
+                                                                                     ipady=5)
+
+    def _on_unmap(self, event):
+        if event.widget is self.root and self.tray_active and not self._closing:
+            try:
+                if self.root.state() == 'iconic':
+                    self.root.withdraw()
+            except Exception:
+                pass
+
+    def restore_from_tray(self):
+        try:
+            self.root.deiconify()
+            self.root.state('normal')
+            self.root.lift()
+            self.root.focus_force()
+        except Exception:
+            pass
+
+    def quit_app(self):
+        if self._closing:
+            return
+        self._closing = True
+        if self.tray:
+            self.tray.stop()
+        if self.on_quit_callback:
+            try:
+                self.on_quit_callback()
+            except Exception:
+                pass
+        try:
+            self.root.quit()
+            self.root.destroy()
+        except Exception:
+            pass
+
+    def toggle_start_minimized(self):
+        cfg.set('Start_Minimized', str(bool(self.var_start_min.get())))
+        cfg.save()
+
+    def reset_admin_token(self):
+        new_tok = profiles_db.reset_admin_token_local()
+        if new_tok:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(new_tok)
+            messagebox.showinfo("Admin-токен", f"Новый Admin-токен скопирован в буфер обмена:\n\n{new_tok}")
 
     def save_net_settings(self):
         host = self.e_host.get().strip() or '127.0.0.1'
@@ -100,9 +176,12 @@ class TorrentApp:
         messagebox.showinfo("Сохранено", "Настройки сохранены!\nПерезапустите tbr, чтобы применить новый хост.")
 
     def open_web(self):
-        webbrowser.open(f"http://127.0.0.1:{self.port}/")
+        port = cfg.getint('Web_Port', self.port)
+        webbrowser.open(f"http://127.0.0.1:{port}/")
 
     def update_status(self):
+        if self._closing:
+            return
         running = is_qb_running()
         if running:
             self.lbl_qb.config(text="qBittorrent: 🟢 Запущен", fg="#2ecc71")
