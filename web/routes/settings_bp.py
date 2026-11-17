@@ -14,17 +14,24 @@ settings_bp = Blueprint('settings_bp', __name__)
 
 
 @settings_bp.route('/login', methods=['GET', 'POST'])
-@settings_bp.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'GET':
+        # Вход по ссылке через хэш (?hash=...) или токен (?token=...)
+        h = request.args.get('hash', '').strip()
         tok = request.args.get('token', '').strip()
-        if tok:
+        prof = None
+        if h:
+            prof = profiles_db.authenticate_hash(h)
+        elif tok:
             prof = profiles_db.authenticate_token(tok)
-            if prof:
-                session['authenticated'] = True
-                session['profile_id'] = prof['id']
-                return redirect('/')
-            return render_template('login.html', csrf_token=get_csrf_token(), error='Недействительная ссылка-токен!'), 401
+
+        if prof:
+            session['authenticated'] = True
+            session['profile_id'] = prof['id']
+            return redirect('/')
+        elif h or tok:
+            return render_template('login.html', csrf_token=get_csrf_token(), error='Недействительная ссылка для входа!'), 401
+
         return render_template('login.html', csrf_token=get_csrf_token(), error=None)
 
     pwd = request.form.get('password', '').strip()
@@ -37,26 +44,8 @@ def login():
             session['profile_id'] = adm['id']
         return redirect('/')
 
-    prof = profiles_db.authenticate_token(pwd)
-    if prof:
-        session['authenticated'] = True
-        session['profile_id'] = prof['id']
-        return redirect('/')
-
-    return render_template('login.html', csrf_token=get_csrf_token(), error='Неверный пароль или токен!'), 401
-    if request.method == 'GET':
-        return render_template('login.html', csrf_token=get_csrf_token(), error=None)
-    pwd = request.form.get('password', '').strip()
-    real_pwd = cfg.get('Web_Password', '')
-
-    if real_pwd and hmac.compare_digest(pwd, real_pwd):
-        session['authenticated'] = True
-        adm = profiles_db.get_default_admin()
-        if adm:
-            session['profile_id'] = adm['id']
-        return redirect('/')
-
-    prof = profiles_db.authenticate_token(pwd)
+    # Поиск по паролю или по хэшу
+    prof = profiles_db.authenticate_token(pwd) or profiles_db.authenticate_hash(pwd)
     if prof:
         session['authenticated'] = True
         session['profile_id'] = prof['id']

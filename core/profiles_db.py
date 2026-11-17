@@ -136,12 +136,26 @@ class ProfilesDB:
             except Exception:
                 return None
 
+    def authenticate_hash(self, raw_hash):
+        if not raw_hash or not isinstance(raw_hash, str):
+            return None
+        h = raw_hash.strip().lower()
+        with self._lock:
+            try:
+                with self._get_conn() as conn:
+                    cur = conn.cursor()
+                    cur.execute("SELECT * FROM profiles WHERE lower(token_hash) = ? LIMIT 1", (h,))
+                    row = cur.fetchone()
+                    return dict(row) if row else None
+            except Exception:
+                return None
+
     def list_profiles(self):
         with self._lock:
             try:
                 with self._get_conn() as conn:
                     cur = conn.cursor()
-                    cur.execute("SELECT id, name, role, token_prefix, created_at FROM profiles ORDER BY id ASC")
+                    cur.execute("SELECT id, name, role, token_prefix, token_hash, created_at FROM profiles ORDER BY id ASC")
                     return [dict(r) for r in cur.fetchall()]
             except Exception:
                 return []
@@ -153,13 +167,14 @@ class ProfilesDB:
 
         if custom:
             if len(custom) < 3:
-                return None, None, "Пароль должен быть не короче 3 символов"
+                return None, None, None, "Пароль должен быть не короче 3 символов"
             raw_token = custom
             prefix = (raw_token[:2] + "***") if len(raw_token) <= 6 else (raw_token[:4] + "...")
         else:
             raw_token = "tbr_" + secrets.token_urlsafe(24)
             prefix = raw_token[:10] + "..."
 
+        t_hash = hash_token(raw_token)
         with self._lock:
             try:
                 with self._get_conn() as conn:
@@ -167,31 +182,49 @@ class ProfilesDB:
                     cur.execute(
                         """INSERT INTO profiles (name, role, token_hash, token_prefix, ui_settings_json, created_at)
                            VALUES (?, ?, ?, ?, ?, ?)""",
-                        (clean_name, role, hash_token(raw_token), prefix, json.dumps(DEFAULT_UI_SETTINGS), time.time())
+                        (clean_name, role, t_hash, prefix, json.dumps(DEFAULT_UI_SETTINGS), time.time())
                     )
                     conn.commit()
-                    return cur.lastrowid, raw_token, None
+                    return cur.lastrowid, raw_token, t_hash, None
             except sqlite3.IntegrityError:
-                return None, None, "Такой пароль/токен уже занят другим профилем!"
+                return None, None, None, "Такой пароль/токен уже занят другим профилем!"
             except Exception as e:
                 write_error_log("Ошибка create_profile", e)
-                return None, None, str(e)
+                return None, None, None, str(e)
 
-    def reissue_token(self, profile_id):
-        raw_token = "tbr_" + secrets.token_urlsafe(24)
+    def change_password(self, profile_id, new_password=None):
+        custom = str(new_password or '').strip()
+        if custom:
+            if len(custom) < 3:
+                return None, None, "Пароль должен быть не короче 3 символов"
+            raw_token = custom
+            prefix = (raw_token[:2] + "***") if len(raw_token) <= 6 else (raw_token[:4] + "...")
+        else:
+            raw_token = "tbr_" + secrets.token_urlsafe(24)
+            prefix = raw_token[:10] + "..."
+
+        t_hash = hash_token(raw_token)
         with self._lock:
             try:
                 with self._get_conn() as conn:
                     cur = conn.cursor()
                     cur.execute(
                         "UPDATE profiles SET token_hash = ?, token_prefix = ? WHERE id = ?",
-                        (hash_token(raw_token), raw_token[:10] + "...", int(profile_id))
+                        (t_hash, prefix, int(profile_id))
                     )
                     conn.commit()
-                    return raw_token if cur.rowcount > 0 else None
+                    if cur.rowcount > 0:
+                        return raw_token, t_hash, None
+                    return None, None, "Профиль не найден"
+            except sqlite3.IntegrityError:
+                return None, None, "Такой пароль уже занят другим профилем!"
             except Exception as e:
-                write_error_log("Ошибка reissue_token", e)
-                return None
+                write_error_log("Ошибка change_password", e)
+                return None, None, str(e)
+
+    def reissue_token(self, profile_id):
+        raw_token, t_hash, _ = self.change_password(profile_id, new_password=None)
+        return raw_token, t_hash
 
     def delete_profile(self, profile_id):
         with self._lock:
@@ -239,7 +272,8 @@ class ProfilesDB:
             adm = self.get_default_admin()
         if not adm:
             return None
-        return self.reissue_token(adm['id'])
+        raw, _ = self.reissue_token(adm['id'])
+        return raw
 
 
 profiles_db = ProfilesDB()
