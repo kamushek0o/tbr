@@ -61,6 +61,16 @@ function switchTab(name, updateHash = true) {
     if (name === 'automation') loadAutomation();
 }
 
+function refreshActiveTab() {
+    const active = document.querySelector('.tab-btn.active')?.dataset.tab || 'torrents';
+    if (active === 'torrents') loadTorrents(true);
+    else if (active === 'summary') loadSummary(true);
+    else if (active === 'analytics') loadAnalyticsTab();
+    else if (active === 'automation') loadAutomation();
+    else if (active === 'merger') loadTorrents(true);
+    checkQbStatus();
+}
+
 function syncTabWithHash() {
     const rawHash = (window.location.hash || '').replace('#', '').trim();
     switchTab(VALID_TABS.includes(rawHash) ? rawHash : 'torrents', false);

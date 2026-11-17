@@ -2,8 +2,13 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="csrf-token" content="{{ csrf_token }}">
+    <meta name="theme-color" content="#1a1a20">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
     <title>tbr PRO — Швейцарский нож qBittorrent</title>
     <link rel="stylesheet" href="/static/style.css?v={{ v }}">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
@@ -26,6 +31,7 @@
         <button class="tab-btn" data-tab="automation" onclick="switchTab('automation')" data-i18n="tab_automation">🤖 Автопилот</button>
     </div>
     <div class="row-gap">
+        <button class="btn btn-secondary" title="Обновить текущую вкладку" onclick="refreshActiveTab()">↻</button>
         <button id="lang-toggle-btn" class="btn btn-secondary" onclick="toggleLang()">🌐 RU</button>
         <button class="btn btn-secondary" onclick="openCustomizeModal()">🎨 Оформление</button>
         <button class="btn btn-secondary" onclick="openSettingsModal()" data-i18n="btn_settings">⚙️ Настройки</button>
@@ -173,7 +179,7 @@
                     <div style="height: 200px;"><canvas id="chart-top5"></canvas></div>
                 </div>
                 <div style="background: var(--bg-input); padding: 10px; border-radius: 6px; border: 1px solid var(--border);">
-                    <div class="lbl-sm mb-8" data-i18n="chart_hourly_lbl">Нагрузка по часам суток (МБ/ч)</div>
+                    <div class="lbl-sm mb-8">Детальная скорость (MiB/s, 24ч)</div>
                     <div style="height: 200px;"><canvas id="chart-hourly"></canvas></div>
                 </div>
             </div>

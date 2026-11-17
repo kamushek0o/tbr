@@ -7,6 +7,7 @@ from utils.helpers import LOG_FOLDER, format_file_size, sanitize_csv_cell, write
 from core.history_db import HistoryDB, AUTO_FOLDER, MANUAL_FOLDER
 from core.forecaster import fmt_ratio_h, fmt_speed, calculate_smart_forecast, export_forecast_csv
 from core.scheduler import SnapshotScheduler, MIN_DELTA_SEC
+from core.widget_service import build_detailed_speed_series
 
 
 class SummaryTracker:
@@ -147,8 +148,7 @@ class SummaryTracker:
 
         for r in rows:
             if prev_row is not None:
-                t1 = prev_row['timestamp']
-                t2 = r['timestamp']
+                t1, t2 = prev_row['timestamp'], r['timestamp']
                 dt_sec = t2 - t1
                 delta = max(0, r['total_uploaded'] - prev_row['total_uploaded'])
 
@@ -172,22 +172,7 @@ class SummaryTracker:
         daily_labels = [f"{d[8:10]}.{d[5:7]}" for d in sorted_days]
         daily_values_gb = [round(daily_map[d] / (1024 ** 3), 3) for d in sorted_days]
 
-        hourly_buckets = {h: [] for h in range(24)}
-        for (_, h), val in day_hour_totals.items():
-            hourly_buckets[h].append(val)
-
-        now_dt = datetime.datetime.now()
-        nearest_hour = (now_dt.hour + (1 if now_dt.minute >= 30 else 0)) % 24
-        rightmost_hour = (nearest_hour + 1) % 24
-        start_hour = (rightmost_hour + 1) % 24
-        ordered_hours = [(start_hour + i) % 24 for i in range(24)]
-
-        hourly_labels = [f"{h:02d}:00" for h in ordered_hours]
-        hourly_values_mb = [
-            round((sum(hourly_buckets[h]) / len(hourly_buckets[h])) / (1024 ** 2), 1)
-            if hourly_buckets[h] else 0.0
-            for h in ordered_hours
-        ]
+        detailed_24h = build_detailed_speed_series(self.db, hours=24)
 
         stats = self.get_stats(summaries)
         items = stats.get('items', [])
@@ -202,8 +187,7 @@ class SummaryTracker:
                         it['delta_24h'] = max(0, it.get('uploaded', 0) - oldest_24h_torrents[h_id])
                 top_items = sorted(items, key=lambda x: x.get('delta_24h', 0), reverse=True)[:5]
 
-        top_labels = []
-        top_values_gb = []
+        top_labels, top_values_gb = [], []
         if any(it.get('delta_24h', 0) > 0 for it in top_items):
             for it in top_items:
                 if it.get('delta_24h', 0) > 0:
@@ -220,7 +204,11 @@ class SummaryTracker:
 
         return {
             'daily': {'labels': daily_labels, 'values': daily_values_gb},
-            'hourly': {'labels': hourly_labels, 'values': hourly_values_mb},
+            'hourly': {
+                'labels': [p['label'] for p in detailed_24h],
+                'values': [p['speed_mbs'] for p in detailed_24h]
+            },
+            'detailed': detailed_24h,
             'top5': {'labels': top_labels, 'values': top_values_gb}
         }
 
@@ -241,13 +229,11 @@ class SummaryTracker:
                 w.writerow([
                     'Имя', 'Хэш', 'Размер (байт)', 'Размер (ГБ)', 'Отдано (байт)', 'Отдано (ГБ)',
                     'Ratio', 'Ср. скорость (всё время)', 'Скорость за 1ч', 'Скорость за 24ч',
-                    'МБ/ч', 'МБ/день',
-                    'Ratio/ч (всего)', 'Ratio/ч (1ч)', 'Ratio/ч (24ч)', 'Дата создания'
+                    'МБ/ч', 'МБ/день', 'Ratio/ч (всего)', 'Ratio/ч (1ч)', 'Ratio/ч (24ч)', 'Дата создания'
                 ])
                 for s in items:
                     w.writerow([
-                        sanitize_csv_cell(s.get('name', '')),
-                        sanitize_csv_cell(s.get('hash_id', '')),
+                        sanitize_csv_cell(s.get('name', '')), sanitize_csv_cell(s.get('hash_id', '')),
                         s.get('size', 0), f"{s.get('size', 0) / (1024 ** 3):.2f}",
                         s.get('uploaded', 0), f"{s.get('uploaded', 0) / (1024 ** 3):.2f}",
                         f"{s.get('ratio', 0.0):.2f}",
@@ -275,12 +261,9 @@ class SummaryTracker:
             if up is not None:
                 delta = max(0, up - prev_up) if prev_up is not None else 0
                 result.append({
-                    'datetime': snap.get('datetime', ''),
-                    'timestamp': snap.get('timestamp', 0),
-                    'uploaded': up,
-                    'uploaded_fmt': format_file_size(up),
-                    'delta_bytes': delta,
-                    'delta_mb': f"{delta / (1024*1024):.2f} МБ",
+                    'datetime': snap.get('datetime', ''), 'timestamp': snap.get('timestamp', 0),
+                    'uploaded': up, 'uploaded_fmt': format_file_size(up),
+                    'delta_bytes': delta, 'delta_mb': f"{delta / (1024*1024):.2f} МБ",
                     'speed_fmt': fmt_speed(delta / 3600) if delta > 0 else "0 B/s"
                 })
                 prev_up = up
