@@ -32,7 +32,7 @@ async function loadProfilesList() {
         row.innerHTML = `
             <span><b>${escapeHtml(p.name)}</b> <span class="badge ${p.role === 'admin' ? 'badge-up' : 'badge-pause'}">${p.role}</span> <span class="muted-text">${escapeHtml(p.token_prefix)}</span></span>
             <span class="row-gap">
-                <button class="btn btn-secondary btn-xs" title="Скопировать ссылку для входа" onclick="copyProfileLinkByHash('${escapeHtml(p.token_hash || '')}')">🔗</button>
+                <button class="btn btn-secondary btn-xs" title="Выпустить новую 1-клик ссылку (старая сбросится)" onclick="copyMagicLink(${p.id}, '${escapeHtml(p.name)}', '${p.role}')">🔗</button>
                 <button class="btn btn-secondary btn-xs" title="Сменить пароль" onclick="changeProfilePassword(${p.id}, '${escapeHtml(p.name)}')">🔑</button>
                 <button class="btn btn-danger btn-xs" title="Удалить" onclick="deleteProfile(${p.id})">🗑️</button>
             </span>
@@ -41,26 +41,39 @@ async function loadProfilesList() {
     });
 }
 
-function copyProfileLinkByHash(tokenHash) {
-    if (!tokenHash) return alert('Хэш токена отсутствует.');
-    const link = `${window.location.origin}/login?hash=${encodeURIComponent(tokenHash)}`;
+function _copyOrPromptLink(link, label) {
     if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(link).then(() => {
-            alert('Ссылка для входа в 1 клик скопирована в буфер обмена!\n\n' + link);
-        }).catch(() => prompt('Ссылка для входа в 1 клик:', link));
+            alert(`${label}\n\n${link}`);
+        }).catch(() => prompt(label, link));
     } else {
-        prompt('Ссылка для входа в 1 клик:', link);
+        prompt(label, link);
     }
 }
 
+async function copyMagicLink(id, name, role) {
+    if (role === 'admin') {
+        const ok = confirm(
+            `⚠️ ВНИМАНИЕ: "${name}" имеет права ADMIN!\n\n` +
+            `Любой, кто получит 1-клик ссылку (или достанет её из истории браузера), получит полный контроль над сервером.\n\n` +
+            `Выпустить новую 1-клик ссылку? (Предыдущая будет аннулирована)`
+        );
+        if (!ok) return;
+    }
+    const res = await api('/api/profiles/reissue_magic', 'POST', { id });
+    const d = await res.json();
+    if (!res.ok || !d.success) return alert(d.error || 'Ошибка выпуска ссылки');
+    const link = `${window.location.origin}/login?magic=${encodeURIComponent(d.magic_token)}`;
+    _copyOrPromptLink(link, 'Новая 1-клик ссылка (предыдущая сброшена) скопирована:');
+}
+
 async function changeProfilePassword(id, name) {
-    const newPwd = prompt(`Смена пароля для "${name}":\n\nВведите новый пароль (или оставьте пустым для авто-токена):`);
+    const newPwd = prompt(`Смена пароля для "${name}":\n\nВведите новый пароль (или оставьте пустым для авто-токена).\nСтарые 1-клик ссылки будут сброшены:`);
     if (newPwd === null) return;
     const res = await api('/api/profiles/change_password', 'POST', { id, password: newPwd.trim() });
     const d = await res.json();
     if (!res.ok || !d.success) return alert(d.error || 'Ошибка смены пароля');
-    const link = `${window.location.origin}/login?hash=${encodeURIComponent(d.hash)}`;
-    prompt(`Пароль успешно обновлён!\nНовый токен: ${d.token}\n\nМагическая ссылка для входа по хэшу:`, link);
+    prompt(`Пароль успешно обновлён!\nНовый пароль/токен:`, d.token);
     loadProfilesList();
 }
 
@@ -73,8 +86,12 @@ async function createProfile() {
     if (!res.ok || !d.success) return alert(d.error || 'Ошибка');
     document.getElementById('new-profile-name').value = '';
     document.getElementById('new-profile-token').value = '';
-    const link = `${window.location.origin}/login?hash=${encodeURIComponent(d.hash)}`;
-    prompt(`Готово! Пароль/токен: ${d.token}\n\nМагическая ссылка для входа по хэшу:`, link);
+    if (d.magic_token) {
+        const link = `${window.location.origin}/login?magic=${encodeURIComponent(d.magic_token)}`;
+        prompt(`Готово! Пароль/токен: ${d.token}\n\n1-клик ссылка для входа (сохраните, больше не покажется):`, link);
+    } else {
+        prompt(`Готово! Admin-профиль создан.\nПароль/токен:`, d.token);
+    }
     loadProfilesList();
 }
 

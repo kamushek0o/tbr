@@ -1,0 +1,147 @@
+<!-- МОДАЛЬНОЕ ОКНО НАСТРОЕК -->
+<div id="settings-modal" class="modal-backdrop">
+    <div class="modal" style="max-height: 90vh; overflow-y: auto;">
+        <div class="card-title" data-i18n="modal_settings">⚙️ НАСТРОЙКИ СЕТИ И УМНОГО РАСЧЁТА</div>
+        <div class="autostart-box">
+            <div><div style="font-size:13px;font-weight:700;" data-i18n="autostart_win">Автозагрузка Windows</div><div class="lbl-xs muted-text" data-i18n="autostart_desc">Автостарт при включении ПК</div></div>
+            <button id="autostart-toggle-btn" class="btn btn-secondary" onclick="toggleAutostart()">...</button>
+        </div>
+        <div class="grid-2">
+            <div class="form-group"><label data-i18n="lbl_host">Хост (127.0.0.1 или 0.0.0.0):</label><input type="text" id="setting-web-host" class="form-control"></div>
+            <div class="form-group"><label data-i18n="lbl_port">Порт (1..65535):</label><input type="number" id="setting-web-port" class="form-control"></div>
+        </div>
+        <div class="form-group"><label data-i18n="lbl_pwd">Пароль для веб-доступа tbr (обязателен при 0.0.0.0):</label><input type="password" id="setting-web-password" class="form-control" placeholder="Оставьте пустым, чтобы не менять"></div>
+        <div class="grid-2">
+            <div class="form-group"><label data-i18n="lbl_qb_ip">qBittorrent IP (локальный/NetBird):</label><input type="text" id="setting-qb-ip" class="form-control" placeholder="авто" data-i18n-ph="auto_ph"></div>
+            <div class="form-group"><label data-i18n="lbl_qb_port">qBittorrent Порт:</label><input type="number" id="setting-qb-port" class="form-control" placeholder="авто" data-i18n-ph="auto_ph"></div>
+        </div>
+        <div class="grid-2">
+            <div class="form-group"><label data-i18n="lbl_qb_user">Логин WebUI qBittorrent:</label><input type="text" id="setting-qb-user" class="form-control" placeholder="admin"></div>
+            <div class="form-group"><label data-i18n="lbl_qb_pass">Пароль WebUI qBittorrent:</label><input type="password" id="setting-qb-password" class="form-control" placeholder="если есть" data-i18n-ph="qb_pass_ph"></div>
+        </div>
+        <div class="form-group">
+            <label data-i18n="lbl_snap_interval">Интервал снимков статистики в SQLite (сетка суток):</label>
+            <select id="setting-snapshot-interval" class="form-control">
+                <option value="1">1 мин</option>
+                <option value="2">2 мин</option>
+                <option value="3">3 мин</option>
+                <option value="4">4 мин</option>
+                <option value="5">5 мин</option>
+                <option value="6">6 мин</option>
+                <option value="10">10 мин</option>
+                <option value="12">12 мин</option>
+                <option value="15">15 мин</option>
+                <option value="20">20 мин</option>
+                <option value="30">30 мин</option>
+                <option value="60">60 мин (1 ч)</option>
+                <option value="120">120 мин (2 ч)</option>
+                <option value="180">180 мин (3 ч)</option>
+                <option value="240">240 мин (4 ч)</option>
+                <option value="360">360 мин (6 ч)</option>
+                <option value="480">480 мин (8 ч)</option>
+                <option value="720">720 мин (12 ч)</option>
+                <option value="1440">1440 мин (24 ч)</option>
+            </select>
+        </div>
+        <div class="card-title mt-10" data-i18n="modal_weights">⚖️ ВЕСА УМНОГО ПРОГНОЗА (ПРИВОДЯТСЯ К 100%)</div>
+        <div class="grid-3">
+            <div class="form-group"><label data-i18n="lbl_w1">1 неделя (168ч):</label><input type="number" min="0" id="setting-w1" class="form-control"></div>
+            <div class="form-group"><label data-i18n="lbl_w2">2 неделя (336ч):</label><input type="number" min="0" id="setting-w2" class="form-control"></div>
+            <div class="form-group"><label data-i18n="lbl_w3">3 неделя (504ч):</label><input type="number" min="0" id="setting-w3" class="form-control"></div>
+        </div>
+        <div class="card-title mt-10">🔑 ПРОФИЛИ И ТОКЕНЫ ДОСТУПА</div>
+        <div class="row-gap mb-8">
+            <input type="text" id="new-profile-name" class="form-control grow-1" placeholder="Имя (напр. Друг)">
+            <input type="text" id="new-profile-token" class="form-control" style="width:140px;" placeholder="Пароль (или авто)">
+            <select id="new-profile-role" class="form-control" style="width:105px;">
+                <option value="viewer">Viewer</option>
+                <option value="admin">Admin</option>
+            </select>
+            <button class="btn" onclick="createProfile()">➕</button>
+        </div>
+        <div id="profiles-list" class="scroll-box" style="max-height:110px; font-size:12px;"></div>
+        <div class="row-end mt-12">
+            <button class="btn btn-secondary" onclick="closeSettingsModal()" data-i18n="btn_close">Закрыть</button>
+            <button class="btn" onclick="saveSettings()" data-i18n="btn_save">💾 Сохранить</button>
+        </div>
+    </div>
+</div>
+
+<!-- МОДАЛЬНОЕ ОКНО МЁРТВЫХ РАЗДАЧ -->
+<div id="dead-torrents-modal" class="modal-backdrop">
+    <div class="modal" style="max-width: 780px; max-height: 85vh; display: flex; flex-direction: column;">
+        <div class="row-between mb-10">
+            <div class="card-title" style="margin-bottom:0;" data-i18n="modal_dead_title">🩺 СКАНЕР МЁРТВЫХ РАЗДАЧ И ОШИБОК ТРЕКЕРОВ</div>
+            <button id="btn-pause-all-dead" class="btn btn-danger btn-xs hidden" onclick="pauseAllDeadTorrents()" data-i18n="btn_pause_all_dead">⏸️ На паузу все найденные</button>
+        </div>
+        <div id="dead-summary-badges" class="row-wrap mb-10"></div>
+        <div class="scroll-box" style="flex:1; max-height: 55vh; border: 1px solid var(--border); border-radius: 6px;">
+            <table>
+                <thead>
+                    <tr>
+                        <th data-i18n="th_name">Имя раздачи</th>
+                        <th data-i18n="th_size">Размер</th>
+                        <th data-i18n="th_dead_err">Ошибка трекера</th>
+                        <th data-i18n="th_dead_act">Действие</th>
+                    </tr>
+                </thead>
+                <tbody id="dead-torrents-tbody">
+                    <tr><td colspan="4" class="center-msg" data-i18n="scanning">Сканирование...</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <div class="row-end mt-12">
+            <button class="btn btn-secondary" onclick="closeDeadModal()" data-i18n="btn_close">Закрыть</button>
+        </div>
+    </div>
+</div>
+
+<!-- МОДАЛЬНОЕ ОКНО ГАЙДА ПО БОТАМ -->
+<div id="bot-guide-modal" class="modal-backdrop">
+    <div class="modal" style="max-width: 520px;">
+        <div id="bot-guide-title" class="card-title">Гайд</div>
+        <div id="bot-guide-body" style="font-size:13px; color:var(--text); margin-bottom:14px;"></div>
+        <div class="row-end">
+            <button class="btn btn-secondary" onclick="closeBotGuide()" data-i18n="btn_close">Закрыть</button>
+        </div>
+    </div>
+</div>
+
+<!-- МОДАЛЬНОЕ ОКНО КАСТОМИЗАЦИИ -->
+<div id="customize-modal" class="modal-backdrop">
+    <div class="modal" style="max-width: 560px; max-height: 88vh; overflow-y: auto;">
+        <div class="card-title">🎨 ОФОРМЛЕНИЕ, ШРИФТЫ И ГРАФИКИ</div>
+        <div class="grid-2 mb-8">
+            <div class="form-group">
+                <label>Тема:</label>
+                <select id="cust-theme" class="form-control" onchange="onCustThemeChange()">
+                    <option value="dark">Dark (Тёмная)</option>
+                    <option value="light">Light (Светлая)</option>
+                    <option value="oled">OLED (Чёрная)</option>
+                    <option value="custom">Custom (Свои цвета)</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Шрифт (15 + 1):</label>
+                <select id="cust-font" class="form-control" onchange="updateFontNote(AVAILABLE_FONTS.find(f=>f.name===this.value))"></select>
+            </div>
+        </div>
+        <div id="cust-font-note" class="lbl-xs orange-txt mb-8"></div>
+        <div class="row-between mb-10">
+            <label class="row-gap pointer lbl-xs"><input type="checkbox" id="cust-allow-gf"> Загружать веб-шрифты с Google Fonts (если нет локально)</label>
+            <label class="row-gap pointer lbl-xs"><input type="checkbox" id="cust-mobile-mode" checked> Мобильный режим (&lt;=768px)</label>
+        </div>
+        <div id="cust-custom-colors" class="grid-2 mb-10 hidden" style="background:var(--bg-input); padding:8px; border-radius:6px;">
+            <div><label class="lbl-xs">Фон:</label> <input type="color" id="cust-bg-main"></div>
+            <div><label class="lbl-xs">Карточки:</label> <input type="color" id="cust-bg-panel"></div>
+            <div><label class="lbl-xs">Текст:</label> <input type="color" id="cust-text"></div>
+            <div><label class="lbl-xs">Акцент:</label> <input type="color" id="cust-accent"></div>
+        </div>
+        <div class="card-title">📊 РЕДАКТОР 3 ГРАФИКОВ</div>
+        <div id="cust-charts-editors"></div>
+        <div class="row-end mt-12">
+            <button class="btn btn-secondary" onclick="closeCustomizeModal()">Закрыть</button>
+            <button class="btn" onclick="saveCustomization()">💾 Применить</button>
+        </div>
+    </div>
+</div>

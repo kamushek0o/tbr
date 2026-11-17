@@ -1,6 +1,6 @@
 # web/routes/settings_bp.py
 import hmac
-from flask import Blueprint, request, jsonify, render_template, redirect, session, current_app
+from flask import Blueprint, request, jsonify, render_template, redirect, session, current_app, make_response
 
 from utils.config import cfg
 from core.qb_api import reset_qb_session
@@ -13,24 +13,30 @@ from web.security import get_csrf_token, is_allowed_qb_ip
 settings_bp = Blueprint('settings_bp', __name__)
 
 
+def _no_leak_response(resp):
+    resp.headers['Referrer-Policy'] = 'no-referrer'
+    resp.headers['Cache-Control'] = 'no-store'
+    return resp
+
+
 @settings_bp.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'GET':
-        # Вход по ссылке через хэш (?hash=...) или токен (?token=...)
-        h = request.args.get('hash', '').strip()
+        magic = request.args.get('magic', '').strip()
         tok = request.args.get('token', '').strip()
         prof = None
-        if h:
-            prof = profiles_db.authenticate_hash(h)
+        if magic:
+            prof = profiles_db.authenticate_magic(magic)
         elif tok:
             prof = profiles_db.authenticate_token(tok)
 
         if prof:
             session['authenticated'] = True
             session['profile_id'] = prof['id']
-            return redirect('/')
-        elif h or tok:
-            return render_template('login.html', csrf_token=get_csrf_token(), error='Недействительная ссылка для входа!'), 401
+            return _no_leak_response(make_response(redirect('/')))
+        elif magic or tok:
+            html = render_template('login.html', csrf_token=get_csrf_token(), error='Недействительная или устаревшая ссылка для входа!')
+            return _no_leak_response(make_response(html, 401))
 
         return render_template('login.html', csrf_token=get_csrf_token(), error=None)
 
@@ -44,8 +50,7 @@ def login():
             session['profile_id'] = adm['id']
         return redirect('/')
 
-    # Поиск по паролю или по хэшу
-    prof = profiles_db.authenticate_token(pwd) or profiles_db.authenticate_hash(pwd)
+    prof = profiles_db.authenticate_token(pwd)
     if prof:
         session['authenticated'] = True
         session['profile_id'] = prof['id']

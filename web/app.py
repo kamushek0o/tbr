@@ -30,6 +30,8 @@ app = Flask(
 )
 app.secret_key = os.urandom(24)
 app.config['BUILD_VER'] = str(int(time.time()))
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
 register_security(app)
 app.register_blueprint(torrents_bp)

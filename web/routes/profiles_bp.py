@@ -46,10 +46,10 @@ def api_profiles_create():
     name = data.get('name', '').strip()
     role = data.get('role', 'viewer')
     custom_token = data.get('token', '')
-    pid, raw_token, t_hash, err = profiles_db.create_profile(name, role, custom_token=custom_token)
+    pid, raw_token, magic_token, err = profiles_db.create_profile(name, role, custom_token=custom_token)
     if not pid:
         return jsonify({'success': False, 'error': err or 'Не удалось создать профиль'}), 400
-    return jsonify({'success': True, 'id': pid, 'token': raw_token, 'hash': t_hash})
+    return jsonify({'success': True, 'id': pid, 'token': raw_token, 'magic_token': magic_token})
 
 
 @profiles_bp.route('/api/profiles/change_password', methods=['POST'])
@@ -61,10 +61,24 @@ def api_profiles_change_password():
     new_pwd = data.get('password', '')
     if not pid:
         return jsonify({'success': False, 'error': 'Не указан ID'}), 400
-    new_tok, t_hash, err = profiles_db.change_password(pid, new_pwd)
+    new_tok, _, err = profiles_db.change_password(pid, new_pwd)
     if err:
         return jsonify({'success': False, 'error': err}), 400
-    return jsonify({'success': True, 'token': new_tok, 'hash': t_hash})
+    return jsonify({'success': True, 'token': new_tok})
+
+
+@profiles_bp.route('/api/profiles/reissue_magic', methods=['POST'])
+def api_profiles_reissue_magic():
+    if g.get('role') != 'admin':
+        return jsonify({'error': 'Только для Admin'}), 403
+    data = request.get_json(silent=True) or {}
+    pid = data.get('id')
+    if not pid:
+        return jsonify({'success': False, 'error': 'Не указан ID'}), 400
+    magic_tok = profiles_db.reissue_magic_token(pid)
+    if not magic_tok:
+        return jsonify({'success': False, 'error': 'Профиль не найден'}), 404
+    return jsonify({'success': True, 'magic_token': magic_tok})
 
 
 @profiles_bp.route('/api/profiles/reissue', methods=['POST'])
@@ -75,10 +89,10 @@ def api_profiles_reissue():
     pid = data.get('id')
     if not pid:
         return jsonify({'success': False, 'error': 'Не указан ID'}), 400
-    new_tok, t_hash = profiles_db.reissue_token(pid)
+    new_tok, _ = profiles_db.reissue_token(pid)
     if not new_tok:
         return jsonify({'success': False, 'error': 'Профиль не найден'}), 404
-    return jsonify({'success': True, 'token': new_tok, 'hash': t_hash})
+    return jsonify({'success': True, 'token': new_tok})
 
 
 @profiles_bp.route('/api/profiles/delete', methods=['POST'])

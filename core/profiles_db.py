@@ -1,5 +1,6 @@
 # core/profiles_db.py
 import os
+import hmac
 import json
 import time
 import hashlib
@@ -7,6 +8,7 @@ import secrets
 import sqlite3
 import threading
 from copy import deepcopy
+from werkzeug.security import generate_password_hash, check_password_hash
 from utils.helpers import APP_DATA_DIR, write_error_log
 
 DEFAULT_UI_SETTINGS = {
@@ -60,6 +62,20 @@ def hash_token(raw_token):
     return hashlib.sha256(str(raw_token).encode('utf-8')).hexdigest()
 
 
+def hash_password_salted(raw_token):
+    return generate_password_hash(str(raw_token), method='pbkdf2:sha256')
+
+
+def _verify_stored_token(stored_hash, raw_token):
+    if not stored_hash:
+        return False, False
+    if stored_hash.startswith(('pbkdf2:', 'scrypt:')):
+        return check_password_hash(stored_hash, raw_token), False
+    # Мягкая проверка старого несолёного SHA-256 с флагом миграции
+    legacy_ok = hmac.compare_digest(stored_hash.lower(), hash_token(raw_token).lower())
+    return legacy_ok, legacy_ok
+
+
 class ProfilesDB:
     def __init__(self):
         self.db_file = os.path.join(APP_DATA_DIR, "profiles.db")
@@ -83,20 +99,26 @@ class ProfilesDB:
                             role TEXT NOT NULL CHECK(role IN ('admin', 'viewer')),
                             token_hash TEXT UNIQUE NOT NULL,
                             token_prefix TEXT NOT NULL,
+                            magic_token_hash TEXT,
                             ui_settings_json TEXT NOT NULL,
                             created_at REAL NOT NULL
                         );
                     """)
                     cur = conn.cursor()
+                    cur.execute("PRAGMA table_info(profiles)")
+                    cols = {r['name'] for r in cur.fetchall()}
+                    if 'magic_token_hash' not in cols:
+                        cur.execute("ALTER TABLE profiles ADD COLUMN magic_token_hash TEXT")
+
                     cur.execute("SELECT COUNT(*) FROM profiles WHERE role = 'admin'")
                     if cur.fetchone()[0] == 0:
                         raw = "tbr_" + secrets.token_urlsafe(24)
                         cur.execute(
-                            """INSERT INTO profiles (name, role, token_hash, token_prefix, ui_settings_json, created_at)
-                               VALUES (?, 'admin', ?, ?, ?, ?)""",
-                            ("Admin", hash_token(raw), raw[:10] + "...", json.dumps(DEFAULT_UI_SETTINGS), time.time())
+                            """INSERT INTO profiles (name, role, token_hash, token_prefix, magic_token_hash, ui_settings_json, created_at)
+                               VALUES (?, 'admin', ?, ?, NULL, ?, ?)""",
+                            ("Admin", hash_password_salted(raw), raw[:10] + "...", json.dumps(DEFAULT_UI_SETTINGS), time.time())
                         )
-                        conn.commit()
+                    conn.commit()
             except Exception as e:
                 write_error_log("Инициализация profiles.db", e)
 
@@ -125,26 +147,40 @@ class ProfilesDB:
     def authenticate_token(self, raw_token):
         if not raw_token or not isinstance(raw_token, str):
             return None
-        t_hash = hash_token(raw_token.strip())
+        clean = raw_token.strip()
+        if not clean:
+            return None
         with self._lock:
             try:
                 with self._get_conn() as conn:
                     cur = conn.cursor()
-                    cur.execute("SELECT * FROM profiles WHERE token_hash = ? LIMIT 1", (t_hash,))
-                    row = cur.fetchone()
-                    return dict(row) if row else None
+                    cur.execute("SELECT * FROM profiles")
+                    for row in cur.fetchall():
+                        ok, needs_upgrade = _verify_stored_token(row['token_hash'], clean)
+                        if ok:
+                            prof = dict(row)
+                            if needs_upgrade:
+                                new_h = hash_password_salted(clean)
+                                cur.execute("UPDATE profiles SET token_hash = ? WHERE id = ?", (new_h, row['id']))
+                                conn.commit()
+                                prof['token_hash'] = new_h
+                            return prof
+                    return None
             except Exception:
                 return None
 
-    def authenticate_hash(self, raw_hash):
-        if not raw_hash or not isinstance(raw_hash, str):
+    def authenticate_magic(self, raw_magic):
+        if not raw_magic or not isinstance(raw_magic, str):
             return None
-        h = raw_hash.strip().lower()
+        clean = raw_magic.strip()
+        if len(clean) < 16:
+            return None
+        m_hash = hash_token(clean)
         with self._lock:
             try:
                 with self._get_conn() as conn:
                     cur = conn.cursor()
-                    cur.execute("SELECT * FROM profiles WHERE lower(token_hash) = ? LIMIT 1", (h,))
+                    cur.execute("SELECT * FROM profiles WHERE magic_token_hash = ? LIMIT 1", (m_hash,))
                     row = cur.fetchone()
                     return dict(row) if row else None
             except Exception:
@@ -155,7 +191,12 @@ class ProfilesDB:
             try:
                 with self._get_conn() as conn:
                     cur = conn.cursor()
-                    cur.execute("SELECT id, name, role, token_prefix, token_hash, created_at FROM profiles ORDER BY id ASC")
+                    cur.execute(
+                        """SELECT id, name, role, token_prefix,
+                                  (magic_token_hash IS NOT NULL AND magic_token_hash != '') AS has_magic,
+                                  created_at
+                           FROM profiles ORDER BY id ASC"""
+                    )
                     return [dict(r) for r in cur.fetchall()]
             except Exception:
                 return []
@@ -174,20 +215,25 @@ class ProfilesDB:
             raw_token = "tbr_" + secrets.token_urlsafe(24)
             prefix = raw_token[:10] + "..."
 
-        t_hash = hash_token(raw_token)
+        if self.authenticate_token(raw_token):
+            return None, None, None, "Такой пароль/токен уже занят другим профилем!"
+
+        # Для Viewer сразу генерируем отдельную 1-клик ссылку; для Admin — только по явному запросу
+        raw_magic = ("m_" + secrets.token_urlsafe(24)) if role == 'viewer' else None
+        m_hash = hash_token(raw_magic) if raw_magic else None
+        p_hash = hash_password_salted(raw_token)
+
         with self._lock:
             try:
                 with self._get_conn() as conn:
                     cur = conn.cursor()
                     cur.execute(
-                        """INSERT INTO profiles (name, role, token_hash, token_prefix, ui_settings_json, created_at)
-                           VALUES (?, ?, ?, ?, ?, ?)""",
-                        (clean_name, role, t_hash, prefix, json.dumps(DEFAULT_UI_SETTINGS), time.time())
+                        """INSERT INTO profiles (name, role, token_hash, token_prefix, magic_token_hash, ui_settings_json, created_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (clean_name, role, p_hash, prefix, m_hash, json.dumps(DEFAULT_UI_SETTINGS), time.time())
                     )
                     conn.commit()
-                    return cur.lastrowid, raw_token, t_hash, None
-            except sqlite3.IntegrityError:
-                return None, None, None, "Такой пароль/токен уже занят другим профилем!"
+                    return cur.lastrowid, raw_token, raw_magic, None
             except Exception as e:
                 write_error_log("Ошибка create_profile", e)
                 return None, None, None, str(e)
@@ -203,28 +249,44 @@ class ProfilesDB:
             raw_token = "tbr_" + secrets.token_urlsafe(24)
             prefix = raw_token[:10] + "..."
 
-        t_hash = hash_token(raw_token)
+        existing = self.authenticate_token(raw_token)
+        if existing and existing['id'] != int(profile_id):
+            return None, None, "Такой пароль уже занят другим профилем!"
+
+        p_hash = hash_password_salted(raw_token)
         with self._lock:
             try:
                 with self._get_conn() as conn:
                     cur = conn.cursor()
                     cur.execute(
-                        "UPDATE profiles SET token_hash = ?, token_prefix = ? WHERE id = ?",
-                        (t_hash, prefix, int(profile_id))
+                        "UPDATE profiles SET token_hash = ?, token_prefix = ?, magic_token_hash = NULL WHERE id = ?",
+                        (p_hash, prefix, int(profile_id))
                     )
                     conn.commit()
                     if cur.rowcount > 0:
-                        return raw_token, t_hash, None
+                        return raw_token, None, None
                     return None, None, "Профиль не найден"
-            except sqlite3.IntegrityError:
-                return None, None, "Такой пароль уже занят другим профилем!"
             except Exception as e:
                 write_error_log("Ошибка change_password", e)
                 return None, None, str(e)
 
+    def reissue_magic_token(self, profile_id):
+        raw_magic = "m_" + secrets.token_urlsafe(24)
+        m_hash = hash_token(raw_magic)
+        with self._lock:
+            try:
+                with self._get_conn() as conn:
+                    cur = conn.cursor()
+                    cur.execute("UPDATE profiles SET magic_token_hash = ? WHERE id = ?", (m_hash, int(profile_id)))
+                    conn.commit()
+                    return raw_magic if cur.rowcount > 0 else None
+            except Exception as e:
+                write_error_log("Ошибка reissue_magic_token", e)
+                return None
+
     def reissue_token(self, profile_id):
-        raw_token, t_hash, _ = self.change_password(profile_id, new_password=None)
-        return raw_token, t_hash
+        raw_token, _, _ = self.change_password(profile_id, new_password=None)
+        return raw_token, None
 
     def delete_profile(self, profile_id):
         with self._lock:
