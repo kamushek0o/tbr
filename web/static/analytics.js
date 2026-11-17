@@ -3,10 +3,13 @@ let lastForecastData = null;
 let chartDaily = null;
 let chartTop5 = null;
 let chartHourly = null;
+let dayLogsPage = 1;
+let dayLogsTotalPages = 1;
 
 async function loadAnalyticsTab() {
     loadLogsList();
     loadAnalyticsCharts();
+    initDayLogs();
     if (!rawSummaryItems.length) await loadSummary();
     else populateAnalyticsSelectors();
 }
@@ -36,15 +39,24 @@ async function loadAnalyticsCharts() {
             return grad;
         };
 
-        const commonOpts = {
+        const makeOpts = (horizontal = false) => ({
             responsive: true,
             maintainAspectRatio: false,
+            indexAxis: horizontal ? 'y' : 'x',
             plugins: { legend: { display: false } },
             scales: {
-                x: { ticks: { color: tickColor, font: { size: 10 } }, grid: { color: gridColor } },
-                y: { ticks: { color: tickColor, font: { size: 10 } }, grid: { color: gridColor }, beginAtZero: true }
+                x: {
+                    beginAtZero: horizontal,
+                    ticks: { color: tickColor, font: { size: 10 } },
+                    grid: { color: gridColor }
+                },
+                y: {
+                    beginAtZero: !horizontal,
+                    ticks: { color: tickColor, font: { size: 10 } },
+                    grid: { color: gridColor }
+                }
             }
-        };
+        });
 
         const cDaily = chCfg.daily || { color: '#2ecc71', opacity: 0.7 };
         if (chartDaily) chartDaily.destroy();
@@ -54,7 +66,7 @@ async function loadAnalyticsCharts() {
                 labels: d.daily?.labels || [],
                 datasets: [{ data: d.daily?.values || [], backgroundColor: makeBg('chart-daily', 'daily', '#2ecc71', 0.7), borderColor: cDaily.color, borderWidth: 1, borderRadius: 4 }]
             },
-            options: commonOpts
+            options: makeOpts(false)
         });
 
         const cTop = chCfg.top5 || { color: '#e67e22', opacity: 0.7 };
@@ -65,7 +77,7 @@ async function loadAnalyticsCharts() {
                 labels: d.top5?.labels || [],
                 datasets: [{ data: d.top5?.values || [], backgroundColor: makeBg('chart-top5', 'top5', '#e67e22', 0.7), borderColor: cTop.color, borderWidth: 1, borderRadius: 4 }]
             },
-            options: { ...commonOpts, indexAxis: 'y' }
+            options: makeOpts(true)
         });
 
         const cHour = chCfg.hourly || { color: '#3498db', opacity: 0.25 };
@@ -81,7 +93,7 @@ async function loadAnalyticsCharts() {
                     fill: true, tension: 0.35, pointRadius: 2
                 }]
             },
-            options: commonOpts
+            options: makeOpts(false)
         });
     } catch (e) {}
 }
@@ -259,7 +271,9 @@ async function loadTorrentHourlyHistory() {
 }
 
 async function loadLogsList() {
+    if (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE === 'viewer') return;
     const res = await api('/api/logs/list');
+    if (!res.ok) return;
     const files = await res.json();
     const sel = document.getElementById('log-file-select');
     sel.innerHTML = '';
@@ -301,4 +315,67 @@ async function loadLogContent() {
     const res = await api(`/api/logs/view?name=${encodeURIComponent(name)}`);
     const d = await res.json();
     document.getElementById('log-view-terminal').textContent = d.content || d.error || t('file_empty');
+}
+
+async function initDayLogs() {
+    const card = document.getElementById('admin-day-logs-card');
+    if (!card) return;
+    if (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE === 'viewer') {
+        card.classList.add('hidden');
+        return;
+    }
+    const picker = document.getElementById('logs-day-picker');
+    if (picker && !picker.value) {
+        picker.value = new Date().toLocaleString('sv-SE').slice(0, 10);
+    }
+    try {
+        const res = await api('/api/logs/can_open_folder');
+        if (res.ok) {
+            const d = await res.json();
+            document.getElementById('btn-open-logs-folder')?.classList.toggle('hidden', !d.can_open);
+        }
+    } catch (e) {}
+    loadDayLogs(1);
+}
+
+async function loadDayLogs(page = 1) {
+    const picker = document.getElementById('logs-day-picker');
+    const dateVal = picker ? picker.value : '';
+    const targetPage = Math.max(1, Math.min(dayLogsTotalPages || 1, page));
+    const dlBtn = document.getElementById('btn-dl-day-logs');
+    if (dlBtn && dateVal) dlBtn.href = `/api/logs/day/download?date=${encodeURIComponent(dateVal)}`;
+
+    const res = await api(`/api/logs/day?date=${encodeURIComponent(dateVal)}&page=${targetPage}&per_page=15`);
+    if (!res.ok) return;
+    const d = await res.json();
+    dayLogsPage = d.page || 1;
+    dayLogsTotalPages = d.total_pages || 1;
+    document.getElementById('day-logs-page-info').textContent = `${dayLogsPage} / ${dayLogsTotalPages} (${d.total || 0})`;
+
+    const tbody = document.getElementById('day-logs-tbody');
+    tbody.innerHTML = '';
+    if (!d.items || !d.items.length) {
+        tbody.innerHTML = '<tr><td colspan="4" class="center-msg">Нет снимков за выбранный день</td></tr>';
+        return;
+    }
+    const frag = document.createDocumentFragment();
+    d.items.forEach(r => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td>${escapeHtml(r.datetime)}</td>
+            <td class="accent-txt"><b>${escapeHtml(r.uploaded_fmt)}</b></td>
+            <td>${escapeHtml(r.size_fmt)}</td>
+            <td>${r.count}</td>
+        `;
+        frag.appendChild(tr);
+    });
+    tbody.appendChild(frag);
+}
+
+async function openLogsFolderHost() {
+    const res = await api('/api/logs/open_folder', 'POST');
+    if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        alert(d.error || 'Недоступно');
+    }
 }
