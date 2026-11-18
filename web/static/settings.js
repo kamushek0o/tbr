@@ -119,4 +119,4 @@ async function uploadRestoreZip(file) {
     } finally {
         document.getElementById('restore-file-input').value = '';
     }
-}d
+}
