@@ -15,62 +15,16 @@ async function loadTorrentHourlyHistory() {
     const frag = document.createDocumentFragment();
     list.forEach(r => {
         const tr = document.createElement('tr');
+        const intLbl = r.interval_min > 0 ? ` (${r.interval_min}м)` : '';
         tr.innerHTML = `
             <td>${escapeHtml(r.datetime)}</td>
             <td>${escapeHtml(r.uploaded_fmt)}</td>
-            <td class="purple-txt" style="font-weight:700;">+${escapeHtml(trBackend(r.delta_mb))}</td>
+            <td class="purple-txt" style="font-weight:700;">+${escapeHtml(trBackend(r.delta_mb))}<span class="muted-text" style="font-size:10px;">${intLbl}</span></td>
             <td class="blue-txt" style="font-weight:600;">${escapeHtml(r.speed_fmt)}</td>
         `;
         frag.appendChild(tr);
     });
     tbody.appendChild(frag);
-}
-
-async function loadLogsList() {
-    if (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE === 'viewer') return;
-    const res = await api('/api/logs/list');
-    if (!res.ok) return;
-    const files = await res.json();
-    const sel = document.getElementById('log-file-select');
-    sel.innerHTML = '';
-
-    const frag = document.createDocumentFragment();
-    const placeholder = document.createElement('option');
-    placeholder.value = '';
-    placeholder.textContent = t('select_log_ph');
-    frag.appendChild(placeholder);
-
-    files.forEach(f => {
-        const opt = document.createElement('option');
-        opt.value = f;
-        opt.textContent = f;
-        frag.appendChild(opt);
-    });
-    sel.appendChild(frag);
-
-    document.getElementById('download-log-btn').classList.add('hidden');
-    document.getElementById('log-view-terminal').textContent = t('log_view_hint');
-}
-
-function onLogSelectChange() {
-    const name = document.getElementById('log-file-select').value;
-    const dlBtn = document.getElementById('download-log-btn');
-    if (!name) {
-        dlBtn.classList.add('hidden');
-        document.getElementById('log-view-terminal').textContent = t('log_view_hint');
-        return;
-    }
-    dlBtn.href = `/api/logs/download?name=${encodeURIComponent(name)}`;
-    dlBtn.classList.remove('hidden');
-}
-
-async function loadLogContent() {
-    const name = document.getElementById('log-file-select').value;
-    if (!name) return alert(t('err_select_file'));
-    onLogSelectChange();
-    const res = await api(`/api/logs/view?name=${encodeURIComponent(name)}`);
-    const d = await res.json();
-    document.getElementById('log-view-terminal').textContent = d.content || d.error || t('file_empty');
 }
 
 async function initDayLogs() {
@@ -80,27 +34,44 @@ async function initDayLogs() {
         card.classList.add('hidden');
         return;
     }
-    const picker = document.getElementById('logs-day-picker');
-    if (picker && !picker.value) {
-        picker.value = new Date().toLocaleString('sv-SE').slice(0, 10);
-    }
     try {
-        const res = await api('/api/logs/can_open_folder');
-        if (res.ok) {
-            const d = await res.json();
+        const [canRes, daysRes] = await Promise.all([api('/api/logs/can_open_folder'), api('/api/logs/days')]);
+        if (canRes.ok) {
+            const d = await canRes.json();
             document.getElementById('btn-open-logs-folder')?.classList.toggle('hidden', !d.can_open);
         }
+        if (daysRes.ok) {
+            const dd = await daysRes.json();
+            const sel = document.getElementById('logs-day-picker');
+            if (sel) {
+                sel.innerHTML = '';
+                const ph = document.createElement('option');
+                ph.value = ''; ph.textContent = `-- ${t('pick_day_hint')} --`;
+                sel.appendChild(ph);
+                (dd.days || []).forEach(day => {
+                    const opt = document.createElement('option');
+                    opt.value = day; opt.textContent = day;
+                    sel.appendChild(opt);
+                });
+            }
+        }
     } catch (e) {}
-    loadDayLogs(1);
 }
 
 async function loadDayLogs(page = 1) {
     const picker = document.getElementById('logs-day-picker');
     const dateVal = picker ? picker.value : '';
-    const targetPage = Math.max(1, Math.min(dayLogsTotalPages || 1, page));
     const dlBtn = document.getElementById('btn-dl-day-logs');
-    if (dlBtn && dateVal) dlBtn.href = `/api/logs/day/download?date=${encodeURIComponent(dateVal)}`;
+    if (!dateVal) {
+        if (dlBtn) dlBtn.classList.add('hidden');
+        return;
+    }
+    if (dlBtn) {
+        dlBtn.href = `/api/logs/day/download?date=${encodeURIComponent(dateVal)}`;
+        dlBtn.classList.remove('hidden');
+    }
 
+    const targetPage = Math.max(1, Math.min(dayLogsTotalPages || 1, page));
     const res = await api(`/api/logs/day?date=${encodeURIComponent(dateVal)}&page=${targetPage}&per_page=15`);
     if (!res.ok) return;
     const d = await res.json();
@@ -111,18 +82,13 @@ async function loadDayLogs(page = 1) {
     const tbody = document.getElementById('day-logs-tbody');
     tbody.innerHTML = '';
     if (!d.items || !d.items.length) {
-        tbody.innerHTML = '<tr><td colspan="4" class="center-msg">Нет снимков за выбранный день</td></tr>';
+        tbody.innerHTML = `<tr><td colspan="4" class="center-msg">${t('no_snaps_day')}</td></tr>`;
         return;
     }
     const frag = document.createDocumentFragment();
     d.items.forEach(r => {
         const tr = document.createElement('tr');
-        tr.innerHTML = `
-            <td>${escapeHtml(r.datetime)}</td>
-            <td class="accent-txt"><b>${escapeHtml(r.uploaded_fmt)}</b></td>
-            <td>${escapeHtml(r.size_fmt)}</td>
-            <td>${r.count}</td>
-        `;
+        tr.innerHTML = `<td>${escapeHtml(r.datetime)}</td><td class="accent-txt"><b>${escapeHtml(r.uploaded_fmt)}</b></td><td>${escapeHtml(r.size_fmt)}</td><td>${r.count}</td>`;
         frag.appendChild(tr);
     });
     tbody.appendChild(frag);

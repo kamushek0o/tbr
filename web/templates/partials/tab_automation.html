@@ -21,6 +21,22 @@
                     <button class="btn" onclick="saveAutomationSettings()" data-i18n="btn_save">💾 Сохранить</button>
                 </div>
             </div>
+
+            <!-- Алерты по железу -->
+            <div class="card mb-10" style="background:var(--bg-input); border:1px solid var(--border); padding:8px 12px;">
+                <div class="lbl-sm mb-6" style="color:var(--warning); font-weight:700;">🚨 СИСТЕМНЫЕ АЛЕРТЫ (TG / DISCORD)</div>
+                <div class="row-wrap" style="gap:14px;">
+                    <div class="row-gap">
+                        <span class="lbl-xs">Алерт, если на диске меньше:</span>
+                        <input type="number" id="auto-alert-disk" class="form-control" style="width:80px;" placeholder="0" min="0" step="5">
+                        <span class="lbl-xs muted-text">GiB (0 = выкл, гистерезис +5 GiB)</span>
+                    </div>
+                    <label class="row-gap pointer lbl-xs">
+                        <input type="checkbox" id="auto-alert-qb"> Алерт при отвале WebUI qBittorrent (> 2.5 мин)
+                    </label>
+                </div>
+            </div>
+
             <div class="grid-3">
                 <div class="form-group">
                     <label class="row-between"><span data-i18n="lbl_tg_token">Telegram Bot Token:</span><button type="button" class="btn btn-secondary btn-xs" onclick="openBotGuide('tg')">?</button></label>

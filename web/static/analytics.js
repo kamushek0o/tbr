@@ -36,8 +36,7 @@ function syncAnalyticsControlsFromUi() {
 }
 
 function onHourlyWindowChange() {
-    const ui = getUiSettings();
-    ui.charts = ui.charts || {};
+    const ui = getUiSettings(); ui.charts = ui.charts || {};
     ui.charts.hourly_hours = parseInt(document.getElementById('chart-hourly-hours').value) || 24;
     persistUiSettings(ui);
 }
@@ -46,16 +45,14 @@ function onHourlyYMinToggle() {
     const isAuto = document.getElementById('chart-hourly-ymin-auto').checked;
     const inp = document.getElementById('chart-hourly-ymin');
     inp.disabled = isAuto;
-    const ui = getUiSettings();
-    ui.charts = ui.charts || {};
+    const ui = getUiSettings(); ui.charts = ui.charts || {};
     ui.charts.hourly_y_min = isAuto ? null : Math.max(0, parseFloat(inp.value) || 0);
     persistUiSettings(ui);
 }
 
 function onHourlyYMinInput() {
     const val = parseFloat(document.getElementById('chart-hourly-ymin').value);
-    const ui = getUiSettings();
-    ui.charts = ui.charts || {};
+    const ui = getUiSettings(); ui.charts = ui.charts || {};
     ui.charts.hourly_y_min = Number.isFinite(val) && val >= 0 ? val : 0;
     persistUiSettings(ui);
 }
@@ -64,22 +61,19 @@ function setTopN(n) {
     const clamped = Math.max(1, Math.min(25, parseInt(n) || 5));
     const inp = document.getElementById('chart-topn-val');
     if (inp) inp.value = clamped;
-    const ui = getUiSettings();
-    ui.charts = ui.charts || {};
+    const ui = getUiSettings(); ui.charts = ui.charts || {};
     ui.charts.top_n = clamped;
     persistUiSettings(ui);
 }
 
 function onTopPeriodChange() {
-    const ui = getUiSettings();
-    ui.charts = ui.charts || {};
+    const ui = getUiSettings(); ui.charts = ui.charts || {};
     ui.charts.top_period = document.getElementById('chart-top-period').value || '1d';
     persistUiSettings(ui);
 }
 
 function onTopScaleChange() {
-    const ui = getUiSettings();
-    ui.charts = ui.charts || {};
+    const ui = getUiSettings(); ui.charts = ui.charts || {};
     ui.charts.top_scale = document.getElementById('chart-top-scale').value || 'lin';
     persistUiSettings(ui);
 }
@@ -119,15 +113,24 @@ async function loadAnalyticsCharts() {
         const tickColor = cs.getPropertyValue('--text-muted').trim() || '#95a5a6';
         const gridColor = cs.getPropertyValue('--border').trim() || 'rgba(255,255,255,0.08)';
 
-        const makeBg = (canvasId, key, defColor, defOp) => {
+        const makeBg = (canvasId, key, defColor, defOp, horizontal = false) => {
             const c = chCfg[key] || { color: defColor, gradient: false, opacity: defOp };
             const rgb = typeof hexToRgb === 'function' ? hexToRgb(c.color) : { r: 46, g: 204, b: 113 };
             const op = c.opacity ?? defOp;
             const rgbaMain = `rgba(${rgb.r},${rgb.g},${rgb.b},${op})`;
             if (!c.gradient) return rgbaMain;
-            const grad = document.getElementById(canvasId).getContext('2d').createLinearGradient(0, 0, 0, 200);
-            grad.addColorStop(0, rgbaMain);
-            grad.addColorStop(1, `rgba(${rgb.r},${rgb.g},${rgb.b},0.02)`);
+            const canvas = document.getElementById(canvasId);
+            const ctx = canvas.getContext('2d');
+            const grad = horizontal
+                ? ctx.createLinearGradient(0, 0, canvas.clientWidth || 600, 0)
+                : ctx.createLinearGradient(0, 0, 0, 220);
+            if (horizontal) {
+                grad.addColorStop(0, `rgba(${rgb.r},${rgb.g},${rgb.b},0.15)`);
+                grad.addColorStop(1, rgbaMain);
+            } else {
+                grad.addColorStop(0, rgbaMain);
+                grad.addColorStop(1, `rgba(${rgb.r},${rgb.g},${rgb.b},0.02)`);
+            }
             return grad;
         };
 
@@ -135,7 +138,10 @@ async function loadAnalyticsCharts() {
         if (chartDaily) chartDaily.destroy();
         chartDaily = new Chart(document.getElementById('chart-daily'), {
             type: 'bar',
-            data: { labels: d.daily?.labels || [], datasets: [{ data: d.daily?.values || [], backgroundColor: makeBg('chart-daily', 'daily', '#2ecc71', 0.7), borderColor: cDaily.color, borderWidth: 1, borderRadius: 4 }] },
+            data: {
+                labels: d.daily?.labels || [],
+                datasets: [{ data: d.daily?.values || [], backgroundColor: makeBg('chart-daily', 'daily', '#2ecc71', 0.7, false), borderColor: cDaily.color, borderWidth: 1, borderRadius: 4, minBarLength: 2, barPercentage: 0.65 }]
+            },
             options: {
                 responsive: true, maintainAspectRatio: false,
                 scales: { x: { ticks: { color: tickColor, font: { size: 10 } }, grid: { color: gridColor } }, y: { beginAtZero: true, ticks: { color: tickColor, font: { size: 10 } }, grid: { color: gridColor } } },
@@ -143,7 +149,6 @@ async function loadAnalyticsCharts() {
             }
         });
 
-        // График 2: Топ-N с динамической высотой и Lin / Log10(1 + x)
         const topWrap = document.getElementById('chart-top5-wrap');
         const rawTopVals = d.top5?.values || [];
         const topFullLabels = d.top5?.full_labels || d.top5?.labels || [];
@@ -158,20 +163,18 @@ async function loadAnalyticsCharts() {
         if (isLog) {
             const pwrTicks = [0, 1, 10, 100, 1000, 10000, 100000].filter(p => p === 0 || p <= maxReal * 2.5);
             if (pwrTicks.length < 2) pwrTicks.push(1, 10);
-            topXScale.afterBuildTicks = axis => {
-                axis.ticks = pwrTicks.map(p => ({ value: Math.log10(1 + p) }));
-            };
-            topXScale.ticks.callback = val => {
-                const orig = Math.round(Math.pow(10, val) - 1);
-                return orig <= 0 ? '0' : String(orig);
-            };
+            topXScale.afterBuildTicks = axis => { axis.ticks = pwrTicks.map(p => ({ value: Math.log10(1 + p) })); };
+            topXScale.ticks.callback = val => { const orig = Math.round(Math.pow(10, val) - 1); return orig <= 0 ? '0' : String(orig); };
         }
 
         const cTop = chCfg.top5 || { color: '#e67e22', opacity: 0.7 };
         if (chartTop5) chartTop5.destroy();
         chartTop5 = new Chart(document.getElementById('chart-top5'), {
             type: 'bar',
-            data: { labels: d.top5?.labels || [], datasets: [{ data: plotTopVals, backgroundColor: makeBg('chart-top5', 'top5', '#e67e22', 0.7), borderColor: cTop.color, borderWidth: 1, borderRadius: 4 }] },
+            data: {
+                labels: d.top5?.labels || [],
+                datasets: [{ data: plotTopVals, backgroundColor: makeBg('chart-top5', 'top5', '#e67e22', 0.7, true), borderColor: cTop.color, borderWidth: 1, borderRadius: 4, minBarLength: 2, barPercentage: 0.7 }]
+            },
             options: {
                 responsive: true, maintainAspectRatio: false, indexAxis: 'y',
                 scales: { x: topXScale, y: { ticks: { color: tickColor, font: { size: 10 } }, grid: { color: gridColor } } },
@@ -201,7 +204,7 @@ async function loadAnalyticsCharts() {
                 labels: d.hourly?.labels || [],
                 datasets: [{
                     data: d.hourly?.values || [], borderColor: cHour.color,
-                    backgroundColor: makeBg('chart-hourly', 'hourly', '#3498db', 0.25),
+                    backgroundColor: makeBg('chart-hourly', 'hourly', '#3498db', 0.25, false),
                     fill: true, tension: 0.35, cubicInterpolationMode: 'monotone', clip: true,
                     pointRadius: ctx => (hourFlags[ctx.dataIndex] ? (winHours <= 24 ? 3.5 : 1.5) : 0),
                     pointHoverRadius: 5, pointHitRadius: 10
@@ -228,7 +231,7 @@ async function loadAnalyticsCharts() {
                 }
             }
         });
-    } catch (e) {}
+    } catch (e) { console.error(e); }
 }
 
 function populateAnalyticsSelectors() {
@@ -266,7 +269,6 @@ async function runSmartCalc() {
     const goal = document.getElementById('smart-calc-goal').value.trim();
     const speed = document.getElementById('smart-calc-speed').value.trim();
     if (!goal) { term.textContent = t('err_no_goal'); return; }
-
     term.textContent = t('calc_running');
     let d;
     try {

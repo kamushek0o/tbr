@@ -2,7 +2,9 @@
 import os
 import re
 import hmac
+import time
 import secrets
+import threading
 import ipaddress
 import urllib.parse
 from flask import request, jsonify, redirect, session, g
@@ -12,8 +14,27 @@ from core.profiles_db import profiles_db
 
 HASH_RE = re.compile(r'^[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?$')
 
-_VIEWER_BLOCKED_GET_PREFIXES = ('/api/settings', '/api/automation', '/api/logs', '/api/profiles')
+_VIEWER_BLOCKED_GET_PREFIXES = ('/api/settings', '/api/automation', '/api/logs', '/api/profiles', '/api/network')
 _PUBLIC_ASSET_PATHS = ('/favicon.ico', '/manifest.json', '/icon-192.png', '/icon-512.png', '/apple-touch-icon.png')
+
+_RATE_LOCK = threading.Lock()
+_FAILED_LOGINS = {}  # { ip: [timestamps] }
+
+
+def check_rate_limit(ip, max_attempts=10, window_sec=300):
+    now = time.time()
+    with _RATE_LOCK:
+        hist = [t for t in _FAILED_LOGINS.get(ip, []) if now - t < window_sec]
+        _FAILED_LOGINS[ip] = hist
+        return len(hist) < max_attempts
+
+
+def record_failed_login(ip):
+    now = time.time()
+    with _RATE_LOCK:
+        hist = [t for t in _FAILED_LOGINS.get(ip, []) if now - t < 300]
+        hist.append(now)
+        _FAILED_LOGINS[ip] = hist
 
 
 def get_csrf_token():
@@ -28,8 +49,7 @@ def is_allowed_qb_ip(ip_str):
         return True
     try:
         ip_obj = ipaddress.ip_address(s)
-        cgnat_net = ipaddress.ip_network('100.64.0.0/10')
-        return ip_obj.is_loopback or ip_obj.is_private or (ip_obj in cgnat_net)
+        return ip_obj.is_loopback or ip_obj.is_private or (ip_obj in ipaddress.ip_network('100.64.0.0/10'))
     except ValueError:
         return False
 
@@ -39,17 +59,6 @@ def resolve_log_path(filename):
         return None
     clean = os.path.basename(filename.replace('\\', '/'))
     allowed_dirs = [LOG_FOLDER, AUTO_FOLDER, MANUAL_FOLDER]
-
-    if '/' in filename or '\\' in filename:
-        parts = [p for p in filename.replace('\\', '/').split('/') if p]
-        if len(parts) >= 2:
-            sub = parts[-2]
-            if sub == 'auto_hourly':
-                allowed_dirs = [AUTO_FOLDER]
-            elif sub == 'manual_exports':
-                allowed_dirs = [MANUAL_FOLDER]
-            clean = parts[-1]
-
     for directory in allowed_dirs:
         try:
             norm_dir = os.path.abspath(directory)
@@ -65,7 +74,7 @@ def _resolve_request_profile(is_exposed):
     auth_hdr = request.headers.get('Authorization', '').strip()
     token = auth_hdr[7:].strip() if auth_hdr.lower().startswith('bearer ') else request.headers.get('X-Auth-Token', '').strip()
     if token:
-        prof = profiles_db.authenticate_token(token)
+        prof = profiles_db.authenticate_api_token(token)
         if prof:
             return prof, True
 
@@ -87,6 +96,9 @@ def register_security(app):
         if request.path.startswith('/static/') or request.path in _PUBLIC_ASSET_PATHS:
             return None
 
+        if request.path.startswith('/invite/') or request.path == '/api/auth/exchange':
+            return None
+
         is_exposed = app.config.get('IS_EXPOSED', False)
         prof, used_bearer = _resolve_request_profile(is_exposed)
         g.profile = prof
@@ -106,15 +118,16 @@ def register_security(app):
             return redirect('/login')
 
         if g.role == 'viewer':
-            if request.method in ('POST', 'PUT', 'DELETE', 'PATCH'):
+            if request.path == '/api/profile/password' and request.method == 'POST':
+                pass
+            elif request.method in ('POST', 'PUT', 'DELETE', 'PATCH'):
                 return jsonify({'error': 'Недостаточно прав (режим Viewer — только чтение)'}), 403
-            if any(request.path.startswith(p) for p in _VIEWER_BLOCKED_GET_PREFIXES):
+            elif any(request.path.startswith(p) for p in _VIEWER_BLOCKED_GET_PREFIXES):
                 return jsonify({'error': 'Доступ закрыт для роли Viewer'}), 403
 
         if request.method == 'POST' and not used_bearer:
             expected_token = session.get('csrf_token')
             sent_token = request.headers.get('X-CSRF-Token') or request.form.get('csrf_token')
-
             origin = request.headers.get('Origin') or request.headers.get('Referer')
             allowed_hosts = {request.host}
             for hdr in ('X-Forwarded-Host', 'X-Original-Host'):

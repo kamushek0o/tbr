@@ -1,19 +1,20 @@
 # core/torrent_parser.py
 import os
 import time
+import shutil
 import datetime
+import threading
 from utils.bencode import decode_bencode
 from utils.helpers import BT_BACKUP_PATH, write_error_log
 
-_CACHE = None
-_CACHE_TIME = 0
-CACHE_TTL = 3
+_LOCK = threading.Lock()
+# { hash_id: {'sig': (mtime_ns, size), 'data': dict} }
+_FILE_CACHE = {}
 
 
 def force_clear_cache():
-    global _CACHE, _CACHE_TIME
-    _CACHE = None
-    _CACHE_TIME = 0
+    with _LOCK:
+        _FILE_CACHE.clear()
 
 
 def _extract_str(val):
@@ -43,25 +44,17 @@ def _get_field(data, *keys):
     return None
 
 
-def parse_single_torrent(fastresume_path):
+def parse_single_torrent(fastresume_path, tor_map=None):
     t_hash = os.path.splitext(os.path.basename(fastresume_path))[0].lower()
     base_dir = os.path.dirname(fastresume_path)
 
-    fr_data = {}
-    try:
-        with open(fastresume_path, 'rb') as f:
-            fr_data = decode_bencode(f.read()) or {}
-    except Exception as e:
-        write_error_log(f"decode fastresume {t_hash}", e)
+    with open(fastresume_path, 'rb') as f:
+        fr_data = decode_bencode(f.read())
+    if not isinstance(fr_data, dict):
+        raise ValueError(f"Битый или неполный fastresume: {t_hash}")
 
     tor_data = {}
-    tor_path = os.path.join(base_dir, t_hash + '.torrent')
-    if not os.path.exists(tor_path):
-        for candidate in os.listdir(base_dir):
-            if candidate.lower() == (t_hash + '.torrent'):
-                tor_path = os.path.join(base_dir, candidate)
-                break
-
+    tor_path = (tor_map or {}).get(t_hash) or os.path.join(base_dir, t_hash + '.torrent')
     if os.path.exists(tor_path):
         try:
             with open(tor_path, 'rb') as f:
@@ -75,12 +68,10 @@ def parse_single_torrent(fastresume_path):
     tor_name = _extract_str(_get_field(info_dict, 'name.utf-8', 'name'))
     if tor_name and tor_name.lower() != t_hash:
         name = tor_name
-
     if not name:
         qbt_name = _extract_str(_get_field(fr_data, 'qBt-name'))
         if qbt_name and qbt_name.lower() != t_hash:
             name = qbt_name
-
     if not name:
         fr_name = _extract_str(_get_field(fr_data, 'name'))
         if fr_name and fr_name.lower() != t_hash:
@@ -91,7 +82,6 @@ def parse_single_torrent(fastresume_path):
         base_name = os.path.basename(os.path.normpath(save_path))
         if base_name and len(base_name) > 2 and base_name.lower() != t_hash:
             name = base_name
-
     if not name:
         name = t_hash
 
@@ -101,7 +91,6 @@ def parse_single_torrent(fastresume_path):
     elif 'files' in info_dict or b'files' in info_dict:
         files = _get_field(info_dict, 'files') or []
         size = sum(int(_get_field(f, 'length') or 0) for f in files)
-
     if size <= 0:
         size = int(_get_field(fr_data, 'total_size', 'total_downloaded') or 1)
 
@@ -130,14 +119,12 @@ def parse_single_torrent(fastresume_path):
             elif isinstance(tr, (str, bytes)):
                 trackers.append(_extract_str(tr))
 
-    ratio = round(uploaded / size, 2) if size > 0 else 0.0
-
     return {
         'name': name,
         'hash_id': t_hash,
         'size': size,
         'uploaded': uploaded,
-        'ratio': ratio,
+        'ratio': round(uploaded / size, 2) if size > 0 else 0.0,
         'active_seconds': active_seconds,
         'save_path': save_path,
         'trackers': trackers,
@@ -149,51 +136,79 @@ def parse_single_torrent(fastresume_path):
 
 
 def get_all_torrents(use_cache=True):
-    global _CACHE, _CACHE_TIME
-    now = time.time()
-    if use_cache and _CACHE is not None and (now - _CACHE_TIME) < CACHE_TTL:
-        return _CACHE
-
-    result = {}
     if not os.path.exists(BT_BACKUP_PATH):
-        return result
+        return {}
 
-    for fname in os.listdir(BT_BACKUP_PATH):
-        if fname.lower().endswith('.fastresume'):
-            full_path = os.path.join(BT_BACKUP_PATH, fname)
+    try:
+        entries = list(os.scandir(BT_BACKUP_PATH))
+    except Exception as e:
+        write_error_log("scandir BT_backup", e)
+        return {}
+
+    tor_map = {}
+    fr_entries = []
+    for ent in entries:
+        low = ent.name.lower()
+        if low.endswith('.torrent'):
+            tor_map[low[:-8]] = ent.path
+        elif low.endswith('.fastresume'):
+            fr_entries.append((low[:-11], ent))
+
+    seen_hashes = set()
+    result = {}
+
+    with _LOCK:
+        if not use_cache:
+            _FILE_CACHE.clear()
+
+        for t_hash, ent in fr_entries:
+            seen_hashes.add(t_hash)
             try:
-                item = parse_single_torrent(full_path)
-                result[item['hash_id']] = item
-            except Exception as e:
-                write_error_log(f"parse error {fname}", e)
+                st = ent.stat()
+                sig = (st.st_mtime_ns, st.st_size)
+            except OSError:
+                continue
 
-    _CACHE = result
-    _CACHE_TIME = now
+            cached = _FILE_CACHE.get(t_hash)
+            if cached and cached['sig'] == sig:
+                result[t_hash] = cached['data']
+                continue
+
+            try:
+                item = parse_single_torrent(ent.path, tor_map=tor_map)
+                _FILE_CACHE[t_hash] = {'sig': sig, 'data': item}
+                result[t_hash] = item
+            except Exception:
+                # Файл в процессе перезаписи клиентом: сохраняем прошлое валидное значение или пропускаем тик
+                if cached:
+                    result[t_hash] = cached['data']
+
+        # Авточистка «призраков» (файлы, исчезнувшие из BT_backup)
+        ghosts = [h for h in _FILE_CACHE if h not in seen_hashes]
+        for g in ghosts:
+            del _FILE_CACHE[g]
+
     return result
 
 
 def get_global_torrent_summaries():
-    data = get_all_torrents(use_cache=False)
-    return list(data.values())
+    return list(get_all_torrents(use_cache=True).values())
 
 
 def copy_torrent_to_watch(t_hash):
     if not os.path.exists(BT_BACKUP_PATH):
         return False, "Папка BT_backup не найдена"
-
     tor_path = os.path.join(BT_BACKUP_PATH, t_hash.lower() + '.torrent')
     if not os.path.exists(tor_path):
         for candidate in os.listdir(BT_BACKUP_PATH):
             if candidate.lower() == (t_hash.lower() + '.torrent'):
                 tor_path = os.path.join(BT_BACKUP_PATH, candidate)
                 break
-
     if not os.path.exists(tor_path):
         return False, f"Файл {t_hash}.torrent не найден"
 
     watch_dir = os.path.join(os.path.expanduser('~'), 'Downloads')
     os.makedirs(watch_dir, exist_ok=True)
-    import shutil
     try:
         dest = os.path.join(watch_dir, os.path.basename(tor_path))
         shutil.copy2(tor_path, dest)

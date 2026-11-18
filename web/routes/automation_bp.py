@@ -30,15 +30,10 @@ def _parse_rule_payload(data):
         return None, 'Укажите хотя бы одно условие (Ratio, Время, Отдано или Среднюю скорость)'
 
     return {
-        'name': name,
-        'time_mode': time_mode,
-        'min_ratio': min_ratio,
-        'min_seed_days': min_days,
-        'min_uploaded_bytes': min_up_bytes,
-        'speed_op': speed_op if use_speed else '',
-        'speed_bytes': speed_bytes if use_speed else 0.0,
-        'speed_window_min': speed_win,
-        'action_pause': bool(data.get('action_pause', False)),
+        'name': name, 'time_mode': time_mode, 'min_ratio': min_ratio,
+        'min_seed_days': min_days, 'min_uploaded_bytes': min_up_bytes,
+        'speed_op': speed_op if use_speed else '', 'speed_bytes': speed_bytes if use_speed else 0.0,
+        'speed_window_min': speed_win, 'action_pause': bool(data.get('action_pause', False)),
         'action_tag': str(data.get('action_tag', '')).strip()[:32],
         'action_remove_tag': str(data.get('action_remove_tag', '')).strip()[:32],
         'notify': bool(data.get('notify', True))
@@ -53,7 +48,9 @@ def api_automation_get():
             'interval': cfg.getint('Auto_Interval_Min', 5),
             'has_tg_token': bool(cfg.get('TG_Bot_Token', '').strip()),
             'tg_chat_id': cfg.get('TG_Chat_ID', ''),
-            'has_discord': bool(cfg.get('Discord_Webhook', '').strip())
+            'has_discord': bool(cfg.get('Discord_Webhook', '').strip()),
+            'alert_disk_gib': cfg.getint('Alert_Disk_Min_GiB', 0),
+            'alert_qb_down': cfg.getboolean('Alert_QB_Down', False)
         },
         'rules': automation_engine.get_rules()
     })
@@ -65,8 +62,9 @@ def api_automation_settings():
     enabled = bool(data.get('enabled', False))
     try:
         interval = max(1, min(1440, int(data.get('interval', 5))))
+        alert_disk = max(0, min(100000, int(data.get('alert_disk_gib', 0) or 0)))
     except (ValueError, TypeError):
-        return jsonify({'success': False, 'error': 'Интервал должен быть от 1 до 1440 мин.'}), 400
+        return jsonify({'success': False, 'error': 'Некорректные числовые параметры'}), 400
 
     tg_token = str(data.get('tg_token', '')).strip()
     tg_chat = str(data.get('tg_chat_id', '')).strip()
@@ -77,6 +75,8 @@ def api_automation_settings():
 
     cfg.set('Auto_Enabled', str(enabled))
     cfg.set('Auto_Interval_Min', str(interval))
+    cfg.set('Alert_Disk_Min_GiB', str(alert_disk))
+    cfg.set('Alert_QB_Down', str(bool(data.get('alert_qb_down', False))))
     if tg_token:
         cfg.set('TG_Bot_Token', tg_token)
     cfg.set('TG_Chat_ID', tg_chat)
@@ -105,7 +105,6 @@ def api_automation_add_rule():
     parsed, err = _parse_rule_payload(data)
     if err:
         return jsonify({'success': False, 'error': err}), 400
-
     rid = automation_engine.add_rule(**parsed)
     return jsonify({'success': bool(rid), 'id': rid})
 
@@ -120,21 +119,16 @@ def api_automation_update_rule():
         rid_int = int(rid)
     except (ValueError, TypeError):
         return jsonify({'success': False, 'error': 'Некорректный ID правила'}), 400
-
     parsed, err = _parse_rule_payload(data)
     if err:
         return jsonify({'success': False, 'error': err}), 400
-
     ok = automation_engine.update_rule(rid_int, **parsed)
-    if not ok:
-        return jsonify({'success': False, 'error': 'Правило не найдено'}), 404
-    return jsonify({'success': True})
+    return jsonify({'success': ok}), (200 if ok else 404)
 
 
 @automation_bp.route('/api/automation/rules/toggle', methods=['POST'])
 def api_automation_toggle_rule():
-    data = request.get_json(silent=True) or {}
-    rid = data.get('id')
+    rid = (request.get_json(silent=True) or {}).get('id')
     if not rid:
         return jsonify({'success': False}), 400
     return jsonify({'success': automation_engine.toggle_rule(rid)})
@@ -142,8 +136,7 @@ def api_automation_toggle_rule():
 
 @automation_bp.route('/api/automation/rules/delete', methods=['POST'])
 def api_automation_delete_rule():
-    data = request.get_json(silent=True) or {}
-    rid = data.get('id')
+    rid = (request.get_json(silent=True) or {}).get('id')
     if not rid:
         return jsonify({'success': False}), 400
     return jsonify({'success': automation_engine.delete_rule(rid)})

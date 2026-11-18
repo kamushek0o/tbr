@@ -9,14 +9,17 @@
 <body class="login-body">
     <div class="card login-card">
         <div class="login-title">⚡ tbr PRO</div>
-        <p class="muted-text" style="margin-bottom: 16px;">Сервер открыт по сети. Введите пароль:</p>
+        <p class="muted-text" style="margin-bottom: 16px;">Сервер открыт по сети. Войдите по логину и паролю:</p>
         {% if error %}
         <div class="alert-err">{{ error }}</div>
         {% endif %}
         <form method="POST" action="/login">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <div class="form-group">
-                <input type="password" name="password" class="form-control" placeholder="Пароль доступа" required autofocus>
+                <input type="text" name="login" class="form-control" placeholder="Логин (или пусто для токена)" autofocus>
+            </div>
+            <div class="form-group">
+                <input type="password" name="password" class="form-control" placeholder="Пароль" required>
             </div>
             <button type="submit" class="btn w-full" style="padding: 10px; justify-content: center;">🔓 Войти</button>
         </form>

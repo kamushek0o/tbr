@@ -12,6 +12,7 @@
     <title>tbr PRO — Швейцарский нож qBittorrent</title>
     <link rel="stylesheet" href="/static/style.css?v={{ v }}">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
 </head>
 <body>
 <header>
@@ -34,6 +35,7 @@
         <button class="btn btn-secondary" title="Обновить текущую вкладку" onclick="refreshActiveTab()">↻</button>
         <button id="lang-toggle-btn" class="btn btn-secondary" onclick="toggleLang()">🌐 RU</button>
         <button class="btn btn-secondary" onclick="openCustomizeModal()">🎨 Оформление</button>
+        <button class="btn btn-secondary" title="Сменить свой пароль" onclick="changeSelfPassword()">🔑</button>
         <button class="btn btn-secondary" onclick="openSettingsModal()" data-i18n="btn_settings">⚙️ Настройки</button>
         <button class="btn btn-secondary" onclick="restartQb()" data-i18n="btn_restart_qb">🔄 Перезапуск qB</button>
         {% if auth_enabled %}
@@ -48,13 +50,32 @@
         <div class="torrent-left">
             <div class="table-toolbar">
                 <input type="text" id="search-box" class="search-input" placeholder="🔍 Поиск раздач..." data-i18n-ph="search_ph" oninput="filterTorrents()">
-                <button class="btn btn-secondary" onclick="scanDeadTorrents()" data-i18n="btn_scan_dead">🩺 Мёртвые раздачи</button>
-                <button class="btn btn-secondary" onclick="loadTorrents(true)" data-i18n="btn_refresh">🔄 Обновить</button>
+                <select id="filter-tag-select" class="form-control" style="width:130px; font-size:12px;" onchange="filterTorrents()">
+                    <option value="">Все теги</option>
+                </select>
+                <select id="filter-tracker-select" class="form-control" style="width:140px; font-size:12px;" onchange="filterTorrents()">
+                    <option value="">Все трекеры</option>
+                </select>
+                <button class="btn btn-secondary" onclick="scanDeadTorrents()" data-i18n="btn_scan_dead">🩺 Мёртвые</button>
+                <button class="btn btn-secondary" onclick="loadTorrents(true)" data-i18n="btn_refresh">🔄</button>
             </div>
+
+            <!-- Плашка массовых действий -->
+            <div id="bulk-actions-bar" class="row-between hidden" style="background:var(--bg-input); padding:6px 12px; border-bottom:1px solid var(--border);">
+                <span class="lbl-xs">Выбрано раздач: <b id="bulk-selected-count" class="accent-txt">0</b></span>
+                <div class="row-gap" style="gap:6px;">
+                    <button class="btn btn-secondary btn-xs" onclick="bulkTorrentAction('stop')">⏸️ Пауза</button>
+                    <button class="btn btn-secondary btn-xs" onclick="bulkTorrentAction('start')">▶️ Пуск</button>
+                    <button class="btn btn-secondary btn-xs" onclick="bulkTorrentAction('addTags')">🏷️ +Тег</button>
+                    <button class="btn btn-secondary btn-xs" onclick="bulkTorrentAction('removeTags')">✂️ -Тег</button>
+                </div>
+            </div>
+
             <div class="table-container">
                 <table>
                     <thead>
                         <tr>
+                            <th style="width:28px;"><input type="checkbox" onchange="toggleSelectAllVisible(this)" title="Выбрать все видимые"></th>
                             <th onclick="sortTable('name')"><span data-i18n="th_name">Имя раздачи</span> <span id="sort-icon-name"></span></th>
                             <th onclick="sortTable('size')"><span data-i18n="th_size">Размер</span> <span id="sort-icon-size"></span></th>
                             <th onclick="sortTable('uploaded')"><span data-i18n="th_uploaded">Отдано</span> <span id="sort-icon-uploaded"></span></th>
@@ -64,7 +85,7 @@
                         </tr>
                     </thead>
                     <tbody id="torrents-tbody">
-                        <tr><td colspan="6" class="center-msg" data-i18n="loading_torrents">Загрузка раздач...</td></tr>
+                        <tr><td colspan="7" class="center-msg" data-i18n="loading_torrents">Загрузка раздач...</td></tr>
                     </tbody>
                 </table>
             </div>

@@ -61,14 +61,11 @@ def api_smart_calc():
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         return jsonify({'success': False, 'error': 'Неверный формат JSON'}), 400
-    target_type = str(data.get('target_type', 'torrent'))
-    target_hash = str(data.get('hash', ''))
-    target_str = str(data.get('target', ''))[:64]
-    speed_str = str(data.get('speed', ''))[:64]
-
     summaries = get_global_torrent_summaries()
-    result = summary_tracker.calculate_smart_forecast(target_type, target_hash, target_str, speed_str, summaries)
-    return jsonify(result)
+    return jsonify(summary_tracker.calculate_smart_forecast(
+        str(data.get('target_type', 'torrent')), str(data.get('hash', '')),
+        str(data.get('target', ''))[:64], str(data.get('speed', ''))[:64], summaries
+    ))
 
 
 @analytics_bp.route('/api/smart_calc/export', methods=['POST'])
@@ -82,19 +79,12 @@ def api_smart_calc_export():
     rows = forecast_data.get('forecast_rows')
     if not isinstance(rows, list) or len(rows) > 100 or not all(isinstance(r, dict) for r in rows):
         return jsonify({'success': False, 'error': 'Некорректные строки прогноза'}), 400
-
     filepath, filename = summary_tracker.export_forecast_csv(forecast_data)
     if not filepath:
         return jsonify({'success': False, 'error': 'Ошибка создания файла'}), 500
-
     with open(filepath, 'rb') as f:
         file_bytes = f.read()
-
-    return Response(
-        file_bytes,
-        mimetype="text/csv",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{urllib.parse.quote(filename)}"}
-    )
+    return Response(file_bytes, mimetype="text/csv", headers={"Content-Disposition": f"attachment; filename*=UTF-8''{urllib.parse.quote(filename)}"})
 
 
 @analytics_bp.route('/api/export_csv', methods=['GET', 'POST'])
@@ -107,18 +97,12 @@ def api_export_csv():
         if not isinstance(items, list) or len(items) > 5000 or not all(isinstance(x, dict) for x in items):
             return jsonify({'error': 'Некорректный список или превышен лимит 5000 строк'}), 400
     else:
-        summaries = get_global_torrent_summaries()
-        items = summary_tracker.get_stats(summaries)['items']
+        items = summary_tracker.get_stats(get_global_torrent_summaries())['items']
 
     summary_tracker.save_manual_csv(items)
-
     output = io.StringIO()
     writer = csv.writer(output, delimiter=';')
-    writer.writerow([
-        'Имя', 'Хэш', 'Размер (байт)', 'Размер (ГБ)', 'Отдано (байт)', 'Отдано (ГБ)',
-        'Ratio', 'Ср. скорость (всё время)', 'Скорость за 1ч', 'Скорость за 24ч',
-        'МБ/ч', 'МБ/день', 'Ratio/ч (всего)', 'Ratio/ч (1ч)', 'Ratio/ч (24ч)', 'Дата создания'
-    ])
+    writer.writerow(['Имя', 'Хэш', 'Размер (байт)', 'Размер (ГБ)', 'Отдано (байт)', 'Отдано (ГБ)', 'Ratio', 'Ср. скорость (всё время)', 'Скорость за 1ч', 'Скорость за 24ч', 'МБ/ч', 'МБ/день', 'Ratio/ч (всего)', 'Ratio/ч (1ч)', 'Ratio/ч (24ч)', 'Дата создания'])
     for s in items:
         sz = int(s.get('size', 0)) if isinstance(s.get('size'), (int, float)) else 0
         up = int(s.get('uploaded', 0)) if isinstance(s.get('uploaded'), (int, float)) else 0
@@ -126,22 +110,14 @@ def api_export_csv():
         writer.writerow([
             sanitize_csv_cell(s.get('name', '')), sanitize_csv_cell(s.get('hash_id', '')),
             sz, f"{sz / (1024 ** 3):.2f}", up, f"{up / (1024 ** 3):.2f}", f"{rt:.2f}",
-            sanitize_csv_cell(s.get('speed_all_time_fmt', '0 B/s')),
-            sanitize_csv_cell(s.get('speed_1h_fmt', '0 B/s')),
-            sanitize_csv_cell(s.get('speed_24h_fmt', '0 B/s')),
-            sanitize_csv_cell(s.get('vol_hour_fmt', '0.00 МБ/ч')),
-            sanitize_csv_cell(s.get('vol_day_fmt', '0.00 МБ/день')),
-            sanitize_csv_cell(s.get('ratio_h_all_fmt', '0.000 /ч')),
-            sanitize_csv_cell(s.get('ratio_h_hour_fmt', '0.000 /ч')),
-            sanitize_csv_cell(s.get('ratio_h_day_fmt', '0.000 /ч')),
+            sanitize_csv_cell(s.get('speed_all_time_fmt', '0 B/s')), sanitize_csv_cell(s.get('speed_1h_fmt', '0 B/s')),
+            sanitize_csv_cell(s.get('speed_24h_fmt', '0 B/s')), sanitize_csv_cell(s.get('vol_hour_fmt', '0.00 МБ/ч')),
+            sanitize_csv_cell(s.get('vol_day_fmt', '0.00 МБ/день')), sanitize_csv_cell(s.get('ratio_h_all_fmt', '0.000 /ч')),
+            sanitize_csv_cell(s.get('ratio_h_hour_fmt', '0.000 /ч')), sanitize_csv_cell(s.get('ratio_h_day_fmt', '0.000 /ч')),
             sanitize_csv_cell(s.get('created', ''))
         ])
     filename = f"summary_manual_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-    return Response(
-        output.getvalue().encode('utf-8-sig'),
-        mimetype="text/csv",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
-    )
+    return Response(output.getvalue().encode('utf-8-sig'), mimetype="text/csv", headers={"Content-Disposition": f"attachment; filename={filename}"})
 
 
 @analytics_bp.route('/api/logs/can_open_folder')
@@ -160,6 +136,13 @@ def api_logs_open_folder():
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@analytics_bp.route('/api/logs/days')
+def api_logs_days():
+    if g.get('role') != 'admin':
+        return jsonify({'error': 'Только для Admin'}), 403
+    return jsonify({'days': summary_tracker.db.get_available_snapshot_days(limit=90)})
 
 
 @analytics_bp.route('/api/logs/day')
@@ -183,20 +166,9 @@ def api_logs_by_day_download():
         return "Только для Admin", 403
     date_str, start_ts, end_ts = _parse_day_bounds(request.args.get('date', ''))
     rows = summary_tracker.db.get_snapshots_by_day_all(start_ts, end_ts)
-
     output = io.StringIO()
     writer = csv.writer(output, delimiter=';')
     writer.writerow(['Время снимка', 'Всего отдано (байт)', 'Всего отдано', 'Общий размер (байт)', 'Раздач'])
     for r in rows:
-        writer.writerow([
-            sanitize_csv_cell(r.get('datetime', '')),
-            r.get('total_uploaded', 0),
-            sanitize_csv_cell(format_file_size(r.get('total_uploaded', 0))),
-            r.get('total_size', 0),
-            r.get('count', 0)
-        ])
-    return Response(
-        output.getvalue().encode('utf-8-sig'),
-        mimetype="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=snapshots_{date_str}.csv"}
-    )
+        writer.writerow([sanitize_csv_cell(r.get('datetime', '')), r.get('total_uploaded', 0), sanitize_csv_cell(format_file_size(r.get('total_uploaded', 0))), r.get('total_size', 0), r.get('count', 0)])
+    return Response(output.getvalue().encode('utf-8-sig'), mimetype="text/csv", headers={"Content-Disposition": f"attachment; filename=snapshots_{date_str}.csv"})

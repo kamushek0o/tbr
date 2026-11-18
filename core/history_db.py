@@ -191,7 +191,6 @@ class HistoryDB:
                 return []
 
     def get_torrents_positive_deltas(self, since_ts, allowed_hashes=None):
-        """Суммирует max(0, B_i - B_{i-1}) в окне по раздачам с защитой от скачков Fastresume Merger."""
         totals = {}
         allowed = {h.lower() for h in allowed_hashes} if allowed_hashes is not None else None
         with self._lock:
@@ -205,24 +204,19 @@ class HistoryDB:
                         WHERE s.timestamp >= ?
                         ORDER BY ts.hash_id ASC, s.timestamp ASC
                     """, (since_ts,))
-                    cur_hash = None
-                    prev_up = None
-                    prev_ts = None
+                    cur_hash = prev_up = prev_ts = None
                     for row in cur:
                         h = row['hash_id']
                         if allowed is not None and h not in allowed:
                             continue
-                        up = int(row['uploaded'] or 0)
-                        ts = float(row['timestamp'] or 0)
+                        up, ts = int(row['uploaded'] or 0), float(row['timestamp'] or 0)
                         if h != cur_hash:
                             cur_hash, prev_up, prev_ts = h, up, ts
                             continue
-                        d = up - prev_up
-                        dt = max(1.0, ts - prev_ts)
+                        d, dt = up - prev_up, max(1.0, ts - prev_ts)
                         if d > 0:
                             bps = d / dt
-                            is_merger_jump = (bps > 1073741824) or (prev_up < 104857600 and d > 5368709120 and bps > 314572800)
-                            if not is_merger_jump:
+                            if not ((bps > 1073741824) or (prev_up < 104857600 and d > 5368709120 and bps > 314572800)):
                                 totals[h] = totals.get(h, 0) + d
                         prev_up, prev_ts = up, ts
             except Exception as e:
@@ -298,6 +292,16 @@ class HistoryDB:
                     return (rows[0]['timestamp'], rows[0]['uploaded']), (rows[-1]['timestamp'], rows[-1]['uploaded']), len(rows)
             except Exception:
                 return None, None, 0
+
+    def get_available_snapshot_days(self, limit=90):
+        with self._lock:
+            try:
+                with self._get_connection() as conn:
+                    cur = conn.cursor()
+                    cur.execute("SELECT DISTINCT substr(datetime, 1, 10) AS day FROM snapshots WHERE length(datetime) >= 10 ORDER BY day DESC LIMIT ?", (int(limit),))
+                    return [r['day'] for r in cur.fetchall() if r['day']]
+            except Exception:
+                return []
 
     def get_snapshots_by_day_paginated(self, start_ts, end_ts, page=1, per_page=15):
         page, per_page = max(1, int(page)), max(1, min(100, int(per_page)))

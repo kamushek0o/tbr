@@ -65,7 +65,7 @@ class WebServerController:
             self._start_locked(host, port)
 
     def _start_locked(self, host=None, port=None):
-        from werkzeug.serving import make_server
+        from waitress import create_server
         h = (host or cfg.get('Web_Host', '127.0.0.1')).strip() or '127.0.0.1'
         p = port or cfg.getint('Web_Port', 5000)
 
@@ -83,31 +83,35 @@ class WebServerController:
         automation_engine.start()
 
         try:
-            self.server_instance = make_server(h, p, app, threaded=True)
-            print(f"🚀 Сервер tbr запущен на http://{h}:{p} (Авторизация: {'ВКЛ' if is_exposed else 'ВЫКЛ'})")
+            self.server_instance = create_server(app, host=h, port=p, threads=8)
+            print(f"🚀 Сервер Waitress запущен на http://{h}:{p} (Авторизация: {'ВКЛ' if is_exposed else 'ВЫКЛ'})")
 
             def serve():
                 try:
                     if self.server_instance:
-                        self.server_instance.serve_forever()
+                        self.server_instance.run()
                 except Exception as e:
-                    write_error_log("WebServer serve_forever", e)
+                    write_error_log("Waitress serve", e)
 
             threading.Thread(target=serve, daemon=True).start()
         except Exception as e:
             write_error_log("WebServerController Start Error", e)
             print(f"❌ Ошибка запуска веб-сервера на {h}:{p}: {e}")
 
+    def stop(self):
+        with self._lock:
+            if self.server_instance:
+                try:
+                    self.server_instance.close()
+                except Exception:
+                    pass
+                self.server_instance = None
+
     def restart(self, new_host, new_port):
         def do_restart():
             time.sleep(0.5)
+            self.stop()
             with self._lock:
-                if self.server_instance:
-                    try:
-                        self.server_instance.shutdown()
-                    except Exception:
-                        pass
-                    self.server_instance = None
                 self._start_locked(new_host, new_port)
 
         threading.Thread(target=do_restart, daemon=True).start()

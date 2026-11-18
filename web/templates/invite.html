@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Активация профиля — tbr PRO</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="login-body">
+    <div class="card login-card">
+        <div class="login-title">⚡ tbr PRO</div>
+        {% if error %}
+        <div class="alert-err">{{ error }}</div>
+        {% endif %}
+        {% if invite %}
+        <p class="muted-text" style="margin-bottom: 14px;">
+            Одноразовый инвайт для <b>{{ invite.name }}</b> ({{ invite.role }}).<br>Задайте логин и пароль:
+        </p>
+        <form method="POST">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div class="form-group">
+                <input type="text" name="login" class="form-control" value="{{ invite.login }}" placeholder="Логин" required minlength="2">
+            </div>
+            <div class="form-group">
+                <input type="password" name="password" class="form-control" placeholder="Новый пароль (мин. 3 симв.)" required minlength="3" autofocus>
+            </div>
+            <button type="submit" class="btn w-full" style="padding: 10px; justify-content: center;">✅ Активировать и войти</button>
+        </form>
+        {% endif %}
+    </div>
+</body>
+</html>

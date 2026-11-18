@@ -7,6 +7,9 @@ import argparse
 import webbrowser
 import threading
 
+from core.backup_manager import apply_pending_restore_if_any
+apply_pending_restore_if_any()
+
 from utils.config import cfg
 from utils.helpers import write_log
 from core.single_instance import SingleInstanceLock
@@ -32,7 +35,6 @@ def get_browser_url(host, port):
 def main():
     args = parse_arguments()
 
-    # Проверка единственного экземпляра (ожидание ~1.5 с при рестарте)
     instance_lock = SingleInstanceLock()
     if not instance_lock.acquire(wait_sec=1.5):
         msg = "tbr уже запущен (проверь системный трей)"
@@ -66,6 +68,7 @@ def main():
 
     def on_shutdown():
         summary_tracker.flush_on_exit()
+        web_server.stop()
         instance_lock.release()
 
     atexit.register(on_shutdown)
@@ -95,21 +98,13 @@ def main():
 
     import tkinter as tk
     from tkinter import messagebox
-
     try:
         from gui.main_window import TorrentApp
     except ImportError:
-        try:
-            from main_window import TorrentApp
-        except ImportError as e:
-            print(f"❌ Ошибка: не найден файл main_window.py с классом TorrentApp! {e}")
-            TorrentApp = None
+        TorrentApp = None
 
     if TorrentApp is None:
-        messagebox.showerror(
-            "Ошибка запуска",
-            "Файл интерфейса main_window.py не найден!\nПоложите его в папку gui/main_window.py."
-        )
+        messagebox.showerror("Ошибка запуска", "Файл интерфейса gui/main_window.py не найден!")
         on_shutdown()
         return
 

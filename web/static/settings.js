@@ -88,3 +88,35 @@ async function saveSettings() {
     if (d.port_changed) setTimeout(() => { window.location.port = payload.web_port; }, 1500);
     else loadTorrents(true);
 }
+
+function downloadBackupZip() {
+    const noHist = document.getElementById('backup-no-history').checked ? '1' : '0';
+    const noSec = document.getElementById('backup-no-secrets').checked ? '1' : '0';
+    window.location.href = `/api/backup/export?exclude_history=${noHist}&strip_secrets=${noSec}`;
+}
+
+async function uploadRestoreZip(file) {
+    if (!file) return;
+    if (!confirm(`⚠️ ВНИМАНИЕ: Восстановление из архива "${file.name}" заменит текущие базы данных и настройки!\n\nПродолжить?`)) {
+        document.getElementById('restore-file-input').value = '';
+        return;
+    }
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+        const res = await fetch('/api/backup/restore', {
+            method: 'POST',
+            headers: { 'X-CSRF-Token': CSRF_TOKEN },
+            body: fd
+        });
+        const d = await res.json();
+        alert(d.message || d.error);
+        if (d.success) {
+            closeSettingsModal();
+        }
+    } catch (e) {
+        alert('Ошибка загрузки: ' + e.message);
+    } finally {
+        document.getElementById('restore-file-input').value = '';
+    }
+}d

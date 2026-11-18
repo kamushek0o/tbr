@@ -63,6 +63,11 @@ async function loadAutomation() {
     document.getElementById('auto-discord').value = '';
     document.getElementById('auto-discord').placeholder = s.has_discord ? t('webhook_set_ph') : 'https://discord.com/api/webhooks/...';
 
+    const diskInp = document.getElementById('auto-alert-disk');
+    if (diskInp) diskInp.value = s.alert_disk_gib || '';
+    const qbChk = document.getElementById('auto-alert-qb');
+    if (qbChk) qbChk.checked = Boolean(s.alert_qb_down);
+
     currentRules = d.rules || [];
     renderRules(currentRules);
 }
@@ -200,6 +205,8 @@ async function saveAutomationSettings() {
     const payload = {
         enabled: document.getElementById('auto-enabled').checked,
         interval: parseInt(document.getElementById('auto-interval').value) || 5,
+        alert_disk_gib: parseInt(document.getElementById('auto-alert-disk')?.value || 0) || 0,
+        alert_qb_down: document.getElementById('auto-alert-qb')?.checked || false,
         tg_token: document.getElementById('auto-tg-token').value.trim(),
         tg_chat_id: document.getElementById('auto-tg-chat').value.trim(),
         discord_webhook: document.getElementById('auto-discord').value.trim()
@@ -260,8 +267,7 @@ async function submitAutomationRule() {
 
     try {
         const res = await api(url, 'POST', payload);
-        let d = {};
-        try { d = await res.json(); } catch (_) {}
+        const d = await res.json();
         if (!res.ok || d.success === false) {
             return alert(d.error || `HTTP ${res.status}`);
         }
