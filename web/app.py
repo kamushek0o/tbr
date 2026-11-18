@@ -6,6 +6,15 @@ import threading
 from flask import Flask
 from werkzeug.exceptions import HTTPException
 
+try:
+    import waitress
+    from waitress import create_server
+    HAS_WAITRESS = True
+except ImportError:
+    waitress = None
+    create_server = None
+    HAS_WAITRESS = False
+
 from utils.config import cfg
 from utils.helpers import write_error_log
 from core.torrent_parser import get_global_torrent_summaries
@@ -65,7 +74,6 @@ class WebServerController:
             self._start_locked(host, port)
 
     def _start_locked(self, host=None, port=None):
-        from waitress import create_server
         h = (host or cfg.get('Web_Host', '127.0.0.1')).strip() or '127.0.0.1'
         p = port or cfg.getint('Web_Port', 5000)
 
@@ -83,15 +91,25 @@ class WebServerController:
         automation_engine.start()
 
         try:
-            self.server_instance = create_server(app, host=h, port=p, threads=8)
-            print(f"🚀 Сервер Waitress запущен на http://{h}:{p} (Авторизация: {'ВКЛ' if is_exposed else 'ВЫКЛ'})")
+            if HAS_WAITRESS and create_server:
+                self.server_instance = create_server(app, host=h, port=p, threads=8)
+                engine_name = "Waitress"
+            else:
+                from werkzeug.serving import make_server
+                self.server_instance = make_server(h, p, app, threaded=True)
+                engine_name = "Werkzeug (fallback)"
+
+            print(f"🚀 Сервер {engine_name} запущен на http://{h}:{p} (Авторизация: {'ВКЛ' if is_exposed else 'ВЫКЛ'})")
 
             def serve():
                 try:
                     if self.server_instance:
-                        self.server_instance.run()
+                        if hasattr(self.server_instance, 'run'):
+                            self.server_instance.run()
+                        else:
+                            self.server_instance.serve_forever()
                 except Exception as e:
-                    write_error_log("Waitress serve", e)
+                    write_error_log("WebServer serve error", e)
 
             threading.Thread(target=serve, daemon=True).start()
         except Exception as e:
@@ -102,7 +120,10 @@ class WebServerController:
         with self._lock:
             if self.server_instance:
                 try:
-                    self.server_instance.close()
+                    if hasattr(self.server_instance, 'close'):
+                        self.server_instance.close()
+                    elif hasattr(self.server_instance, 'shutdown'):
+                        self.server_instance.shutdown()
                 except Exception:
                     pass
                 self.server_instance = None

@@ -42,14 +42,14 @@ if errorlevel 1 (
     exit /b 1
 )
 
-python -c "import PyInstaller, flask, pystray, PIL" >nul 2>&1
+python -c "import PyInstaller, flask, pystray, PIL, waitress" >nul 2>&1
 if errorlevel 1 (
     echo [📦] Доустанавливаю библиотеки из requirements.txt и PyInstaller...
     python -m pip install --upgrade pip
     if exist "%ROOT%\requirements.txt" (
         python -m pip install -r "%ROOT%\requirements.txt" pyinstaller
     ) else (
-        python -m pip install flask pystray pillow pyinstaller
+        python -m pip install flask pystray pillow waitress pyinstaller
     )
     if errorlevel 1 (
         echo ❌ Не удалось установить зависимости!
@@ -74,6 +74,7 @@ if exist "%ROOT%\build\onefile" rd /s /q "%ROOT%\build\onefile" >nul 2>&1
 mkdir "%ROOT%\build\onefile"
 
 python -m PyInstaller --noconfirm --clean --onefile --windowed --name "tbr" ^
+    --hidden-import "waitress" ^
     --distpath "%ROOT%\dist\onefile" ^
     --workpath "%ROOT%\build\onefile" ^
     --specpath "%ROOT%\build\onefile" ^
@@ -97,6 +98,7 @@ if exist "%ROOT%\build\onedir" rd /s /q "%ROOT%\build\onedir" >nul 2>&1
 mkdir "%ROOT%\build\onedir"
 
 python -m PyInstaller --noconfirm --clean --onedir --windowed --name "tbr" ^
+    --hidden-import "waitress" ^
     --distpath "%ROOT%\dist\onedir" ^
     --workpath "%ROOT%\build\onedir" ^
     --specpath "%ROOT%\build\onedir" ^
