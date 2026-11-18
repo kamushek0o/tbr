@@ -1,11 +1,25 @@
 # web/routes/widget_bp.py
+import io
 import json
+from PIL import Image
 from flask import Blueprint, request, jsonify, Response, g
 from core.summary_tracker import summary_tracker
 from core.profiles_db import profiles_db
 from core.widget_service import get_widget_summary, render_widget_chart_png, get_pwa_icon_png
 
 widget_bp = Blueprint('widget_bp', __name__)
+_FAVICON_CACHE = None
+
+
+@widget_bp.route('/favicon.ico')
+def favicon_ico():
+    global _FAVICON_CACHE
+    if _FAVICON_CACHE is None:
+        img = Image.open(io.BytesIO(get_pwa_icon_png(64)))
+        buf = io.BytesIO()
+        img.save(buf, format='ICO', sizes=[(32, 32), (64, 64)])
+        _FAVICON_CACHE = buf.getvalue()
+    return Response(_FAVICON_CACHE, mimetype='image/x-icon', headers={'Cache-Control': 'public, max-age=86400'})
 
 
 @widget_bp.route('/manifest.json')

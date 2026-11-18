@@ -13,6 +13,7 @@ from core.profiles_db import profiles_db
 HASH_RE = re.compile(r'^[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?$')
 
 _VIEWER_BLOCKED_GET_PREFIXES = ('/api/settings', '/api/automation', '/api/logs', '/api/profiles')
+_PUBLIC_ASSET_PATHS = ('/favicon.ico', '/manifest.json', '/icon-192.png', '/icon-512.png', '/apple-touch-icon.png')
 
 
 def get_csrf_token():
@@ -61,22 +62,19 @@ def resolve_log_path(filename):
 
 
 def _resolve_request_profile(is_exposed):
-    # 1. Заголовок Authorization: Bearer <token> или X-Auth-Token
     auth_hdr = request.headers.get('Authorization', '').strip()
     token = auth_hdr[7:].strip() if auth_hdr.lower().startswith('bearer ') else request.headers.get('X-Auth-Token', '').strip()
     if token:
         prof = profiles_db.authenticate_token(token)
         if prof:
-            return prof, True  # token-based (без CSRF-сессии)
+            return prof, True
 
-    # 2. Активная сессия по profile_id
     pid = session.get('profile_id')
     if pid:
         prof = profiles_db.get_by_id(pid)
         if prof:
             return prof, False
 
-    # 3. Вход по мастер-паролю Web_Password или локальный хост без пароля
     if session.get('authenticated') or not is_exposed:
         return profiles_db.get_default_admin(), False
 
@@ -86,7 +84,7 @@ def _resolve_request_profile(is_exposed):
 def register_security(app):
     @app.before_request
     def security_middleware():
-        if request.path.startswith('/static/'):
+        if request.path.startswith('/static/') or request.path in _PUBLIC_ASSET_PATHS:
             return None
 
         is_exposed = app.config.get('IS_EXPOSED', False)
@@ -107,7 +105,6 @@ def register_security(app):
                 return jsonify({'error': 'Требуется авторизация'}), 401
             return redirect('/login')
 
-        # Строгое ограничение роли Viewer
         if g.role == 'viewer':
             if request.method in ('POST', 'PUT', 'DELETE', 'PATCH'):
                 return jsonify({'error': 'Недостаточно прав (режим Viewer — только чтение)'}), 403
