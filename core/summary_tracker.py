@@ -255,18 +255,34 @@ class SummaryTracker:
         rows = self.db.get_torrent_history_rows(t_hash, limit_hours=limit_hours)
         rows.reverse()
         result = []
-        prev_up = None
+        prev_snap = None
         for snap in rows:
             up = snap.get('uploaded')
+            ts = float(snap.get('timestamp', 0) or 0)
             if up is not None:
-                delta = max(0, up - prev_up) if prev_up is not None else 0
+                if prev_snap is not None:
+                    p_up = prev_snap.get('uploaded', up)
+                    p_ts = float(prev_snap.get('timestamp', ts) or ts)
+                    dt_sec = max(1.0, ts - p_ts)
+                    delta = max(0, up - p_up)
+                    bps = delta / dt_sec
+                    interval_min = int(round(dt_sec / 60.0))
+                else:
+                    delta = 0
+                    bps = 0.0
+                    interval_min = 0
+
                 result.append({
-                    'datetime': snap.get('datetime', ''), 'timestamp': snap.get('timestamp', 0),
-                    'uploaded': up, 'uploaded_fmt': format_file_size(up),
-                    'delta_bytes': delta, 'delta_mb': f"{delta / (1024*1024):.2f} МБ",
-                    'speed_fmt': fmt_speed(delta / 3600) if delta > 0 else "0 B/s"
+                    'datetime': snap.get('datetime', ''),
+                    'timestamp': int(ts),
+                    'interval_min': interval_min,
+                    'uploaded': up,
+                    'uploaded_fmt': format_file_size(up),
+                    'delta_bytes': delta,
+                    'delta_mb': f"{delta / (1024*1024):.2f} МБ",
+                    'speed_fmt': fmt_speed(bps)
                 })
-                prev_up = up
+                prev_snap = snap
         result.reverse()
         return result
 

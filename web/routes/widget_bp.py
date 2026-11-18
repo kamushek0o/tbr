@@ -54,8 +54,12 @@ def api_widget_chart_png():
     hours = request.args.get('hours', 24, type=int)
     w = request.args.get('w', 600, type=int)
     h = request.args.get('h', 220, type=int)
+    chart_type = request.args.get('type', 'speed')
     prof = g.get('profile')
     pid = prof['id'] if prof else 0
     ui_settings = profiles_db.get_ui_settings(pid)
-    png_bytes = render_widget_chart_png(summary_tracker.db, ui_settings, hours=hours, width=w, height=h)
+    png_bytes = render_widget_chart_png(
+        summary_tracker.db, ui_settings,
+        hours=hours, width=w, height=h, chart_type=chart_type
+    )
     return Response(png_bytes, mimetype='image/png', headers={'Cache-Control': 'no-store'})
