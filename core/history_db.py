@@ -215,20 +215,16 @@ class HistoryDB:
                         up = int(row['uploaded'] or 0)
                         ts = float(row['timestamp'] or 0)
                         if h != cur_hash:
-                            cur_hash = h
-                            prev_up = up
-                            prev_ts = ts
+                            cur_hash, prev_up, prev_ts = h, up, ts
                             continue
                         d = up - prev_up
                         dt = max(1.0, ts - prev_ts)
                         if d > 0:
-                            # Защита от скачков Fastresume Merger (>1 GiB/s или с нуля на >5 GiB за срез при >300 MiB/s)
                             bps = d / dt
                             is_merger_jump = (bps > 1073741824) or (prev_up < 104857600 and d > 5368709120 and bps > 314572800)
                             if not is_merger_jump:
                                 totals[h] = totals.get(h, 0) + d
-                        prev_up = up
-                        prev_ts = ts
+                        prev_up, prev_ts = up, ts
             except Exception as e:
                 write_error_log("Ошибка get_torrents_positive_deltas", e)
         return totals

@@ -102,7 +102,6 @@ def compute_top_n_torrents(db, summaries, live=None, top_n=5, period='1d'):
     n = max(1, min(25, int(top_n or 5)))
     per = period if period in ('1d', '7d', '30d', 'all') else '1d'
 
-    # Только текущие раздачи, присутствующие в qBittorrent (если WebUI доступен) или в актуальном кэше
     active_map = {}
     if live:
         by_hash = {(s.get('hash_id') or '').lower(): s for s in summaries}
@@ -128,15 +127,15 @@ def compute_top_n_torrents(db, summaries, live=None, top_n=5, period='1d'):
         scored = [(h, active_map[h]['name'], deltas.get(h, 0)) for h in active_map if deltas.get(h, 0) > 0]
 
     scored.sort(key=lambda x: x[2], reverse=True)
-    res = []
-    for h, nm, val in scored[:n]:
-        res.append({
+    return [
+        {
             'hash': h,
             'full_name': nm,
             'short_name': (nm[:26] + '…') if len(nm) > 27 else nm,
             'gb': round(val / (1024 ** 3), 3 if per != 'all' else 2)
-        })
-    return res
+        }
+        for h, nm, val in scored[:n]
+    ]
 
 
 def _get_disk_free_bytes(live_info):
@@ -205,6 +204,7 @@ def get_widget_summary(db, ui_settings=None, top_period=None, top_scale=None):
         prev_r = r
 
     top_items = compute_top_n_torrents(db, torrents, live=live, top_n=5, period=per)
+    free_b = _get_disk_free_bytes(live)
 
     return {
         'qb_running': qb_up, 'total_torrents': total_cnt, 'active_torrents': active_cnt,
@@ -212,7 +212,7 @@ def get_widget_summary(db, ui_settings=None, top_period=None, top_scale=None):
         'uploaded_24h_bytes': up_24h, 'uploaded_24h_fmt': format_file_size(up_24h),
         'uploaded_today_bytes': up_today, 'uploaded_today_fmt': format_file_size(up_today),
         'total_uploaded_bytes': total_uploaded, 'total_uploaded_fmt': format_file_size(total_uploaded),
-        'disk_free_bytes': _get_disk_free_bytes(live), 'disk_free_fmt': format_file_size(_get_disk_free_bytes(live)),
+        'disk_free_bytes': free_b, 'disk_free_fmt': format_file_size(free_b),
         'timestamp': int(now_ts),
         'charts': {
             'top_period': per,
