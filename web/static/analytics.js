@@ -56,7 +56,20 @@ async function loadAnalyticsCharts() {
                 labels: d.daily?.labels || [],
                 datasets: [{ data: d.daily?.values || [], backgroundColor: makeBg('chart-daily', 'daily', '#2ecc71', 0.7), borderColor: cDaily.color, borderWidth: 1, borderRadius: 4 }]
             },
-            options: makeOpts(false)
+            options: {
+                ...makeOpts(false),
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: function(ctx) {
+                                const isEn = (typeof currentLang !== 'undefined' && currentLang === 'en');
+                                return `${isEn ? 'Daily Upload' : 'Отдано за день'}: ${ctx.parsed.y} GiB`;
+                            }
+                        }
+                    }
+                }
+            }
         });
 
         const cTop = chCfg.top5 || { color: '#e67e22', opacity: 0.7 };
@@ -67,10 +80,24 @@ async function loadAnalyticsCharts() {
                 labels: d.top5?.labels || [],
                 datasets: [{ data: d.top5?.values || [], backgroundColor: makeBg('chart-top5', 'top5', '#e67e22', 0.7), borderColor: cTop.color, borderWidth: 1, borderRadius: 4 }]
             },
-            options: makeOpts(true)
+            options: {
+                ...makeOpts(true),
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: function(ctx) {
+                                const isEn = (typeof currentLang !== 'undefined' && currentLang === 'en');
+                                return `${isEn ? 'Uploaded' : 'Отдано'}: ${ctx.parsed.x} GiB`;
+                            }
+                        }
+                    }
+                }
+            }
         });
 
         const cHour = chCfg.hourly || { color: '#3498db', opacity: 0.25 };
+        const hourlyMeta = d.hourly?.meta || d.detailed || [];
         if (chartHourly) chartHourly.destroy();
         chartHourly = new Chart(document.getElementById('chart-hourly'), {
             type: 'line',
@@ -83,7 +110,31 @@ async function loadAnalyticsCharts() {
                     fill: true, tension: 0.35, pointRadius: 2
                 }]
             },
-            options: makeOpts(false)
+            options: {
+                ...makeOpts(false),
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: function(ctx) {
+                                const idx = ctx.dataIndex;
+                                const m = hourlyMeta[idx];
+                                const isEn = (typeof currentLang !== 'undefined' && currentLang === 'en');
+                                const spd = (ctx.parsed.y !== undefined ? ctx.parsed.y : (m?.speed_mbs || 0)).toFixed(2);
+                                const speedLine = `⚡ ${isEn ? 'Speed' : 'Скорость'}: ${spd} MiB/s`;
+
+                                if (!m || !m.delta_fmt) {
+                                    return speedLine;
+                                }
+
+                                const intTxt = m.interval_min > 0 ? (isEn ? ` (${m.interval_min}m)` : ` (${m.interval_min}м)`) : '';
+                                const upLine = `📦 ${isEn ? 'Uploaded' : 'Отдано'}: +${m.delta_fmt}${intTxt}`;
+                                return [speedLine, upLine];
+                            }
+                        }
+                    }
+                }
+            }
         });
     } catch (e) {}
 }

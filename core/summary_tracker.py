@@ -206,7 +206,8 @@ class SummaryTracker:
             'daily': {'labels': daily_labels, 'values': daily_values_gb},
             'hourly': {
                 'labels': [p['label'] for p in detailed_24h],
-                'values': [p['speed_mbs'] for p in detailed_24h]
+                'values': [p['speed_mbs'] for p in detailed_24h],
+                'meta': detailed_24h
             },
             'detailed': detailed_24h,
             'top5': {'labels': top_labels, 'values': top_values_gb}

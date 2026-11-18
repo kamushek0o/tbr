@@ -29,7 +29,6 @@ def build_detailed_speed_series(db, hours=24):
                 delta = max(0, int(r['total_uploaded']) - int(prev['total_uploaded']))
                 bps = delta / dt_sec
 
-                # Защита от фантомных всплесков при мердже/добавлении раздач
                 prev_cnt = int(prev.get('count', 0) or 0)
                 cur_cnt = int(r.get('count', 0) or 0)
                 if cur_cnt > prev_cnt and bps > (200 * 1024 * 1024):
@@ -41,11 +40,14 @@ def build_detailed_speed_series(db, hours=24):
                     'label': dt_obj.strftime('%H:%M') if hours <= 48 else dt_obj.strftime('%d.%m %H:%M'),
                     'speed_bps': round(bps, 2),
                     'speed_mbs': round(bps / (1024 * 1024), 3),
-                    'mb_h': round((bps * 3600.0) / (1024 * 1024), 1)
+                    'mb_h': round((bps * 3600.0) / (1024 * 1024), 1),
+                    'delta_bytes': delta,
+                    'delta_fmt': format_file_size(delta),
+                    'dt_sec': int(dt_sec),
+                    'interval_min': int(round(dt_sec / 60.0))
                 })
         prev = r
 
-    # Сглаживание одиночных импульсных выбросов (аномалия > 5x от соседних)
     if len(points) >= 3:
         for i in range(1, len(points) - 1):
             p_prev = points[i - 1]['speed_mbs']
@@ -55,6 +57,9 @@ def build_detailed_speed_series(db, hours=24):
             if p_cur > 15.0 and p_cur > (avg_neighbor * 5.0):
                 points[i]['speed_mbs'] = round(avg_neighbor, 3)
                 points[i]['speed_bps'] = round(avg_neighbor * 1024 * 1024, 2)
+                dt = points[i]['dt_sec']
+                points[i]['delta_bytes'] = int(points[i]['speed_bps'] * dt)
+                points[i]['delta_fmt'] = format_file_size(points[i]['delta_bytes'])
 
     return points
 
