@@ -22,11 +22,7 @@ def pwa_manifest():
             {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
         ]
     }
-    return Response(
-        json.dumps(manifest, ensure_ascii=False),
-        mimetype='application/manifest+json',
-        headers={'Cache-Control': 'no-store'}
-    )
+    return Response(json.dumps(manifest, ensure_ascii=False), mimetype='application/manifest+json', headers={'Cache-Control': 'no-store'})
 
 
 @widget_bp.route('/icon-192.png')
@@ -46,20 +42,20 @@ def pwa_apple_icon():
 
 @widget_bp.route('/api/widget')
 def api_widget():
-    return jsonify(get_widget_summary(summary_tracker.db))
+    prof = g.get('profile')
+    ui_settings = profiles_db.get_ui_settings(prof['id'] if prof else 0)
+    top_period = request.args.get('top_period')
+    top_scale = request.args.get('top_scale')
+    return jsonify(get_widget_summary(summary_tracker.db, ui_settings=ui_settings, top_period=top_period, top_scale=top_scale))
 
 
 @widget_bp.route('/api/widget/chart.png')
 def api_widget_chart_png():
     hours = request.args.get('hours', 24, type=int)
-    w = request.args.get('w', 600, type=int)
-    h = request.args.get('h', 220, type=int)
+    w = request.args.get('w', 560, type=int)
+    h = request.args.get('h', 200, type=int)
     chart_type = request.args.get('type', 'speed')
     prof = g.get('profile')
-    pid = prof['id'] if prof else 0
-    ui_settings = profiles_db.get_ui_settings(pid)
-    png_bytes = render_widget_chart_png(
-        summary_tracker.db, ui_settings,
-        hours=hours, width=w, height=h, chart_type=chart_type
-    )
+    ui_settings = profiles_db.get_ui_settings(prof['id'] if prof else 0)
+    png_bytes = render_widget_chart_png(summary_tracker.db, ui_settings, hours=hours, width=w, height=h, chart_type=chart_type)
     return Response(png_bytes, mimetype='image/png', headers={'Cache-Control': 'no-store'})

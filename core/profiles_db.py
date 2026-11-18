@@ -29,7 +29,9 @@ DEFAULT_UI_SETTINGS = {
         "hourly": {"color": "#3498db", "gradient": True, "opacity": 0.2},
         "hourly_hours": 24,
         "hourly_y_min": None,
-        "top_n": 5
+        "top_n": 5,
+        "top_period": "1d",
+        "top_scale": "lin"
     },
     "summary_columns": {
         "visible": ["name", "size", "uploaded", "ratio", "speed_all_time", "speed_1h", "speed_24h", "vol_hour", "vol_day", "ratio_h_all", "created"],

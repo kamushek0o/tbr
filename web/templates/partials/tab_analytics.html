@@ -1,0 +1,116 @@
+<!-- TAB 4: Аналитика -->
+    <div id="tab-analytics" class="tab-content col-wide">
+        <div class="card">
+            <div class="row-between mb-10">
+                <div class="card-title" style="margin-bottom:0;" data-i18n="card_charts">📊 ГРАФИКИ АКТИВНОСТИ (SQLITE)</div>
+                <button class="btn btn-secondary btn-xs" onclick="loadAnalyticsCharts()" data-i18n="btn_upd_charts">🔄 Обновить графики</button>
+            </div>
+            <div id="analytics-charts-grid" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; align-items: start;">
+                <div style="background: var(--bg-input); padding: 10px; border-radius: 6px; border: 1px solid var(--border);">
+                    <div class="lbl-sm mb-8" data-i18n="chart_daily_lbl">Отдача по дням (GiB)</div>
+                    <div style="height: 210px;"><canvas id="chart-daily"></canvas></div>
+                </div>
+                <div style="background: var(--bg-input); padding: 10px; border-radius: 6px; border: 1px solid var(--border);">
+                    <div class="row-between mb-8" style="gap:6px;">
+                        <span class="lbl-sm" style="margin:0;">Топ-N (GiB)</span>
+                        <div class="row-gap" style="gap:4px; flex-wrap:wrap;">
+                            <button class="btn btn-secondary btn-xs" onclick="setTopN(5)">5</button>
+                            <button class="btn btn-secondary btn-xs" onclick="setTopN(10)">10</button>
+                            <button class="btn btn-secondary btn-xs" onclick="setTopN(15)">15</button>
+                            <input type="number" id="chart-topn-val" min="1" max="25" value="5" class="form-control" style="width:48px; padding:2px 4px; font-size:11px;" onchange="setTopN(this.value)">
+                            <select id="chart-top-period" class="form-control" style="width:68px; padding:2px 4px; font-size:11px;" onchange="onTopPeriodChange()">
+                                <option value="1d">1 д</option>
+                                <option value="7d">7 д</option>
+                                <option value="30d">30 д</option>
+                                <option value="all">Всё</option>
+                            </select>
+                            <select id="chart-top-scale" class="form-control" style="width:64px; padding:2px 4px; font-size:11px;" onchange="onTopScaleChange()">
+                                <option value="lin">Lin</option>
+                                <option value="log10">Log10</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div id="chart-top5-wrap" style="height: 210px;"><canvas id="chart-top5"></canvas></div>
+                </div>
+                <div style="background: var(--bg-input); padding: 10px; border-radius: 6px; border: 1px solid var(--border);">
+                    <div class="row-between mb-8" style="gap:6px;">
+                        <span class="lbl-sm" style="margin:0;">Скорость (MiB/s)</span>
+                        <div class="row-gap" style="gap:6px; flex-wrap:wrap;">
+                            <select id="chart-hourly-hours" class="form-control" style="width:68px; padding:2px 4px; font-size:11px;" onchange="onHourlyWindowChange()">
+                                <option value="6">6 ч</option>
+                                <option value="12">12 ч</option>
+                                <option value="24" selected>24 ч</option>
+                                <option value="72">3 д</option>
+                                <option value="168">7 д</option>
+                            </select>
+                            <label class="row-gap pointer lbl-xs" style="gap:3px;"><input type="checkbox" id="chart-hourly-ymin-auto" checked onchange="onHourlyYMinToggle()"> Авто</label>
+                            <input type="number" id="chart-hourly-ymin" step="0.5" min="0" placeholder="Y min" class="form-control" style="width:58px; padding:2px 6px; font-size:11px;" disabled onchange="onHourlyYMinInput()">
+                        </div>
+                    </div>
+                    <div style="height: 210px;"><canvas id="chart-hourly"></canvas></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title" data-i18n="card_smart_calc">🔮 УМНЫЙ КАЛЬКУЛЯТОР ПРОГНОЗОВ</div>
+            <div class="grid-calc mb-10">
+                <div><label class="lbl-sm" data-i18n="lbl_object">Объект:</label><select id="smart-calc-target-type" class="form-control" onchange="onSmartCalcTargetChange()"><option value="all" data-i18n="whole_seedbox">🌐 Весь сидбокс</option></select></div>
+                <div><label id="smart-calc-goal-label" class="lbl-sm">Цель (напр: 50 тиб или 2.0x):</label><input type="text" id="smart-calc-goal" class="form-control" placeholder="50 тиб / 2.0x"></div>
+                <div><label class="lbl-sm" data-i18n="lbl_speed">Скорость (авто или МБ/с):</label><input type="text" id="smart-calc-speed" class="form-control" placeholder="авто (или 25 мб/с)" data-i18n-ph="speed_ph"></div>
+                <div style="align-self:flex-end;"><button class="btn w-full center-btn" style="padding:8px;" onclick="runSmartCalc()" data-i18n="btn_calc">🔮 Рассчитать</button></div>
+            </div>
+
+            <div class="row-between mb-8">
+                <span class="lbl-sm accent-txt" style="font-weight:700;" data-i18n="lbl_output">🖥️ ЭКРАН ВЫВОДА:</span>
+                <div class="row-gap">
+                    <button id="btn-toggle-forecast-table" class="btn btn-secondary btn-xs hidden" onclick="toggleForecastTable()" data-i18n="btn_hourly_show">📅 Почасовой прогноз</button>
+                    <button id="btn-export-forecast-csv" class="btn btn-secondary btn-xs hidden" onclick="exportForecastCSV()" data-i18n="btn_dl_csv">📥 Скачать CSV</button>
+                </div>
+            </div>
+            <div id="smart-calc-terminal" class="terminal" data-i18n="waiting_input">Ожидание ввода параметров...</div>
+            <div id="smart-res-table-wrap" class="hidden mt-12 scroll-box">
+                <table>
+                    <thead><tr><th data-i18n="th_f_date">Дата</th><th data-i18n="th_f_hour">Час</th><th data-i18n="th_f_vol">Объём</th><th data-i18n="th_f_speed">Скорость</th><th data-i18n="th_f_basis">Веса/База</th></tr></thead>
+                    <tbody id="smart-res-tbody"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title" data-i18n="card_history">⏱️ ПОЧАСОВАЯ ИСТОРИЯ ОТДАЧИ</div>
+            <div class="row-gap mb-10">
+                <select id="history-torrent-select" class="form-control grow-1" onchange="loadTorrentHourlyHistory()"></select>
+                <button class="btn btn-secondary" onclick="loadTorrentHourlyHistory()" data-i18n="btn_upd">Обновить</button>
+            </div>
+            <div class="scroll-box">
+                <table>
+                    <thead><tr><th data-i18n="th_h_time">Время снимка</th><th data-i18n="th_h_total">Всего отдано</th><th>Прибавка за интервал</th><th data-i18n="th_h_speed">Скорость</th></tr></thead>
+                    <tbody id="torrent-history-tbody"><tr><td colspan="4" class="center-msg" data-i18n="select_tor_hint">Выберите раздачу...</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div id="admin-day-logs-card" class="card">
+            <div class="row-between mb-10">
+                <div class="card-title" style="margin-bottom:0;">🗓️ ЛОГИ СНИМКОВ ПО ДНЯМ (SQLITE)</div>
+                <button id="btn-open-logs-folder" class="btn btn-secondary btn-xs hidden" onclick="openLogsFolderHost()">📁 Открыть папку логов</button>
+            </div>
+            <div class="row-wrap mb-10">
+                <input type="date" id="logs-day-picker" class="form-control" style="width:160px;" onchange="loadDayLogs(1)">
+                <button class="btn btn-secondary" onclick="loadDayLogs(1)">Показать</button>
+                <a id="btn-dl-day-logs" class="btn" href="#">📥 Скачать CSV за день</a>
+                <div class="row-gap" style="margin-left:auto;">
+                    <button class="btn btn-secondary btn-xs" onclick="loadDayLogs(dayLogsPage - 1)">◀</button>
+                    <span id="day-logs-page-info" class="lbl-xs muted-text">1 / 1</span>
+                    <button class="btn btn-secondary btn-xs" onclick="loadDayLogs(dayLogsPage + 1)">▶</button>
+                </div>
+            </div>
+            <div class="scroll-box" style="max-height:240px;">
+                <table>
+                    <thead><tr><th>Время</th><th>Всего отдано</th><th>Общий объём</th><th>Раздач</th></tr></thead>
+                    <tbody id="day-logs-tbody"><tr><td colspan="4" class="center-msg">Выберите день...</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+    </div>

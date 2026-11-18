@@ -86,20 +86,16 @@ class HistoryDB:
                     dt_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     tot_up = sum(s.get('uploaded', 0) for s in summaries)
                     tot_sz = sum(s.get('size', 0) for s in summaries)
-                    count = len(summaries)
-
                     cur.execute(
                         "INSERT INTO snapshots (timestamp, datetime, total_uploaded, total_size, count) VALUES (?, ?, ?, ?, ?)",
-                        (now, dt_str, tot_up, tot_sz, count)
+                        (now, dt_str, tot_up, tot_sz, len(summaries))
                     )
                     snap_id = cur.lastrowid
 
-                    tor_rows = []
-                    for s in summaries:
-                        h_id = (s.get('hash_id') or s.get('hash') or '').lower()
-                        if h_id:
-                            tor_rows.append((snap_id, h_id, int(s.get('uploaded', 0))))
-
+                    tor_rows = [
+                        (snap_id, (s.get('hash_id') or s.get('hash') or '').lower(), int(s.get('uploaded', 0)))
+                        for s in summaries if (s.get('hash_id') or s.get('hash'))
+                    ]
                     if tor_rows:
                         cur.executemany(
                             "INSERT INTO torrent_snapshots (snapshot_id, hash_id, uploaded) VALUES (?, ?, ?)",
@@ -120,10 +116,7 @@ class HistoryDB:
             try:
                 with self._get_connection() as conn:
                     cur = conn.cursor()
-                    cur.execute(
-                        "SELECT id, timestamp, datetime FROM snapshots WHERE timestamp < ? ORDER BY timestamp ASC",
-                        (cutoff_hourly,)
-                    )
+                    cur.execute("SELECT id, timestamp, datetime FROM snapshots WHERE timestamp < ? ORDER BY timestamp ASC", (cutoff_hourly,))
                     rows = cur.fetchall()
                     if not rows:
                         return 0
@@ -168,22 +161,14 @@ class HistoryDB:
                         if len(last_rows) > 1:
                             prev_snap = dict(last_rows[1])
 
-                    cur.execute("""
-                        SELECT id, timestamp, total_uploaded FROM snapshots
-                        WHERE timestamp BETWEEN ? AND ?
-                        ORDER BY ABS((? - timestamp) - 3600) ASC LIMIT 1
-                    """, (now_ts - 7200, now_ts - 1800, now_ts))
+                    cur.execute("SELECT id, timestamp, total_uploaded FROM snapshots WHERE timestamp BETWEEN ? AND ? ORDER BY ABS((? - timestamp) - 3600) ASC LIMIT 1", (now_ts - 7200, now_ts - 1800, now_ts))
                     r_1h = cur.fetchone()
                     if r_1h:
                         snap_1h = dict(r_1h)
                         cur.execute("SELECT hash_id, uploaded FROM torrent_snapshots WHERE snapshot_id = ?", (snap_1h['id'],))
                         snap_1h_torrents = {row['hash_id']: row['uploaded'] for row in cur.fetchall()}
 
-                    cur.execute("""
-                        SELECT id, timestamp, total_uploaded FROM snapshots
-                        WHERE timestamp BETWEEN ? AND ?
-                        ORDER BY ABS((? - timestamp) - 86400) ASC LIMIT 1
-                    """, (now_ts - 100000, now_ts - 72000, now_ts))
+                    cur.execute("SELECT id, timestamp, total_uploaded FROM snapshots WHERE timestamp BETWEEN ? AND ? ORDER BY ABS((? - timestamp) - 86400) ASC LIMIT 1", (now_ts - 100000, now_ts - 72000, now_ts))
                     r_24h = cur.fetchone()
                     if r_24h:
                         snap_24h = dict(r_24h)
@@ -199,14 +184,54 @@ class HistoryDB:
             try:
                 with self._get_connection() as conn:
                     cur = conn.cursor()
-                    cur.execute(
-                        "SELECT timestamp, datetime, total_uploaded FROM snapshots WHERE timestamp >= ? ORDER BY timestamp ASC",
-                        (since_ts,)
-                    )
+                    cur.execute("SELECT timestamp, datetime, total_uploaded, count FROM snapshots WHERE timestamp >= ? ORDER BY timestamp ASC", (since_ts,))
                     return [dict(r) for r in cur.fetchall()]
             except Exception as e:
                 write_error_log("Ошибка get_snapshots_since из SQLite", e)
                 return []
+
+    def get_torrents_positive_deltas(self, since_ts, allowed_hashes=None):
+        """Суммирует max(0, B_i - B_{i-1}) в окне по раздачам с защитой от скачков Fastresume Merger."""
+        totals = {}
+        allowed = {h.lower() for h in allowed_hashes} if allowed_hashes is not None else None
+        with self._lock:
+            try:
+                with self._get_connection() as conn:
+                    cur = conn.cursor()
+                    cur.execute("""
+                        SELECT ts.hash_id, s.timestamp, ts.uploaded
+                        FROM torrent_snapshots ts
+                        JOIN snapshots s ON s.id = ts.snapshot_id
+                        WHERE s.timestamp >= ?
+                        ORDER BY ts.hash_id ASC, s.timestamp ASC
+                    """, (since_ts,))
+                    cur_hash = None
+                    prev_up = None
+                    prev_ts = None
+                    for row in cur:
+                        h = row['hash_id']
+                        if allowed is not None and h not in allowed:
+                            continue
+                        up = int(row['uploaded'] or 0)
+                        ts = float(row['timestamp'] or 0)
+                        if h != cur_hash:
+                            cur_hash = h
+                            prev_up = up
+                            prev_ts = ts
+                            continue
+                        d = up - prev_up
+                        dt = max(1.0, ts - prev_ts)
+                        if d > 0:
+                            # Защита от скачков Fastresume Merger (>1 GiB/s или с нуля на >5 GiB за срез при >300 MiB/s)
+                            bps = d / dt
+                            is_merger_jump = (bps > 1073741824) or (prev_up < 104857600 and d > 5368709120 and bps > 314572800)
+                            if not is_merger_jump:
+                                totals[h] = totals.get(h, 0) + d
+                        prev_up = up
+                        prev_ts = ts
+            except Exception as e:
+                write_error_log("Ошибка get_torrents_positive_deltas", e)
+        return totals
 
     def get_oldest_torrents_since(self, since_ts):
         with self._lock:
@@ -241,11 +266,9 @@ class HistoryDB:
                     return 0
                 if is_seedbox:
                     return max(0, r2['total_uploaded'] - r1['total_uploaded'])
-
                 cur.execute("SELECT uploaded FROM torrent_snapshots WHERE snapshot_id = ? AND hash_id = ? LIMIT 1", (r1['id'], t_hash_lower))
                 u1_row = cur.fetchone()
                 u1 = u1_row['uploaded'] if u1_row else 0
-
                 cur.execute("SELECT uploaded FROM torrent_snapshots WHERE snapshot_id = ? AND hash_id = ? LIMIT 1", (r2['id'], t_hash_lower))
                 u2_row = cur.fetchone()
                 u2 = u2_row['uploaded'] if u2_row else 0
@@ -260,11 +283,7 @@ class HistoryDB:
                     if t_hash == 'all':
                         cur.execute("SELECT datetime, timestamp, total_uploaded AS uploaded FROM snapshots ORDER BY timestamp DESC LIMIT ?", (limit_hours,))
                     else:
-                        cur.execute("""
-                            SELECT s.datetime, s.timestamp, ts.uploaded
-                            FROM snapshots s JOIN torrent_snapshots ts ON s.id = ts.snapshot_id
-                            WHERE ts.hash_id = ? ORDER BY s.timestamp DESC LIMIT ?
-                        """, (t_hash_lower, limit_hours))
+                        cur.execute("SELECT s.datetime, s.timestamp, ts.uploaded FROM snapshots s JOIN torrent_snapshots ts ON s.id = ts.snapshot_id WHERE ts.hash_id = ? ORDER BY s.timestamp DESC LIMIT ?", (t_hash_lower, limit_hours))
                     return [dict(r) for r in cur.fetchall()]
             except Exception as e:
                 write_error_log("Ошибка get_torrent_history_rows из SQLite", e)
@@ -276,12 +295,7 @@ class HistoryDB:
             try:
                 with self._get_connection() as conn:
                     cur = conn.cursor()
-                    cur.execute("""
-                        SELECT s.timestamp, ts.uploaded
-                        FROM snapshots s JOIN torrent_snapshots ts ON s.id = ts.snapshot_id
-                        WHERE ts.hash_id = ? AND s.timestamp BETWEEN ? AND ?
-                        ORDER BY s.timestamp ASC
-                    """, (t_hash_lower, since_ts, until_ts))
+                    cur.execute("SELECT s.timestamp, ts.uploaded FROM snapshots s JOIN torrent_snapshots ts ON s.id = ts.snapshot_id WHERE ts.hash_id = ? AND s.timestamp BETWEEN ? AND ? ORDER BY s.timestamp ASC", (t_hash_lower, since_ts, until_ts))
                     rows = cur.fetchall()
                     if not rows:
                         return None, None, 0
@@ -290,8 +304,7 @@ class HistoryDB:
                 return None, None, 0
 
     def get_snapshots_by_day_paginated(self, start_ts, end_ts, page=1, per_page=15):
-        page = max(1, int(page))
-        per_page = max(1, min(100, int(per_page)))
+        page, per_page = max(1, int(page)), max(1, min(100, int(per_page)))
         offset = (page - 1) * per_page
         with self._lock:
             try:
@@ -299,14 +312,8 @@ class HistoryDB:
                     cur = conn.cursor()
                     cur.execute("SELECT COUNT(*) FROM snapshots WHERE timestamp BETWEEN ? AND ?", (start_ts, end_ts))
                     total = cur.fetchone()[0]
-                    cur.execute(
-                        """SELECT id, timestamp, datetime, total_uploaded, total_size, count
-                           FROM snapshots WHERE timestamp BETWEEN ? AND ?
-                           ORDER BY timestamp DESC LIMIT ? OFFSET ?""",
-                        (start_ts, end_ts, per_page, offset)
-                    )
-                    rows = [dict(r) for r in cur.fetchall()]
-                    return {'items': rows, 'total': total, 'page': page, 'per_page': per_page, 'total_pages': max(1, (total + per_page - 1) // per_page)}
+                    cur.execute("SELECT id, timestamp, datetime, total_uploaded, total_size, count FROM snapshots WHERE timestamp BETWEEN ? AND ? ORDER BY timestamp DESC LIMIT ? OFFSET ?", (start_ts, end_ts, per_page, offset))
+                    return {'items': [dict(r) for r in cur.fetchall()], 'total': total, 'page': page, 'per_page': per_page, 'total_pages': max(1, (total + per_page - 1) // per_page)}
             except Exception as e:
                 write_error_log("Ошибка get_snapshots_by_day_paginated", e)
                 return {'items': [], 'total': 0, 'page': 1, 'per_page': per_page, 'total_pages': 1}
@@ -316,10 +323,7 @@ class HistoryDB:
             try:
                 with self._get_connection() as conn:
                     cur = conn.cursor()
-                    cur.execute(
-                        "SELECT datetime, total_uploaded, total_size, count FROM snapshots WHERE timestamp BETWEEN ? AND ? ORDER BY timestamp ASC",
-                        (start_ts, end_ts)
-                    )
+                    cur.execute("SELECT datetime, total_uploaded, total_size, count FROM snapshots WHERE timestamp BETWEEN ? AND ? ORDER BY timestamp ASC", (start_ts, end_ts))
                     return [dict(r) for r in cur.fetchall()]
             except Exception:
                 return []

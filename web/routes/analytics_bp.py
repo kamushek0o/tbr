@@ -51,8 +51,9 @@ def api_analytics_history():
 def api_analytics_charts():
     hours = request.args.get('hours', 24, type=int)
     top_n = request.args.get('top_n', 5, type=int)
+    top_period = request.args.get('top_period', '1d')
     summaries = get_global_torrent_summaries()
-    return jsonify(summary_tracker.get_charts_data(summaries, hours=hours, top_n=top_n))
+    return jsonify(summary_tracker.get_charts_data(summaries, hours=hours, top_n=top_n, top_period=top_period))
 
 
 @analytics_bp.route('/api/smart_calc', methods=['POST'])
@@ -123,11 +124,8 @@ def api_export_csv():
         up = int(s.get('uploaded', 0)) if isinstance(s.get('uploaded'), (int, float)) else 0
         rt = float(s.get('ratio', 0.0)) if isinstance(s.get('ratio'), (int, float)) else 0.0
         writer.writerow([
-            sanitize_csv_cell(s.get('name', '')),
-            sanitize_csv_cell(s.get('hash_id', '')),
-            sz, f"{sz / (1024 ** 3):.2f}",
-            up, f"{up / (1024 ** 3):.2f}",
-            f"{rt:.2f}",
+            sanitize_csv_cell(s.get('name', '')), sanitize_csv_cell(s.get('hash_id', '')),
+            sz, f"{sz / (1024 ** 3):.2f}", up, f"{up / (1024 ** 3):.2f}", f"{rt:.2f}",
             sanitize_csv_cell(s.get('speed_all_time_fmt', '0 B/s')),
             sanitize_csv_cell(s.get('speed_1h_fmt', '0 B/s')),
             sanitize_csv_cell(s.get('speed_24h_fmt', '0 B/s')),
