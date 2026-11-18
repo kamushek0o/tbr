@@ -8,8 +8,8 @@ from flask import Blueprint, request, jsonify, Response, g
 
 from utils.helpers import sanitize_csv_cell, format_file_size, LOG_FOLDER
 from core.torrent_parser import get_global_torrent_summaries
-from core.summary_tracker import summary_tracker, AUTO_FOLDER, MANUAL_FOLDER
-from web.security import HASH_RE, resolve_log_path
+from core.summary_tracker import summary_tracker
+from web.security import HASH_RE
 
 analytics_bp = Blueprint('analytics_bp', __name__)
 
@@ -49,8 +49,10 @@ def api_analytics_history():
 
 @analytics_bp.route('/api/analytics/charts')
 def api_analytics_charts():
+    hours = request.args.get('hours', 24, type=int)
+    top_n = request.args.get('top_n', 5, type=int)
     summaries = get_global_torrent_summaries()
-    return jsonify(summary_tracker.get_charts_data(summaries))
+    return jsonify(summary_tracker.get_charts_data(summaries, hours=hours, top_n=top_n))
 
 
 @analytics_bp.route('/api/smart_calc', methods=['POST'])
@@ -142,59 +144,6 @@ def api_export_csv():
         mimetype="text/csv",
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
-
-
-@analytics_bp.route('/api/logs/list')
-def api_logs_list():
-    entries = []
-    for folder, prefix, exts in [
-        (LOG_FOLDER, '', ('.log', '.txt')),
-        (AUTO_FOLDER, 'auto_hourly/', ('.csv',)),
-        (MANUAL_FOLDER, 'manual_exports/', ('.csv',))
-    ]:
-        if os.path.exists(folder):
-            for f in os.listdir(folder):
-                if f.lower().endswith(exts):
-                    full = os.path.join(folder, f)
-                    try:
-                        entries.append((os.path.getmtime(full), f"{prefix}{f}"))
-                    except OSError:
-                        pass
-    entries.sort(key=lambda x: x[0], reverse=True)
-    return jsonify([name for _, name in entries[:20]])
-
-
-@analytics_bp.route('/api/logs/view')
-def api_logs_view():
-    filename = request.args.get('name', '')
-    path = resolve_log_path(filename)
-    if not path:
-        return jsonify({'error': 'Файл не найден'}), 404
-    try:
-        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-            lines = f.readlines()
-            return jsonify({'content': "".join(lines[-300:])})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-@analytics_bp.route('/api/logs/download')
-def api_logs_download():
-    filename = request.args.get('name', '')
-    path = resolve_log_path(filename)
-    if not path:
-        return "Файл не найден на сервере", 404
-    try:
-        with open(path, 'rb') as f:
-            data = f.read()
-        base_name = os.path.basename(path)
-        mime = "text/csv" if base_name.endswith('.csv') else "text/plain"
-        return Response(
-            data, mimetype=mime,
-            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{urllib.parse.quote(base_name)}"}
-        )
-    except Exception as e:
-        return f"Ошибка скачивания: {e}", 500
 
 
 @analytics_bp.route('/api/logs/can_open_folder')

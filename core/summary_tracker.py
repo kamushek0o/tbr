@@ -7,7 +7,7 @@ from utils.helpers import LOG_FOLDER, format_file_size, sanitize_csv_cell, write
 from core.history_db import HistoryDB, AUTO_FOLDER, MANUAL_FOLDER
 from core.forecaster import fmt_ratio_h, fmt_speed, calculate_smart_forecast, export_forecast_csv
 from core.scheduler import SnapshotScheduler, MIN_DELTA_SEC
-from core.widget_service import build_detailed_speed_series
+from core.widget_service import build_detailed_speed_series, build_hourly_aggregated_speed_series
 
 
 class SummaryTracker:
@@ -86,7 +86,6 @@ class SummaryTracker:
             sz = s.get('size', 0)
 
             item['ratio'] = round(up / sz, 2) if sz > 0 else 0.0
-
             avg_all = (up / act) if act > 0 else 0
             item['speed_all_time'] = avg_all
             item['speed_all_time_fmt'] = fmt_speed(avg_all)
@@ -138,33 +137,28 @@ class SummaryTracker:
             'items': enhanced_items
         }
 
-    def get_charts_data(self, summaries):
+    def get_charts_data(self, summaries, hours=24, top_n=5):
         now_ts = time.time()
+        allowed_h = (6, 12, 24, 72, 168)
+        win_hours = hours if hours in allowed_h else 24
+        top_limit = max(1, min(25, int(top_n or 5)))
+
         rows = self.db.get_snapshots_since(now_ts - (14 * 86400))
-
         daily_map = {}
-        day_hour_totals = {}
         prev_row = None
-
         for r in rows:
             if prev_row is not None:
                 t1, t2 = prev_row['timestamp'], r['timestamp']
                 dt_sec = t2 - t1
                 delta = max(0, r['total_uploaded'] - prev_row['total_uploaded'])
-
                 if dt_sec >= MIN_DELTA_SEC and delta > 0:
-                    cur_dt = datetime.datetime.fromtimestamp(t1).replace(minute=0, second=0, microsecond=0)
-                    cur_ts = cur_dt.timestamp()
+                    cur_ts = datetime.datetime.fromtimestamp(t1).replace(minute=0, second=0, microsecond=0).timestamp()
                     while cur_ts < t2:
                         bucket_end = cur_ts + 3600.0
                         overlap = min(t2, bucket_end) - max(t1, cur_ts)
                         if overlap > 0:
-                            part = delta * (overlap / dt_sec)
-                            b_dt = datetime.datetime.fromtimestamp(cur_ts)
-                            day_key = b_dt.strftime('%Y-%m-%d')
-                            daily_map[day_key] = daily_map.get(day_key, 0.0) + part
-                            dh_key = (day_key, b_dt.hour)
-                            day_hour_totals[dh_key] = day_hour_totals.get(dh_key, 0.0) + part
+                            day_key = datetime.datetime.fromtimestamp(cur_ts).strftime('%Y-%m-%d')
+                            daily_map[day_key] = daily_map.get(day_key, 0.0) + delta * (overlap / dt_sec)
                         cur_ts = bucket_end
             prev_row = r
 
@@ -172,11 +166,14 @@ class SummaryTracker:
         daily_labels = [f"{d[8:10]}.{d[5:7]}" for d in sorted_days]
         daily_values_gb = [round(daily_map[d] / (1024 ** 3), 3) for d in sorted_days]
 
-        detailed_24h = build_detailed_speed_series(self.db, hours=24)
+        if win_hours <= 24:
+            speed_series = build_detailed_speed_series(self.db, hours=win_hours)
+        else:
+            speed_series = build_hourly_aggregated_speed_series(self.db, hours=win_hours)
 
         stats = self.get_stats(summaries)
         items = stats.get('items', [])
-        top_items = sorted(items, key=lambda x: x.get('delta_24h', 0), reverse=True)[:5]
+        top_items = sorted(items, key=lambda x: x.get('delta_24h', 0), reverse=True)[:top_limit]
 
         if all(it.get('delta_24h', 0) <= 0 for it in top_items):
             oldest_24h_torrents = self.db.get_oldest_torrents_since(now_ts - 86400)
@@ -185,32 +182,30 @@ class SummaryTracker:
                     h_id = (it.get('hash_id') or it.get('hash') or '').lower()
                     if h_id in oldest_24h_torrents:
                         it['delta_24h'] = max(0, it.get('uploaded', 0) - oldest_24h_torrents[h_id])
-                top_items = sorted(items, key=lambda x: x.get('delta_24h', 0), reverse=True)[:5]
+                top_items = sorted(items, key=lambda x: x.get('delta_24h', 0), reverse=True)[:top_limit]
 
-        top_labels, top_values_gb = [], []
-        if any(it.get('delta_24h', 0) > 0 for it in top_items):
-            for it in top_items:
-                if it.get('delta_24h', 0) > 0:
-                    nm = str(it.get('name', ''))
-                    top_labels.append((nm[:28] + '…') if len(nm) > 29 else nm)
-                    top_values_gb.append(round(it['delta_24h'] / (1024 ** 3), 3))
-        else:
-            top_all = sorted(items, key=lambda x: x.get('uploaded', 0), reverse=True)[:5]
-            for it in top_all:
-                if it.get('uploaded', 0) > 0:
-                    nm = str(it.get('name', ''))
-                    top_labels.append((nm[:28] + '…') if len(nm) > 29 else nm)
-                    top_values_gb.append(round(it['uploaded'] / (1024 ** 3), 2))
+        top_labels, top_full_labels, top_values_gb = [], [], []
+        use_24h = any(it.get('delta_24h', 0) > 0 for it in top_items)
+        pool = top_items if use_24h else sorted(items, key=lambda x: x.get('uploaded', 0), reverse=True)[:top_limit]
+
+        for it in pool:
+            val = it.get('delta_24h', 0) if use_24h else it.get('uploaded', 0)
+            if val > 0:
+                nm = str(it.get('name', ''))
+                top_full_labels.append(nm)
+                top_labels.append((nm[:26] + '…') if len(nm) > 27 else nm)
+                top_values_gb.append(round(val / (1024 ** 3), 3 if use_24h else 2))
 
         return {
             'daily': {'labels': daily_labels, 'values': daily_values_gb},
             'hourly': {
-                'labels': [p['label'] for p in detailed_24h],
-                'values': [p['speed_mbs'] for p in detailed_24h],
-                'meta': detailed_24h
+                'hours': win_hours,
+                'labels': [p['label'] for p in speed_series],
+                'values': [p['speed_mbs'] for p in speed_series],
+                'meta': speed_series
             },
-            'detailed': detailed_24h,
-            'top5': {'labels': top_labels, 'values': top_values_gb}
+            'detailed': speed_series,
+            'top5': {'n': top_limit, 'labels': top_labels, 'full_labels': top_full_labels, 'values': top_values_gb}
         }
 
     def calculate_smart_forecast(self, target_type, target_hash, target_str, speed_str, summaries):
@@ -269,18 +264,11 @@ class SummaryTracker:
                     bps = delta / dt_sec
                     interval_min = int(round(dt_sec / 60.0))
                 else:
-                    delta = 0
-                    bps = 0.0
-                    interval_min = 0
-
+                    delta, bps, interval_min = 0, 0.0, 0
                 result.append({
-                    'datetime': snap.get('datetime', ''),
-                    'timestamp': int(ts),
-                    'interval_min': interval_min,
-                    'uploaded': up,
-                    'uploaded_fmt': format_file_size(up),
-                    'delta_bytes': delta,
-                    'delta_mb': f"{delta / (1024*1024):.2f} МБ",
+                    'datetime': snap.get('datetime', ''), 'timestamp': int(ts),
+                    'interval_min': interval_min, 'uploaded': up, 'uploaded_fmt': format_file_size(up),
+                    'delta_bytes': delta, 'delta_mb': f"{delta / (1024*1024):.2f} МБ",
                     'speed_fmt': fmt_speed(bps)
                 })
                 prev_snap = snap

@@ -26,7 +26,10 @@ DEFAULT_UI_SETTINGS = {
     "charts": {
         "daily": {"color": "#2ecc71", "gradient": False, "opacity": 0.7},
         "top5": {"color": "#e67e22", "gradient": False, "opacity": 0.7},
-        "hourly": {"color": "#3498db", "gradient": True, "opacity": 0.2}
+        "hourly": {"color": "#3498db", "gradient": True, "opacity": 0.2},
+        "hourly_hours": 24,
+        "hourly_y_min": None,
+        "top_n": 5
     },
     "summary_columns": {
         "visible": ["name", "size", "uploaded", "ratio", "speed_all_time", "speed_1h", "speed_24h", "vol_hour", "vol_day", "ratio_h_all", "created"],
@@ -71,7 +74,6 @@ def _verify_stored_token(stored_hash, raw_token):
         return False, False
     if stored_hash.startswith(('pbkdf2:', 'scrypt:')):
         return check_password_hash(stored_hash, raw_token), False
-    # Мягкая проверка старого несолёного SHA-256 с флагом миграции
     legacy_ok = hmac.compare_digest(stored_hash.lower(), hash_token(raw_token).lower())
     return legacy_ok, legacy_ok
 
@@ -218,7 +220,6 @@ class ProfilesDB:
         if self.authenticate_token(raw_token):
             return None, None, None, "Такой пароль/токен уже занят другим профилем!"
 
-        # Для Viewer сразу генерируем отдельную 1-клик ссылку; для Admin — только по явному запросу
         raw_magic = ("m_" + secrets.token_urlsafe(24)) if role == 'viewer' else None
         m_hash = hash_token(raw_magic) if raw_magic else None
         p_hash = hash_password_salted(raw_token)

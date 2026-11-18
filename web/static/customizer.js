@@ -29,7 +29,10 @@ const AVAILABLE_FONTS = [
 const DEFAULT_CHARTS_CFG = {
     daily:  { color: '#2ecc71', gradient: false, opacity: 0.7 },
     top5:   { color: '#e67e22', gradient: false, opacity: 0.7 },
-    hourly: { color: '#3498db', gradient: true,  opacity: 0.25 }
+    hourly: { color: '#3498db', gradient: true,  opacity: 0.25 },
+    hourly_hours: 24,
+    hourly_y_min: null,
+    top_n: 5
 };
 
 function getUiSettings() {
@@ -97,10 +100,9 @@ function applyUiSettings(ui) {
     root.style.setProperty('--th-bg', palette.th_bg);
     document.body.dataset.theme = theme;
 
-    // Мобильный режим
     document.body.classList.toggle('mobile-cards-on', ui.mobile_mode !== false);
+    if (typeof updateMobileCardsBtn === 'function') updateMobileCardsBtn();
 
-    // Шрифт + Google Fonts строго по согласию
     const fontObj = AVAILABLE_FONTS.find(f => f.name === ui.font) || AVAILABLE_FONTS[0];
     root.style.setProperty('--app-font', fontObj.css);
     if (fontObj.web && ui.allow_google_fonts) {
@@ -108,6 +110,10 @@ function applyUiSettings(ui) {
     }
     updateFontNote(fontObj);
 
+    if (typeof syncAnalyticsControlsFromUi === 'function') syncAnalyticsControlsFromUi();
+    if (typeof applySummarySortAndRender === 'function' && typeof rawSummaryItems !== 'undefined' && rawSummaryItems.length) {
+        applySummarySortAndRender();
+    }
     if (typeof loadAnalyticsCharts === 'function' && document.getElementById('tab-analytics')?.classList.contains('active')) {
         loadAnalyticsCharts();
     }
@@ -127,11 +133,9 @@ function updateFontNote(fontObj) {
     const note = document.getElementById('cust-font-note');
     if (!note || !fontObj) return;
     const hasLocal = document.fonts ? document.fonts.check(`12px "${fontObj.name}"`) : true;
-    if (fontObj.web && !hasLocal) {
-        note.textContent = '⚠️ Нет локально — отметьте согласие ниже для подгрузки с Google Fonts.';
-    } else {
-        note.textContent = '';
-    }
+    note.textContent = (fontObj.web && !hasLocal)
+        ? '⚠️ Нет локально — отметьте согласие ниже для подгрузки с Google Fonts.'
+        : '';
 }
 
 async function persistUiSettings(ui) {
@@ -139,9 +143,7 @@ async function persistUiSettings(ui) {
     localStorage.setItem('tbr_ui_settings', JSON.stringify(ui));
     applyUiSettings(ui);
     if (typeof CURRENT_ROLE === 'undefined' || CURRENT_ROLE === 'admin') {
-        try {
-            await api('/api/profile/ui', 'POST', ui);
-        } catch (e) {}
+        try { await api('/api/profile/ui', 'POST', ui); } catch (e) {}
     }
 }
 
@@ -172,13 +174,9 @@ function openCustomizeModal() {
     document.getElementById('customize-modal').style.display = 'flex';
 }
 
-function closeCustomizeModal() {
-    document.getElementById('customize-modal').style.display = 'none';
-}
-
+function closeCustomizeModal() { document.getElementById('customize-modal').style.display = 'none'; }
 function onCustThemeChange() {
-    const val = document.getElementById('cust-theme').value;
-    document.getElementById('cust-custom-colors').classList.toggle('hidden', val !== 'custom');
+    document.getElementById('cust-custom-colors').classList.toggle('hidden', document.getElementById('cust-theme').value !== 'custom');
 }
 
 function renderChartEditors(chartsCfg) {
@@ -186,8 +184,8 @@ function renderChartEditors(chartsCfg) {
     box.innerHTML = '';
     const defs = [
         { key: 'daily', title: '1. По дням (GiB)' },
-        { key: 'top5', title: '2. Топ-5 раздач' },
-        { key: 'hourly', title: '3. По часам суток' }
+        { key: 'top5', title: '2. Топ-N раздач' },
+        { key: 'hourly', title: '3. Скорость нагрузки' }
     ];
     defs.forEach(d => {
         const cfg = (chartsCfg && chartsCfg[d.key]) || DEFAULT_CHARTS_CFG[d.key];
@@ -227,10 +225,7 @@ function syncChartColorFromHex(key, hex) {
 }
 
 function syncChartColorFromRgb(key) {
-    const r = document.getElementById(`cc-${key}-r`).value;
-    const g = document.getElementById(`cc-${key}-g`).value;
-    const b = document.getElementById(`cc-${key}-b`).value;
-    const hex = rgbToHex(r, g, b);
+    const hex = rgbToHex(document.getElementById(`cc-${key}-r`).value, document.getElementById(`cc-${key}-g`).value, document.getElementById(`cc-${key}-b`).value);
     document.getElementById(`cc-${key}-picker`).value = hex;
     document.getElementById(`cc-${key}-hex`).value = hex;
 }
@@ -255,7 +250,7 @@ async function saveCustomization() {
     ui.allow_google_fonts = document.getElementById('cust-allow-gf').checked;
     ui.mobile_mode = document.getElementById('cust-mobile-mode').checked;
 
-    ui.charts = {};
+    ui.charts = ui.charts || {};
     ['daily', 'top5', 'hourly'].forEach(k => {
         ui.charts[k] = {
             color: document.getElementById(`cc-${k}-hex`).value || DEFAULT_CHARTS_CFG[k].color,
@@ -268,5 +263,4 @@ async function saveCustomization() {
     closeCustomizeModal();
 }
 
-// Сразу применяем кэшированное оформление при старте, чтобы не мигало
 document.addEventListener('DOMContentLoaded', () => applyUiSettings(getUiSettings()));
