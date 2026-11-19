@@ -1,9 +1,53 @@
 // web/static/merger_tools.js
+function onMergerSelectionChange() {
+    updateMergerDiffBtn();
+    updateMergerCalcPreview();
+}
+
 function updateMergerDiffBtn() {
     const oldH = document.getElementById('merger-old')?.value || '';
     const newH = document.getElementById('merger-new')?.value || '';
     const btn = document.getElementById('btn-merger-diff');
     if (btn) btn.disabled = (!oldH || !newH || oldH.toLowerCase() === newH.toLowerCase());
+}
+
+async function updateMergerCalcPreview() {
+    const oldH = (document.getElementById('merger-old')?.value || '').toLowerCase();
+    const newH = (document.getElementById('merger-new')?.value || '').toLowerCase();
+    const mode = document.getElementById('merger-mode')?.value || 'add';
+    const txtEl = document.getElementById('merger-calc-txt');
+    const dupWarn = document.getElementById('merger-dup-warn');
+
+    if (!txtEl) return;
+    if (!oldH || !newH || oldH === newH) {
+        txtEl.textContent = '—';
+        if (dupWarn) dupWarn.classList.add('hidden');
+        return;
+    }
+
+    const items = typeof torrentsData !== 'undefined' ? torrentsData : [];
+    const src = items.find(x => x.hash.toLowerCase() === oldH);
+    const dst = items.find(x => x.hash.toLowerCase() === newH);
+
+    const srcUp = parseInt(src?.uploaded || 0);
+    const dstUp = parseInt(dst?.uploaded || 0);
+
+    if (mode === 'add') {
+        const sumUp = srcUp + dstUp;
+        txtEl.textContent = `${formatBytesJS(srcUp)} + ${formatBytesJS(dstUp)} = ${formatBytesJS(sumUp)}`;
+    } else {
+        txtEl.textContent = `${formatBytesJS(srcUp)} (перезапишет текущие ${formatBytesJS(dstUp)})`;
+    }
+
+    if (dupWarn) {
+        try {
+            const res = await api(`/api/merger/check_pair?old_hash=${encodeURIComponent(oldH)}&new_hash=${encodeURIComponent(newH)}`);
+            const d = await res.json();
+            dupWarn.classList.toggle('hidden', !(d && d.has_history));
+        } catch (e) {
+            dupWarn.classList.add('hidden');
+        }
+    }
 }
 
 async function loadSmartMatchCandidates() {
@@ -28,11 +72,13 @@ async function loadSmartMatchCandidates() {
             const row = document.createElement('div');
             row.className = 'row-between';
             row.style.cssText = 'background:var(--bg-input); padding:6px 8px; border-radius:6px; gap:8px;';
+            const sumBytes = (c.old_up_bytes || 0) + (c.new_up_bytes || 0);
             row.innerHTML = `
                 <div style="min-width:0; flex:1;">
                     <div style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
-                        <b>${escapeHtml(c.old_name)}</b> <span class="accent-txt">(${escapeHtml(c.old_up_fmt)})</span>
+                        <b>${escapeHtml(c.old_name)}</b> <span class="muted-text">(${escapeHtml(c.old_up_fmt)})</span>
                         → <b>${escapeHtml(c.new_name)}</b> <span class="muted-text">(${escapeHtml(c.new_up_fmt)})</span>
+                        <span class="accent-txt" style="font-weight:700;">[Σ ${formatBytesJS(sumBytes)}]</span>
                     </div>
                     <div class="lbl-xs muted-text">${escapeHtml(c.reason)}</div>
                 </div>
@@ -51,7 +97,7 @@ function applySmartPair(oldHash, newHash) {
     const n = document.getElementById('merger-new');
     if (o) o.value = oldHash;
     if (n) n.value = newHash;
-    updateMergerDiffBtn();
+    onMergerSelectionChange();
 }
 
 async function openTorrentDiffModal() {

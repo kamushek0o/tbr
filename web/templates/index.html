@@ -56,19 +56,12 @@
         <div class="torrent-left">
             <div class="table-toolbar">
                 <input type="text" id="search-box" class="search-input" placeholder="🔍 Поиск раздач..." data-i18n-ph="search_ph" oninput="filterTorrents()">
-                <select id="filter-tag-select" class="form-control" style="width:120px; font-size:12px;" onchange="filterTorrents()">
-                    <option value="">Все теги</option>
-                </select>
-                <select id="filter-tracker-select" class="form-control" style="width:130px; font-size:12px;" onchange="filterTorrents()">
-                    <option value="">Все трекеры</option>
-                </select>
+                <select id="filter-tag-select" class="form-control" style="width:120px; font-size:12px;" onchange="filterTorrents()"><option value="">Все теги</option></select>
+                <select id="filter-tracker-select" class="form-control" style="width:130px; font-size:12px;" onchange="filterTorrents()"><option value="">Все трекеры</option></select>
                 <select id="filter-tracker-err-select" class="form-control" style="width:165px; font-size:12px;" onchange="filterTorrents()">
-                    <option value="">Проблемы с трекерами</option>
-                    <option value="any">⚠️ Любая ошибка</option>
-                    <option value="unregistered">🚫 Не зарегистрирована</option>
-                    <option value="auth">🔑 Ошибка passkey/авторизации</option>
-                    <option value="timeout">⏱️ Превышен таймаут</option>
-                    <option value="other">❓ Прочие ошибки</option>
+                    <option value="">Проблемы с трекерами</option><option value="any">⚠️ Любая ошибка</option>
+                    <option value="unregistered">🚫 Не зарегистрирована</option><option value="auth">🔑 Ошибка passkey/авторизации</option>
+                    <option value="timeout">⏱️ Превышен таймаут</option><option value="other">❓ Прочие ошибки</option>
                 </select>
                 <button class="btn btn-secondary admin-only" onclick="scanDeadTorrents()" data-i18n="btn_scan_dead">🩺 Мёртвые</button>
                 <button class="btn btn-secondary" onclick="loadTorrents(true)" data-i18n="btn_refresh">🔄</button>
@@ -149,10 +142,30 @@
         <div class="card">
             <div class="card-title" data-i18n="card_merger">🔄 ПОДМЕНЩИК РАЗДАЧ (.FASTRESUME)</div>
             <p class="muted-text mb-10" data-i18n="merger_desc">qBittorrent выгружается перед подменой и перезапускается автоматически — бенкод не пострадает.</p>
-            <div class="form-group"><label data-i18n="lbl_old_tor">1. Старая раздача (источник):</label><select id="merger-old" class="form-control" onchange="typeof updateMergerDiffBtn==='function'&&updateMergerDiffBtn()"></select></div>
-            <div class="form-group"><label data-i18n="lbl_new_tor">2. Новая раздача (приёмник):</label><select id="merger-new" class="form-control" onchange="typeof updateMergerDiffBtn==='function'&&updateMergerDiffBtn()"></select></div>
+            <div class="form-group"><label data-i18n="lbl_old_tor">1. Исходная раздача (старая):</label><select id="merger-old" class="form-control" onchange="onMergerSelectionChange()"></select></div>
+            <div class="form-group"><label data-i18n="lbl_new_tor">2. Целевая раздача (приёмник):</label><select id="merger-new" class="form-control" onchange="onMergerSelectionChange()"></select></div>
+            
             <div class="form-group">
-                <label data-i18n="lbl_del_mode">3. Исходная раздача после переноса:</label>
+                <label>3. Режим переноса статистики:</label>
+                <select id="merger-mode" class="form-control" onchange="updateMergerCalcPreview()">
+                    <option value="add" selected>➕ Сложить (рекомендуется, если на цели уже есть отдача)</option>
+                    <option value="replace">🔄 Заменить (переписать статистику цели начисто)</option>
+                </select>
+            </div>
+
+            <div id="merger-calc-preview" class="card mb-8" style="background:var(--bg-input); padding:8px 12px; border-radius:6px; border:1px solid var(--border);">
+                <div class="row-between">
+                    <span class="lbl-xs">Итоговый расчёт отдачи:</span>
+                    <b id="merger-calc-txt" class="accent-txt">—</b>
+                </div>
+            </div>
+
+            <div id="merger-dup-warn" class="lbl-xs hidden mb-8" style="color:var(--warning); background:rgba(243,156,18,0.12); padding:6px 10px; border-radius:6px; border:1px solid rgba(243,156,18,0.3);">
+                ⚠️ Внимание: эти раздачи уже объединялись ранее!
+            </div>
+
+            <div class="form-group">
+                <label data-i18n="lbl_del_mode">4. Исходная раздача после переноса:</label>
                 <select id="merger-delete-mode" class="form-control" onchange="onMergerDeleteModeChange()">
                     <option value="none" data-i18n="del_mode_none">Не удалять (оставить всё)</option>
                     <option value="safe" data-i18n="del_mode_safe">Удалить всё (безопасно: с проверкой путей)</option>
@@ -214,9 +227,7 @@
 
         <div id="summary-table-wrap" class="card flex-scroll">
             <table id="summary-table">
-                <thead id="summary-thead">
-                    <tr id="summary-thead-row"></tr>
-                </thead>
+                <thead id="summary-thead"><tr id="summary-thead-row"></tr></thead>
                 <tbody id="summary-tbody"></tbody>
             </table>
         </div>
