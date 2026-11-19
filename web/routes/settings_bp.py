@@ -131,7 +131,8 @@ def api_settings():
             'watchdog_timeout_min': cfg.getint('Watchdog_Timeout_Min', 3),
             'watchdog_exe_path': cfg.get('Watchdog_Exe_Path', ''),
             'watchdog_exe_detected': get_qb_executable_path() if os.name == 'nt' else '',
-            'manifest_weekly': cfg.getboolean('Manifest_Weekly', False)
+            'manifest_weekly': cfg.getboolean('Manifest_Weekly', False),
+            'max_channel_mbps': cfg.getint('Max_Channel_Mbps', 1000)
         })
 
     data = request.get_json(silent=True)
@@ -201,6 +202,8 @@ def api_settings():
         cfg.set('AutoRecheck_Enabled', str(bool(data.get('auto_recheck_enabled'))))
     if 'manifest_weekly' in data:
         cfg.set('Manifest_Weekly', str(bool(data.get('manifest_weekly'))))
+    if 'max_channel_mbps' in data:
+        cfg.set('Max_Channel_Mbps', str(max(10, min(100000, int(data.get('max_channel_mbps', 1000))))))
     cfg.save()
 
     if not ka_en:

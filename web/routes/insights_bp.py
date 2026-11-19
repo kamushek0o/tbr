@@ -50,6 +50,15 @@ def api_torrents_chart():
     return jsonify({'success': True, 'period': period, 'points': pts})
 
 
+@insights_bp.route('/api/analytics/recalculate_records', methods=['POST'])
+def api_recalculate_records():
+    if g.get('role') != 'admin':
+        return jsonify({'success': False, 'error': 'Только для Admin'}), 403
+    heatmap = get_heatmap_365(summary_tracker.db)
+    records = get_records_and_comparisons(summary_tracker.db, heatmap_cells=heatmap, force_recalc=True)
+    return jsonify({'success': True, 'records': records})
+
+
 @insights_bp.route('/api/analytics/insights')
 def api_analytics_insights():
     tracker_period = str(request.args.get('tracker_period', '7d')).strip()

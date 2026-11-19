@@ -4,6 +4,7 @@ import datetime
 import threading
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from utils.config import cfg
 from utils.helpers import format_file_size
 from core.qb_api import get_torrent_peers, get_transfer_info
 from core.scheduler import MIN_DELTA_SEC
@@ -11,8 +12,7 @@ from core.widget_service import build_detailed_speed_series
 
 _CLIENTS_LOCK = threading.Lock()
 _CLIENTS_CACHE = {'ts': 0.0, 'data': None}
-_CLIENTS_TTL = 900.0  # 15 минут
-
+_CLIENTS_TTL = 900.0
 _ISP_TIERS_MBPS = (10, 20, 25, 30, 50, 75, 100, 150, 200, 250, 300, 500, 1000)
 
 
@@ -39,7 +39,6 @@ def fetch_torrent_peers_safe(ip, port, t_hash):
             'dl_speed': dl,
             'dl_speed_fmt': f"{format_file_size(dl)}/s",
             'flags': str(p.get('flags') or ''),
-            # Берётся строго из локальных данных qB без внешних HTTP-запросов
             'country_code': str(p.get('country_code') or '').upper()[:4]
         })
     out.sort(key=lambda x: x['up_speed'], reverse=True)
@@ -52,10 +51,18 @@ def _classify_peer_client(raw_client):
         return 'qBittorrent'
     if 'transmission' in low:
         return 'Transmission'
-    if 'deluge' in low:
-        return 'Deluge'
     if 'utorrent' in low or 'µtorrent' in low:
         return 'uTorrent'
+    if 'deluge' in low:
+        return 'Deluge'
+    if 'biglybt' in low:
+        return 'BiglyBT'
+    if 'aria2' in low:
+        return 'Aria2'
+    if 'tixati' in low:
+        return 'Tixati'
+    if 'vuze' in low or 'azureus' in low:
+        return 'Vuze'
     if 'bittorrent' in low:
         return 'BitTorrent'
     if 'libtorrent' in low:
@@ -151,8 +158,7 @@ def get_tracker_analytics(db, summaries, live=None, period='7d', allowed_hashes=
 
 
 def get_heatmap_365(db):
-    now = time.time()
-    since_ts = now - (365 * 86400)
+    since_ts = time.time() - (365 * 86400)
     day_bytes = {}
     with db._lock:
         try:
@@ -181,25 +187,13 @@ def get_heatmap_365(db):
         d = today - datetime.timedelta(days=offset)
         ds = d.strftime('%Y-%m-%d')
         b = day_bytes.get(ds, 0)
-        if b <= 0 or max_val <= 0:
-            lvl = 0
-        else:
-            ratio = b / max_val
-            lvl = 4 if ratio >= 0.75 else (3 if ratio >= 0.45 else (2 if ratio >= 0.15 else 1))
-        cells.append({
-            'date': ds,
-            'weekday': d.weekday(),
-            'bytes': b,
-            'gb': round(b / (1024 ** 3), 2),
-            'fmt': format_file_size(b),
-            'level': lvl
-        })
+        lvl = 0 if (b <= 0 or max_val <= 0) else (4 if (b / max_val) >= 0.75 else (3 if (b / max_val) >= 0.45 else (2 if (b / max_val) >= 0.15 else 1)))
+        cells.append({'date': ds, 'weekday': d.weekday(), 'bytes': b, 'gb': round(b / (1024 ** 3), 2), 'fmt': format_file_size(b), 'level': lvl})
     return cells
 
 
 def _sum_range_deltas(rows, start_ts, end_ts):
-    total = 0
-    prev = None
+    total, prev = 0, None
     for r in rows:
         ts = float(r['timestamp'])
         if prev is not None and start_ts <= ts <= end_ts:
@@ -211,24 +205,35 @@ def _sum_range_deltas(rows, start_ts, end_ts):
     return total
 
 
-def get_records_and_comparisons(db, heatmap_cells=None):
+def get_records_and_comparisons(db, heatmap_cells=None, force_recalc=False):
     now_dt = datetime.datetime.now()
     now_ts = now_dt.timestamp()
+
+    # Начало сегодняшних суток и симметричный отрезок вчера (до той же секунды)
     today_start = now_dt.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
     yest_start = today_start - 86400
+    yest_same_end = now_ts - 86400
+
+    # Начало текущей недели (понедельник 00:00) и симметричный отрезок прошлой недели
     week_start = (now_dt - datetime.timedelta(days=now_dt.weekday())).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
     prev_week_start = week_start - (7 * 86400)
+    prev_week_same_end = now_ts - (7 * 86400)
 
     _, min_ts = db.get_snapshot_range_info()
     rows_15d = db.get_snapshots_since(prev_week_start - 3600)
 
+    # Честный Like-for-Like расчёт
     today_b = _sum_range_deltas(rows_15d, today_start, now_ts)
-    yest_b = _sum_range_deltas(rows_15d, yest_start, today_start)
+    yest_b = _sum_range_deltas(rows_15d, yest_start, yest_same_end)
     this_w_b = _sum_range_deltas(rows_15d, week_start, now_ts)
-    prev_w_b = _sum_range_deltas(rows_15d, prev_week_start, week_start)
+    prev_w_b = _sum_range_deltas(rows_15d, prev_week_start, prev_week_same_end)
 
     day_pct = round(((today_b - yest_b) / yest_b) * 100.0, 1) if (min_ts and min_ts <= yest_start + 3600 and yest_b > 0) else None
     week_pct = round(((this_w_b - prev_w_b) / prev_w_b) * 100.0, 1) if (min_ts and min_ts <= prev_week_start + 3600 and prev_w_b > 0) else None
+
+    # Порог канала для отсечения аномальных пиков
+    max_mbps = max(10, cfg.getint('Max_Channel_Mbps', 1000))
+    max_physical_bps = (max_mbps * 1024 * 1024) / 8.0
 
     all_rows = db.get_snapshots_since(0)
     peak_bps, peak_date, prev_r = 0.0, '—', None
@@ -238,9 +243,10 @@ def get_records_and_comparisons(db, heatmap_cells=None):
             d = max(0, int(r['total_uploaded']) - int(prev_r['total_uploaded']))
             if dt >= MIN_DELTA_SEC and d > 0:
                 bps = d / dt
-                if bps < (1024 ** 3) and bps > peak_bps:
+                if bps <= max_physical_bps and bps > peak_bps:
                     peak_bps = bps
-                    peak_date = str(r.get('datetime') or '')[:16]
+                    dt_raw = str(r.get('datetime') or '').replace('|', '').strip()
+                    peak_date = dt_raw[:16] if dt_raw else '—'
         prev_r = r
 
     cells = heatmap_cells if heatmap_cells is not None else get_heatmap_365(db)
@@ -280,9 +286,5 @@ def detect_isp_throttling(db, ip, port):
     avg_mbps = (avg_mbs * 1024 * 1024 * 8) / 1_000_000.0
     for tier in _ISP_TIERS_MBPS:
         if abs(avg_mbps - tier) / tier <= 0.12:
-            return {
-                'throttled': True,
-                'tier_mbps': tier,
-                'plateau_mbs': round(avg_mbs, 2)
-            }
+            return {'throttled': True, 'tier_mbps': tier, 'plateau_mbs': round(avg_mbs, 2)}
     return {'throttled': False}

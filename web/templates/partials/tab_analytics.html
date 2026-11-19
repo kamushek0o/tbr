@@ -3,7 +3,14 @@
         <div class="grid-cards">
             <div class="card"><div class="lbl-sm">Сегодня vs Вчера</div><div id="rec-today-val" class="val-md accent-txt">—</div><div id="rec-today-cmp" class="lbl-xs muted-text">—</div></div>
             <div class="card"><div class="lbl-sm">Эта неделя vs Прошлая</div><div id="rec-week-val" class="val-md blue-txt">—</div><div id="rec-week-cmp" class="lbl-xs muted-text">—</div></div>
-            <div class="card"><div class="lbl-sm">Пиковая скорость</div><div id="rec-peak-val" class="val-md orange-txt">—</div><div id="rec-peak-date" class="lbl-xs muted-text">—</div></div>
+            <div class="card">
+                <div class="row-between">
+                    <span class="lbl-sm">Пиковая скорость</span>
+                    <button class="btn btn-secondary btn-xs admin-only" title="Пересчитать рекорды (отбросить аномальные скачки)" onclick="recalculateRecords()">↻</button>
+                </div>
+                <div id="rec-peak-val" class="val-md orange-txt">—</div>
+                <div id="rec-peak-date" class="lbl-xs muted-text">—</div>
+            </div>
             <div class="card"><div class="lbl-sm">Лучший день</div><div id="rec-best-val" class="val-md purple-txt">—</div><div id="rec-best-date" class="lbl-xs muted-text">—</div></div>
         </div>
 

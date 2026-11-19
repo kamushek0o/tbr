@@ -145,7 +145,7 @@ class SummaryTracker:
 
         ip, port = detect_qbittorrent_port(cfg.config)
         live = get_live_torrent_info(ip, port) if port else {}
-        top_items = compute_top_n_torrents(self.db, summaries, live=live, top_n=top_limit, period=per)
+        top_items, others = compute_top_n_torrents(self.db, summaries, live=live, top_n=top_limit, period=per, with_others=True)
 
         return {
             'daily': {'labels': [f"{d[8:10]}.{d[5:7]}" for d in sorted_days], 'values': [round(daily_map[d] / (1024 ** 3), 3) for d in sorted_days]},
@@ -156,7 +156,8 @@ class SummaryTracker:
                 'period': per,
                 'labels': [x['short_name'] for x in top_items],
                 'full_labels': [x['full_name'] for x in top_items],
-                'values': [x['gb'] for x in top_items]
+                'values': [x['gb'] for x in top_items],
+                'others': others
             }
         }
 

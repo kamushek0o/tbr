@@ -27,9 +27,23 @@ function _renderRecords(r) {
     document.getElementById('rec-week-val').textContent = r.this_week_fmt || '—';
     document.getElementById('rec-week-cmp').textContent = `Прошлая: ${r.prev_week_fmt || '—'} (${pctFmt(r.week_pct)})`;
     document.getElementById('rec-peak-val').textContent = r.peak_speed_fmt || '—';
-    document.getElementById('rec-peak-date').textContent = r.peak_speed_date || '—';
+    const cleanDate = String(r.peak_speed_date || '').replace('|', '').trim();
+    document.getElementById('rec-peak-date').textContent = cleanDate || '—';
     document.getElementById('rec-best-val').textContent = r.best_day_fmt || '—';
     document.getElementById('rec-best-date').textContent = r.best_day_date || '—';
+}
+
+async function recalculateRecords() {
+    if (!confirm('Пересчитать рекорды? Любые аномальные скачки скорости будут отброшены по порогу канала.')) return;
+    try {
+        const res = await api('/api/analytics/recalculate_records', 'POST');
+        if (!res.ok) return alert('Ошибка пересчёта');
+        const d = await res.json();
+        if (d.records) _renderRecords(d.records);
+        alert('✅ Рекорды успешно пересчитаны без аномалий!');
+    } catch (e) {
+        alert(e.message);
+    }
 }
 
 function _renderThrottleBadge(th) {
@@ -66,29 +80,69 @@ function _renderHeatmap365(cells) {
 
 function _renderPeerClientsChart(c) {
     const tot = document.getElementById('peer-clients-total');
-    if (tot) tot.textContent = `${c.total_peers || 0} пиров`;
+    const totalCount = c.total_peers || 0;
+    if (tot) tot.textContent = `${totalCount} пиров`;
     if (typeof Chart === 'undefined') return;
     const ctx = document.getElementById('chart-peer-clients');
     if (!ctx) return;
     if (chartPeerClients) chartPeerClients.destroy();
+
     const cs = getComputedStyle(document.documentElement);
     const txtColor = cs.getPropertyValue('--text-muted').trim() || '#95a5a6';
+    const ui = typeof getUiSettings === 'function' ? getUiSettings() : {};
+    const colMap = ui.peer_client_colors || {};
+    const defColMap = {
+        "qBittorrent": "#2ecc71", "Transmission": "#e74c3c", "uTorrent": "#27ae60",
+        "Deluge": "#3498db", "BiglyBT": "#9b59b6", "Aria2": "#1abc9c",
+        "Tixati": "#f39c12", "Vuze": "#00bcd4", "libtorrent": "#95a5a6", "Прочие": "#64748b"
+    };
+
+    const labels = c.labels?.length ? c.labels : ['Нет пиров'];
+    const values = c.values?.length ? c.values : [1];
+    const bgColors = labels.map(name => colMap[name] || defColMap[name] || '#64748b');
 
     chartPeerClients = new Chart(ctx, {
         type: 'doughnut',
         data: {
-            labels: c.labels?.length ? c.labels : ['Нет пиров'],
+            labels: labels,
             datasets: [{
-                data: c.values?.length ? c.values : [1],
-                backgroundColor: c.values?.length
-                    ? ['#2ecc71', '#3498db', '#e67e22', '#9b59b6', '#e74c3c', '#1abc9c', '#95a5a6']
-                    : ['rgba(149,165,166,0.2)'],
+                data: values,
+                backgroundColor: c.values?.length ? bgColors : ['rgba(149,165,166,0.2)'],
                 borderWidth: 0
             }]
         },
         options: {
             responsive: true, maintainAspectRatio: false,
-            plugins: { legend: { position: 'right', labels: { color: txtColor, boxWidth: 12, font: { size: 11 } } } }
+            plugins: {
+                legend: {
+                    position: 'right',
+                    labels: {
+                        color: txtColor, boxWidth: 10, font: { size: 10 },
+                        generateLabels: chart => {
+                            const data = chart.data;
+                            if (!data.labels.length) return [];
+                            return data.labels.map((label, i) => {
+                                const val = data.datasets[0].data[i] || 0;
+                                const pct = totalCount > 0 ? ((val / totalCount) * 100).toFixed(1) : '0';
+                                return {
+                                    text: `${label}: ${val} (${pct}%)`,
+                                    fillStyle: data.datasets[0].backgroundColor[i],
+                                    hidden: false, index: i
+                                };
+                            });
+                        }
+                    }
+                },
+                tooltip: {
+                    callbacks: {
+                        label: ctxItem => {
+                            const val = ctxItem.parsed || 0;
+                            const pct = totalCount > 0 ? ((val / totalCount) * 100).toFixed(1) : '0';
+                            return ` ${ctxItem.label}: ${val} (${pct}%)`;
+                        }
+                    }
+                }
+            }
         }
     });
 }
@@ -110,8 +164,7 @@ function _renderTrackersChart(tr) {
                 data: tr.values || [],
                 backgroundColor: 'rgba(155, 89, 182, 0.72)',
                 borderColor: '#9b59b6',
-                borderWidth: 1,
-                borderRadius: 4
+                borderWidth: 1, borderRadius: 4
             }]
         },
         options: {

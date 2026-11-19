@@ -95,6 +95,21 @@ function _computeHourMarkerFlags(meta) {
     return flags;
 }
 
+function _buildTwoColorGradient(canvasId, c1Hex, c2Hex, opacity, isHorizontal = false) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return c1Hex;
+    const ctx = canvas.getContext('2d');
+    const rgb1 = typeof hexToRgb === 'function' ? hexToRgb(c1Hex) : { r: 46, g: 204, b: 113 };
+    const rgb2 = typeof hexToRgb === 'function' ? hexToRgb(c2Hex || c1Hex) : rgb1;
+    const op = opacity ?? 0.75;
+    const grad = isHorizontal
+        ? ctx.createLinearGradient(0, 0, canvas.clientWidth || 600, 0)
+        : ctx.createLinearGradient(0, 0, 0, canvas.clientHeight || 220);
+    grad.addColorStop(0, `rgba(${rgb1.r},${rgb1.g},${rgb1.b},${op})`);
+    grad.addColorStop(1, `rgba(${rgb2.r},${rgb2.g},${rgb2.b},${Math.max(0.08, op * 0.45)})`);
+    return grad;
+}
+
 async function loadAnalyticsCharts() {
     if (typeof Chart === 'undefined') return;
     try {
@@ -114,47 +129,54 @@ async function loadAnalyticsCharts() {
         const tickColor = cs.getPropertyValue('--text-muted').trim() || '#95a5a6';
         const gridColor = cs.getPropertyValue('--border').trim() || 'rgba(255,255,255,0.08)';
 
-        const makeBg = (canvasId, key, defColor, defOp, horizontal = false) => {
-            const c = chCfg[key] || { color: defColor, gradient: false, opacity: defOp };
-            const rgb = typeof hexToRgb === 'function' ? hexToRgb(c.color) : { r: 46, g: 204, b: 113 };
-            const op = c.opacity ?? defOp;
-            const rgbaMain = `rgba(${rgb.r},${rgb.g},${rgb.b},${op})`;
-            if (!c.gradient) return rgbaMain;
-            const canvas = document.getElementById(canvasId);
-            const ctx = canvas.getContext('2d');
-            const grad = horizontal
-                ? ctx.createLinearGradient(0, 0, canvas.clientWidth || 600, 0)
-                : ctx.createLinearGradient(0, 0, 0, 220);
-            if (horizontal) {
-                grad.addColorStop(0, `rgba(${rgb.r},${rgb.g},${rgb.b},0.15)`);
-                grad.addColorStop(1, rgbaMain);
-            } else {
-                grad.addColorStop(0, rgbaMain);
-                grad.addColorStop(1, `rgba(${rgb.r},${rgb.g},${rgb.b},0.02)`);
-            }
-            return grad;
-        };
+        // 1. График по дням (Двухцветный вертикальный градиент)
+        const cDaily = chCfg.daily || { color: '#2ecc71', color2: '#10b981', opacity: 0.75 };
+        const dailyBg = cDaily.gradient !== false
+            ? _buildTwoColorGradient('chart-daily', cDaily.color, cDaily.color2, cDaily.opacity, false)
+            : cDaily.color;
 
-        const cDaily = chCfg.daily || { color: '#2ecc71', opacity: 0.7 };
         if (chartDaily) chartDaily.destroy();
         chartDaily = new Chart(document.getElementById('chart-daily'), {
             type: 'bar',
             data: {
                 labels: d.daily?.labels || [],
-                datasets: [{ data: d.daily?.values || [], backgroundColor: makeBg('chart-daily', 'daily', '#2ecc71', 0.7, false), borderColor: cDaily.color, borderWidth: 1, borderRadius: 4, minBarLength: 2, barPercentage: 0.65 }]
+                datasets: [{
+                    data: d.daily?.values || [],
+                    backgroundColor: dailyBg,
+                    borderColor: cDaily.color,
+                    borderWidth: 1, borderRadius: 4, minBarLength: 2, barPercentage: 0.65
+                }]
             },
             options: {
                 responsive: true, maintainAspectRatio: false,
-                scales: { x: { ticks: { color: tickColor, font: { size: 10 } }, grid: { color: gridColor } }, y: { beginAtZero: true, ticks: { color: tickColor, font: { size: 10 } }, grid: { color: gridColor } } },
-                plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => `${currentLang === 'en' ? 'Daily Upload' : 'Отдано за день'}: ${ctx.parsed.y} GiB` } } }
+                scales: {
+                    x: { ticks: { color: tickColor, font: { size: 10 } }, grid: { color: gridColor } },
+                    y: { beginAtZero: true, ticks: { color: tickColor, font: { size: 10 } }, grid: { color: gridColor } }
+                },
+                plugins: {
+                    legend: { display: false },
+                    tooltip: { callbacks: { label: ctx => `${currentLang === 'en' ? 'Daily Upload' : 'Отдано за день'}: ${ctx.parsed.y} GiB` } }
+                }
             }
         });
 
+        // 2. Топ-N раздач + Столбик «Все остальные»
+        const rawTopVals = [...(d.top5?.values || [])];
+        const topLabels = [...(d.top5?.labels || [])];
+        const topFullLabels = [...(d.top5?.full_labels || d.top5?.labels || [])];
+        const others = d.top5?.others;
+        const hasOthers = Boolean(others && (others.gb > 0 || others.count > 0));
+
+        if (hasOthers) {
+            const isEn = (typeof currentLang !== 'undefined' && currentLang === 'en');
+            topLabels.push(isEn ? `Others (${others.count})` : `Все остальные (${others.count})`);
+            topFullLabels.push(isEn ? `All other torrents (${others.count} pcs)` : `Все остальные раздачи (${others.count} шт.)`);
+            rawTopVals.push(others.gb);
+        }
+
         const topWrap = document.getElementById('chart-top5-wrap');
-        const rawTopVals = d.top5?.values || [];
-        const topFullLabels = d.top5?.full_labels || d.top5?.labels || [];
-        const actualCount = (d.top5?.labels || []).length || topN;
-        if (topWrap) topWrap.style.height = `${Math.max(210, actualCount * 32 + 44)}px`;
+        const actualCount = topLabels.length || topN;
+        if (topWrap) topWrap.style.height = `${Math.max(210, actualCount * 32 + 48)}px`;
 
         const isLog = (topScale === 'log10');
         const plotTopVals = isLog ? rawTopVals.map(v => Math.log10(1 + Math.max(0, v))) : rawTopVals;
@@ -168,13 +190,21 @@ async function loadAnalyticsCharts() {
             topXScale.ticks.callback = val => { const orig = Math.round(Math.pow(10, val) - 1); return orig <= 0 ? '0' : String(orig); };
         }
 
-        const cTop = chCfg.top5 || { color: '#e67e22', opacity: 0.7 };
+        const cTop = chCfg.top5 || { color: '#ff9f1c', color2: '#ff4d6d', opacity: 0.8 };
+        const topGrad = _buildTwoColorGradient('chart-top5', cTop.color, cTop.color2, cTop.opacity, true);
+        const topBgColors = plotTopVals.map((_, idx) => (hasOthers && idx === plotTopVals.length - 1) ? 'rgba(100, 116, 139, 0.55)' : topGrad);
+
         if (chartTop5) chartTop5.destroy();
         chartTop5 = new Chart(document.getElementById('chart-top5'), {
             type: 'bar',
             data: {
-                labels: d.top5?.labels || [],
-                datasets: [{ data: plotTopVals, backgroundColor: makeBg('chart-top5', 'top5', '#e67e22', 0.7, true), borderColor: cTop.color, borderWidth: 1, borderRadius: 4, minBarLength: 2, barPercentage: 0.7 }]
+                labels: topLabels,
+                datasets: [{
+                    data: plotTopVals,
+                    backgroundColor: topBgColors,
+                    borderColor: cTop.color,
+                    borderWidth: 1, borderRadius: 4, minBarLength: 2, barPercentage: 0.72
+                }]
             },
             options: {
                 responsive: true, maintainAspectRatio: false, indexAxis: 'y',
@@ -184,14 +214,23 @@ async function loadAnalyticsCharts() {
                     tooltip: {
                         callbacks: {
                             title: items => (items.length ? (topFullLabels[items[0].dataIndex] || items[0].label) : ''),
-                            label: ctx => `${currentLang === 'en' ? 'Uploaded' : 'Отдано'}: ${rawTopVals[ctx.dataIndex] ?? 0} GiB`
+                            label: ctx => {
+                                const val = rawTopVals[ctx.dataIndex] ?? 0;
+                                if (hasOthers && ctx.dataIndex === rawTopVals.length - 1) {
+                                    const isEn = (typeof currentLang !== 'undefined' && currentLang === 'en');
+                                    return `${isEn ? 'All other torrents' : 'Все остальные раздачи'} (${others.count} шт.): ${val} GiB`;
+                                }
+                                return `${currentLang === 'en' ? 'Uploaded' : 'Отдано'}: ${val} GiB`;
+                            }
                         }
                     }
                 }
             }
         });
 
-        const cHour = chCfg.hourly || { color: '#3498db', opacity: 0.25 };
+        // 3. График скорости нагрузки (Двухцветный вертикальный градиент)
+        const cHour = chCfg.hourly || { color: '#00f5d4', color2: '#9b5de5', opacity: 0.35 };
+        const hourlyBg = _buildTwoColorGradient('chart-hourly', cHour.color, cHour.color2, cHour.opacity, false);
         const hourlyMeta = d.hourly?.meta || d.detailed || [];
         const hourFlags = _computeHourMarkerFlags(hourlyMeta);
         const yScaleOpts = { ticks: { color: tickColor, font: { size: 10 } }, grid: { color: gridColor } };
@@ -204,8 +243,9 @@ async function loadAnalyticsCharts() {
             data: {
                 labels: d.hourly?.labels || [],
                 datasets: [{
-                    data: d.hourly?.values || [], borderColor: cHour.color,
-                    backgroundColor: makeBg('chart-hourly', 'hourly', '#3498db', 0.25, false),
+                    data: d.hourly?.values || [],
+                    borderColor: cHour.color,
+                    backgroundColor: hourlyBg,
                     fill: true, tension: 0.35, cubicInterpolationMode: 'monotone', clip: true,
                     pointRadius: ctx => (hourFlags[ctx.dataIndex] ? (winHours <= 24 ? 3.5 : 1.5) : 0),
                     pointHoverRadius: 5, pointHitRadius: 10

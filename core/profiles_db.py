@@ -7,48 +7,9 @@ import hashlib
 import secrets
 import sqlite3
 import threading
-from copy import deepcopy
 from werkzeug.security import generate_password_hash, check_password_hash
 from utils.helpers import APP_DATA_DIR, write_error_log
-
-DEFAULT_UI_SETTINGS = {
-    "version": 1, "theme": "dark",
-    "custom_colors": {"bg_main": "#121214", "bg_panel": "#1a1a20", "text": "#ffffff", "accent": "#2ecc71"},
-    "font": "Segoe UI", "allow_google_fonts": False, "mobile_mode": True,
-    "charts": {
-        "daily": {"color": "#2ecc71", "gradient": False, "opacity": 0.7},
-        "top5": {"color": "#e67e22", "gradient": False, "opacity": 0.7},
-        "hourly": {"color": "#3498db", "gradient": True, "opacity": 0.2},
-        "hourly_hours": 24, "hourly_y_min": None, "top_n": 5, "top_period": "1d", "top_scale": "lin"
-    },
-    "summary_columns": {
-        "visible": ["name", "size", "uploaded", "ratio", "speed_all_time", "speed_1h", "speed_24h", "vol_hour", "vol_day", "ratio_h_all", "created"],
-        "order": ["name", "size", "uploaded", "ratio", "speed_all_time", "speed_1h", "speed_24h", "vol_hour", "vol_day", "ratio_h_all", "created"],
-        "widths": {}
-    }
-}
-
-
-def merge_ui_defaults(raw_json):
-    result = deepcopy(DEFAULT_UI_SETTINGS)
-    if not raw_json:
-        return result
-    try:
-        data = json.loads(raw_json) if isinstance(raw_json, str) else dict(raw_json)
-    except Exception:
-        return result
-
-    def deep_merge(dst, src):
-        for k, v in src.items():
-            if k in dst and isinstance(dst[k], dict) and isinstance(v, dict):
-                deep_merge(dst[k], v)
-            else:
-                dst[k] = v
-
-    if isinstance(data, dict):
-        deep_merge(result, data)
-    result["version"] = DEFAULT_UI_SETTINGS["version"]
-    return result
+from core.ui_defaults import DEFAULT_UI_SETTINGS, merge_ui_defaults
 
 
 def hash_token(raw_token):
@@ -149,9 +110,7 @@ class ProfilesDB:
         with self._lock:
             try:
                 with self._get_conn() as conn:
-                    cur = conn.cursor()
-                    cur.execute("SELECT * FROM profiles WHERE role = 'admin' ORDER BY id ASC LIMIT 1")
-                    row = cur.fetchone()
+                    row = conn.execute("SELECT * FROM profiles WHERE role = 'admin' ORDER BY id ASC LIMIT 1").fetchone()
                     return dict(row) if row else None
             except Exception:
                 return None
@@ -160,9 +119,7 @@ class ProfilesDB:
         with self._lock:
             try:
                 with self._get_conn() as conn:
-                    cur = conn.cursor()
-                    cur.execute("SELECT * FROM profiles WHERE id = ?", (int(profile_id),))
-                    row = cur.fetchone()
+                    row = conn.execute("SELECT * FROM profiles WHERE id = ?", (int(profile_id),)).fetchone()
                     return dict(row) if row else None
             except Exception:
                 return None

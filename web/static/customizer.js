@@ -5,35 +5,22 @@ const THEME_PRESETS = {
     oled:  { bg_main: '#000000', bg_panel: '#08080a', bg_input: '#121216', bg_hover: '#16161c', text: '#f5f5f5', text_muted: '#888894', accent: '#2ecc71', border: '#1c1c22', th_bg: '#0d0d10' }
 };
 
-const POPULAR_PALETTE = ['#2ecc71', '#3498db', '#e67e22', '#9b59b6', '#e74c3c', '#1abc9c', '#f1c40f', '#ec4899'];
+const NEON_PRESETS = [
+    { c1: '#00f5d4', c2: '#9b5de5', label: 'Бирюза → Фиолет' },
+    { c1: '#ff9f1c', c2: '#ff4d6d', label: 'Оранж → Коралл' },
+    { c1: '#2ecc71', c2: '#10b981', label: 'Лайм → Изумруд' },
+    { c1: '#38bdf8', c2: '#6366f1', label: 'Электрик → Индиго' },
+    { c1: '#f72585', c2: '#7209b7', label: 'Неон → Маджента' }
+];
 
 const AVAILABLE_FONTS = [
     { name: 'Segoe UI', label: 'Segoe UI / System UI', web: false, css: "'Segoe UI', system-ui, -apple-system, sans-serif" },
     { name: 'Inter', label: 'Inter', web: true, css: "'Inter', sans-serif" },
     { name: 'Roboto', label: 'Roboto', web: true, css: "'Roboto', sans-serif" },
     { name: 'Open Sans', label: 'Open Sans', web: true, css: "'Open Sans', sans-serif" },
-    { name: 'Montserrat', label: 'Montserrat', web: true, css: "'Montserrat', sans-serif" },
-    { name: 'Nunito', label: 'Nunito', web: true, css: "'Nunito', sans-serif" },
-    { name: 'Rubik', label: 'Rubik', web: true, css: "'Rubik', sans-serif" },
-    { name: 'PT Sans', label: 'PT Sans', web: true, css: "'PT Sans', sans-serif" },
-    { name: 'Ubuntu', label: 'Ubuntu', web: true, css: "'Ubuntu', sans-serif" },
-    { name: 'Arial', label: 'Arial', web: false, css: "Arial, Helvetica, sans-serif" },
     { name: 'JetBrains Mono', label: 'JetBrains Mono', web: true, css: "'JetBrains Mono', monospace" },
-    { name: 'Fira Code', label: 'Fira Code', web: true, css: "'Fira Code', monospace" },
-    { name: 'Roboto Mono', label: 'Roboto Mono', web: true, css: "'Roboto Mono', monospace" },
-    { name: 'Consolas', label: 'Consolas', web: false, css: "Consolas, monospace" },
-    { name: 'Georgia', label: 'Georgia', web: false, css: "Georgia, serif" },
-    { name: 'Comic Sans MS', label: 'Comic Sans MS', web: false, css: "'Comic Sans MS', cursive, sans-serif" }
+    { name: 'Fira Code', label: 'Fira Code', web: true, css: "'Fira Code', monospace" }
 ];
-
-const DEFAULT_CHARTS_CFG = {
-    daily:  { color: '#2ecc71', gradient: false, opacity: 0.7 },
-    top5:   { color: '#e67e22', gradient: false, opacity: 0.7 },
-    hourly: { color: '#3498db', gradient: true,  opacity: 0.25 },
-    hourly_hours: 24,
-    hourly_y_min: null,
-    top_n: 5
-};
 
 function getUiSettings() {
     if (typeof CURRENT_UI_SETTINGS !== 'undefined' && CURRENT_UI_SETTINGS) return CURRENT_UI_SETTINGS;
@@ -47,11 +34,15 @@ function getUiSettings() {
         font: 'Segoe UI',
         allow_google_fonts: false,
         mobile_mode: true,
-        charts: JSON.parse(JSON.stringify(DEFAULT_CHARTS_CFG)),
-        summary_columns: {
-            visible: ['name', 'size', 'uploaded', 'ratio', 'speed_all_time', 'speed_1h', 'speed_24h', 'vol_hour', 'vol_day', 'ratio_h_all', 'created'],
-            order: ['name', 'size', 'uploaded', 'ratio', 'speed_all_time', 'speed_1h', 'speed_24h', 'vol_hour', 'vol_day', 'ratio_h_all', 'created'],
-            widths: {}
+        charts: {
+            daily:  { color: '#2ecc71', color2: '#10b981', gradient: true, opacity: 0.75 },
+            top5:   { color: '#ff9f1c', color2: '#ff4d6d', gradient: true, opacity: 0.8 },
+            hourly: { color: '#00f5d4', color2: '#9b5de5', gradient: true, opacity: 0.35 }
+        },
+        peer_client_colors: {
+            "qBittorrent": "#2ecc71", "Transmission": "#e74c3c", "uTorrent": "#27ae60",
+            "Deluge": "#3498db", "BiglyBT": "#9b59b6", "Aria2": "#1abc9c",
+            "Tixati": "#f39c12", "Vuze": "#00bcd4", "libtorrent": "#95a5a6", "Прочие": "#64748b"
         }
     };
 }
@@ -60,11 +51,6 @@ function hexToRgb(hex) {
     const m = String(hex || '#2ecc71').replace('#', '').match(/^([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
     if (!m) return { r: 46, g: 204, b: 113 };
     return { r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16) };
-}
-
-function rgbToHex(r, g, b) {
-    const clamp = v => Math.max(0, Math.min(255, parseInt(v) || 0)).toString(16).padStart(2, '0');
-    return `#${clamp(r)}${clamp(g)}${clamp(b)}`;
 }
 
 function applyUiSettings(ui) {
@@ -77,38 +63,23 @@ function applyUiSettings(ui) {
         const c = ui.custom_colors;
         const isDark = hexToRgb(c.bg_main).r * 0.299 + hexToRgb(c.bg_main).g * 0.587 + hexToRgb(c.bg_main).b * 0.114 < 128;
         palette = {
-            bg_main: c.bg_main || '#121214',
-            bg_panel: c.bg_panel || '#1a1a20',
-            bg_input: isDark ? '#262630' : '#e8eaef',
-            bg_hover: isDark ? '#22222a' : '#f4f6f8',
-            text: c.text || '#ffffff',
-            text_muted: isDark ? '#95a5a6' : '#6b7280',
-            accent: c.accent || '#2ecc71',
-            border: isDark ? '#2a2a34' : '#d1d5db',
+            bg_main: c.bg_main || '#121214', bg_panel: c.bg_panel || '#1a1a20',
+            bg_input: isDark ? '#262630' : '#e8eaef', bg_hover: isDark ? '#22222a' : '#f4f6f8',
+            text: c.text || '#ffffff', text_muted: isDark ? '#95a5a6' : '#6b7280',
+            accent: c.accent || '#2ecc71', border: isDark ? '#2a2a34' : '#d1d5db',
             th_bg: isDark ? '#1e1e26' : '#f3f4f6'
         };
     }
 
-    root.style.setProperty('--bg-main', palette.bg_main);
-    root.style.setProperty('--bg-panel', palette.bg_panel);
-    root.style.setProperty('--bg-input', palette.bg_input);
-    root.style.setProperty('--bg-hover', palette.bg_hover);
-    root.style.setProperty('--text', palette.text);
-    root.style.setProperty('--text-muted', palette.text_muted);
-    root.style.setProperty('--accent', palette.accent);
-    root.style.setProperty('--border', palette.border);
-    root.style.setProperty('--th-bg', palette.th_bg);
+    for (const [k, v] of Object.entries(palette)) {
+        root.style.setProperty(`--${k.replace('_', '-')}`, v);
+    }
     document.body.dataset.theme = theme;
-
     document.body.classList.toggle('mobile-cards-on', ui.mobile_mode !== false);
     if (typeof updateMobileCardsBtn === 'function') updateMobileCardsBtn();
 
     const fontObj = AVAILABLE_FONTS.find(f => f.name === ui.font) || AVAILABLE_FONTS[0];
     root.style.setProperty('--app-font', fontObj.css);
-    if (fontObj.web && ui.allow_google_fonts) {
-        loadGoogleFont(fontObj.name);
-    }
-    updateFontNote(fontObj);
 
     if (typeof syncAnalyticsControlsFromUi === 'function') syncAnalyticsControlsFromUi();
     if (typeof applySummarySortAndRender === 'function' && typeof rawSummaryItems !== 'undefined' && rawSummaryItems.length) {
@@ -116,26 +87,8 @@ function applyUiSettings(ui) {
     }
     if (typeof loadAnalyticsCharts === 'function' && document.getElementById('tab-analytics')?.classList.contains('active')) {
         loadAnalyticsCharts();
+        if (typeof loadAnalyticsInsights === 'function') loadAnalyticsInsights(false);
     }
-}
-
-function loadGoogleFont(fontName) {
-    const id = 'gf-' + fontName.replace(/\s+/g, '-').toLowerCase();
-    if (document.getElementById(id)) return;
-    const link = document.createElement('link');
-    link.id = id;
-    link.rel = 'stylesheet';
-    link.href = `https://fonts.googleapis.com/css2?family=${encodeURIComponent(fontName)}:wght@400;600;700;800&display=swap`;
-    document.head.appendChild(link);
-}
-
-function updateFontNote(fontObj) {
-    const note = document.getElementById('cust-font-note');
-    if (!note || !fontObj) return;
-    const hasLocal = document.fonts ? document.fonts.check(`12px "${fontObj.name}"`) : true;
-    note.textContent = (fontObj.web && !hasLocal)
-        ? '⚠️ Нет локально — отметьте согласие ниже для подгрузки с Google Fonts.'
-        : '';
 }
 
 async function persistUiSettings(ui) {
@@ -161,16 +114,15 @@ function openCustomizeModal() {
     fontSel.innerHTML = '';
     AVAILABLE_FONTS.forEach(f => {
         const opt = document.createElement('option');
-        opt.value = f.name;
-        opt.textContent = f.web ? `${f.label} (Google Fonts)` : f.label;
+        opt.value = f.name; opt.textContent = f.label;
         fontSel.appendChild(opt);
     });
     fontSel.value = ui.font || 'Segoe UI';
     document.getElementById('cust-allow-gf').checked = Boolean(ui.allow_google_fonts);
     document.getElementById('cust-mobile-mode').checked = (ui.mobile_mode !== false);
-    updateFontNote(AVAILABLE_FONTS.find(f => f.name === fontSel.value));
 
-    renderChartEditors(ui.charts || DEFAULT_CHARTS_CFG);
+    renderChartEditors(ui.charts || {});
+    renderClientColorEditors(ui.peer_client_colors || {});
     document.getElementById('customize-modal').style.display = 'flex';
 }
 
@@ -183,58 +135,79 @@ function renderChartEditors(chartsCfg) {
     const box = document.getElementById('cust-charts-editors');
     box.innerHTML = '';
     const defs = [
-        { key: 'daily', title: '1. По дням (GiB)' },
-        { key: 'top5', title: '2. Топ-N раздач' },
-        { key: 'hourly', title: '3. Скорость нагрузки' }
+        { key: 'daily', title: '1. По дням (GiB)', def1: '#2ecc71', def2: '#10b981' },
+        { key: 'top5', title: '2. Топ-N раздач (горизонтальный)', def1: '#ff9f1c', def2: '#ff4d6d' },
+        { key: 'hourly', title: '3. Скорость нагрузки', def1: '#00f5d4', def2: '#9b5de5' }
     ];
     defs.forEach(d => {
-        const cfg = (chartsCfg && chartsCfg[d.key]) || DEFAULT_CHARTS_CFG[d.key];
-        const rgb = hexToRgb(cfg.color);
+        const cfg = chartsCfg[d.key] || { color: d.def1, color2: d.def2, gradient: true, opacity: 0.7 };
+        const c1 = cfg.color || d.def1;
+        const c2 = cfg.color2 || cfg.color || d.def2;
         const div = document.createElement('div');
         div.style.cssText = 'background:var(--bg-input); padding:8px; border-radius:6px; margin-bottom:8px;';
         div.innerHTML = `
             <div class="row-between mb-8">
                 <b style="font-size:12px;">${d.title}</b>
-                <button type="button" class="btn btn-secondary btn-xs" onclick="resetSingleChart('${d.key}')">Сброс</button>
+                <label class="row-gap lbl-xs pointer"><input type="checkbox" id="cc-${d.key}-grad" ${cfg.gradient !== false ? 'checked' : ''}> Градиент</label>
             </div>
-            <div class="row-wrap" style="gap:6px;">
-                <input type="color" id="cc-${d.key}-picker" value="${cfg.color}" oninput="syncChartColorFromHex('${d.key}', this.value)">
-                <input type="text" id="cc-${d.key}-hex" value="${cfg.color}" class="form-control" style="width:78px;" oninput="syncChartColorFromHex('${d.key}', this.value)">
-                <input type="number" id="cc-${d.key}-r" value="${rgb.r}" min="0" max="255" class="form-control" style="width:52px;" title="R" oninput="syncChartColorFromRgb('${d.key}')">
-                <input type="number" id="cc-${d.key}-g" value="${rgb.g}" min="0" max="255" class="form-control" style="width:52px;" title="G" oninput="syncChartColorFromRgb('${d.key}')">
-                <input type="number" id="cc-${d.key}-b" value="${rgb.b}" min="0" max="255" class="form-control" style="width:52px;" title="B" oninput="syncChartColorFromRgb('${d.key}')">
-                <label class="row-gap lbl-xs pointer"><input type="checkbox" id="cc-${d.key}-grad" ${cfg.gradient ? 'checked' : ''}> Градиент</label>
-                <input type="range" id="cc-${d.key}-op" min="0.1" max="1" step="0.05" value="${cfg.opacity ?? 0.7}" style="width:75px;" title="Прозрачность">
+            <div class="row-wrap" style="gap:8px;">
+                <div class="row-gap">
+                    <span class="lbl-xs">Цвет 1:</span>
+                    <input type="color" id="cc-${d.key}-c1" value="${c1}">
+                </div>
+                <div class="row-gap">
+                    <span class="lbl-xs">Цвет 2:</span>
+                    <input type="color" id="cc-${d.key}-c2" value="${c2}">
+                </div>
+                <div class="row-gap">
+                    <span class="lbl-xs">Прозрачность:</span>
+                    <input type="range" id="cc-${d.key}-op" min="0.1" max="1" step="0.05" value="${cfg.opacity ?? 0.7}" style="width:75px;">
+                </div>
             </div>
-            <div class="row-gap mt-10" style="margin-top:6px;">
-                ${POPULAR_PALETTE.map(c => `<span onclick="syncChartColorFromHex('${d.key}','${c}')" style="width:16px;height:16px;border-radius:3px;background:${c};display:inline-block;cursor:pointer;border:1px solid #000;"></span>`).join('')}
+            <div class="row-wrap mt-10" style="gap:4px;">
+                <span class="lbl-xs muted-text" style="width:100%;">Неоновые пары:</span>
+                ${NEON_PRESETS.map(p => `
+                    <button type="button" class="btn btn-secondary btn-xs" style="font-size:10px; padding:2px 6px;" onclick="applyNeonPreset('${d.key}','${p.c1}','${p.c2}')">
+                        <span style="display:inline-block;width:8px;height:8px;background:${p.c1};border-radius:2px;"></span>
+                        <span style="display:inline-block;width:8px;height:8px;background:${p.c2};border-radius:2px;"></span> ${p.label}
+                    </button>
+                `).join('')}
             </div>
         `;
         box.appendChild(div);
     });
 }
 
-function syncChartColorFromHex(key, hex) {
-    if (!/^#[0-9a-f]{6}$/i.test(hex)) return;
-    document.getElementById(`cc-${key}-picker`).value = hex;
-    document.getElementById(`cc-${key}-hex`).value = hex;
-    const rgb = hexToRgb(hex);
-    document.getElementById(`cc-${key}-r`).value = rgb.r;
-    document.getElementById(`cc-${key}-g`).value = rgb.g;
-    document.getElementById(`cc-${key}-b`).value = rgb.b;
+function applyNeonPreset(key, c1, c2) {
+    const el1 = document.getElementById(`cc-${key}-c1`);
+    const el2 = document.getElementById(`cc-${key}-c2`);
+    if (el1) el1.value = c1;
+    if (el2) el2.value = c2;
 }
 
-function syncChartColorFromRgb(key) {
-    const hex = rgbToHex(document.getElementById(`cc-${key}-r`).value, document.getElementById(`cc-${key}-g`).value, document.getElementById(`cc-${key}-b`).value);
-    document.getElementById(`cc-${key}-picker`).value = hex;
-    document.getElementById(`cc-${key}-hex`).value = hex;
-}
-
-function resetSingleChart(key) {
-    const def = DEFAULT_CHARTS_CFG[key];
-    syncChartColorFromHex(key, def.color);
-    document.getElementById(`cc-${key}-grad`).checked = def.gradient;
-    document.getElementById(`cc-${key}-op`).value = def.opacity;
+function renderClientColorEditors(clientColors) {
+    let box = document.getElementById('cust-clients-editors');
+    if (!box) {
+        box = document.createElement('div');
+        box.id = 'cust-clients-editors';
+        box.innerHTML = '<div class="card-title mt-10">👥 ЦВЕТА КЛИЕНТОВ ПИРОВ</div><div id="cust-clients-grid" class="grid-2" style="gap:6px;"></div>';
+        document.getElementById('cust-charts-editors').after(box);
+    }
+    const grid = document.getElementById('cust-clients-grid');
+    grid.innerHTML = '';
+    const defs = {
+        "qBittorrent": "#2ecc71", "Transmission": "#e74c3c", "uTorrent": "#27ae60",
+        "Deluge": "#3498db", "BiglyBT": "#9b59b6", "Aria2": "#1abc9c",
+        "Tixati": "#f39c12", "Vuze": "#00bcd4", "libtorrent": "#95a5a6", "Прочие": "#64748b"
+    };
+    for (const [name, defCol] of Object.entries(defs)) {
+        const curCol = clientColors[name] || defCol;
+        const row = document.createElement('div');
+        row.className = 'row-between';
+        row.style.cssText = 'background:var(--bg-input); padding:4px 8px; border-radius:5px; font-size:11px;';
+        row.innerHTML = `<span>${name}</span><input type="color" class="client-col-inp" data-client="${name}" value="${curCol}">`;
+        grid.appendChild(row);
+    }
 }
 
 async function saveCustomization() {
@@ -253,10 +226,16 @@ async function saveCustomization() {
     ui.charts = ui.charts || {};
     ['daily', 'top5', 'hourly'].forEach(k => {
         ui.charts[k] = {
-            color: document.getElementById(`cc-${k}-hex`).value || DEFAULT_CHARTS_CFG[k].color,
-            gradient: document.getElementById(`cc-${k}-grad`).checked,
-            opacity: parseFloat(document.getElementById(`cc-${k}-op`).value) || 0.7
+            color: document.getElementById(`cc-${k}-c1`)?.value || '#2ecc71',
+            color2: document.getElementById(`cc-${k}-c2`)?.value || '#10b981',
+            gradient: document.getElementById(`cc-${k}-grad`)?.checked !== false,
+            opacity: parseFloat(document.getElementById(`cc-${k}-op`)?.value) || 0.7
         };
+    });
+
+    ui.peer_client_colors = ui.peer_client_colors || {};
+    document.querySelectorAll('.client-col-inp').forEach(inp => {
+        ui.peer_client_colors[inp.dataset.client] = inp.value;
     });
 
     await persistUiSettings(ui);

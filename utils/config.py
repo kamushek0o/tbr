@@ -84,7 +84,8 @@ class AppConfig:
             'Digest_Weekday': '6',
             'Digest_Last_Sent_Ts': '0',
             'Snooze_Saved_DL': '0',
-            'Snooze_Saved_UP': '0'
+            'Snooze_Saved_UP': '0',
+            'Max_Channel_Mbps': '1000'
         }
         changed = False
         for k, v in defaults.items():

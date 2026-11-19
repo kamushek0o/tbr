@@ -98,7 +98,7 @@ def build_hourly_aggregated_speed_series(db, hours=72):
     return _smooth_anomalies(points)
 
 
-def compute_top_n_torrents(db, summaries, live=None, top_n=5, period='1d'):
+def compute_top_n_torrents(db, summaries, live=None, top_n=5, period='1d', with_others=False):
     n = max(1, min(25, int(top_n or 5)))
     per = period if period in ('1d', '7d', '30d', 'all') else '1d'
 
@@ -117,7 +117,7 @@ def compute_top_n_torrents(db, summaries, live=None, top_n=5, period='1d'):
                 active_map[h] = {'name': str(s.get('name') or h), 'uploaded': int(s.get('uploaded', 0) or 0)}
 
     if not active_map:
-        return []
+        return ([], {'gb': 0.0, 'count': 0}) if with_others else []
 
     if per == 'all':
         scored = [(h, v['name'], v['uploaded']) for h, v in active_map.items() if v['uploaded'] > 0]
@@ -127,15 +127,23 @@ def compute_top_n_torrents(db, summaries, live=None, top_n=5, period='1d'):
         scored = [(h, active_map[h]['name'], deltas.get(h, 0)) for h in active_map if deltas.get(h, 0) > 0]
 
     scored.sort(key=lambda x: x[2], reverse=True)
-    return [
+    prec = 3 if per != 'all' else 2
+    top_items = [
         {
             'hash': h,
             'full_name': nm,
             'short_name': (nm[:26] + '…') if len(nm) > 27 else nm,
-            'gb': round(val / (1024 ** 3), 3 if per != 'all' else 2)
+            'gb': round(val / (1024 ** 3), prec)
         }
         for h, nm, val in scored[:n]
     ]
+    if not with_others:
+        return top_items
+
+    rest = scored[n:]
+    rest_bytes = max(0, sum(x[2] for x in rest))
+    others = {'gb': round(rest_bytes / (1024 ** 3), prec), 'count': len(rest)}
+    return top_items, others
 
 
 def _get_disk_free_bytes(live_info):
