@@ -115,7 +115,6 @@ def run_fastresume_merge(old_hash, new_hash, delete_mode='none', merge_mode='add
     m_mode = merge_mode if merge_mode in VALID_MERGE_MODES else 'add'
     log = []
 
-    # Защита от повторного сложения
     if m_mode == 'add' and not force_duplicate:
         prev = app_state_db.get_merger_history(old_hash, new_hash)
         if prev:
@@ -141,9 +140,9 @@ def run_fastresume_merge(old_hash, new_hash, delete_mode='none', merge_mode='add
 
     try:
         if was_running:
-            log.append("🛑 Завершаем qBittorrent во избежание порчи данных...")
-            if not close_qbittorrent():
-                raise RuntimeError("Не удалось завершить qBittorrent (проверьте права администратора).")
+            log.append("🛑 Завершаем qBittorrent (сброс дискового кэша)...")
+            if not close_qbittorrent(max_wait_sec=30.0):
+                raise RuntimeError("Не удалось завершить qBittorrent за 30с. Убедитесь, что WebUI доступен.")
             time.sleep(1.0)
 
         with open(old_file, 'rb') as f:
@@ -179,7 +178,6 @@ def run_fastresume_merge(old_hash, new_hash, delete_mode='none', merge_mode='add
         set_val(new_data, 'seeding_time', final_seed)
         set_val(new_data, 'active_time', final_act)
 
-        # Обработка added_time: оставляем более раннюю дату
         old_add = int(_get_bencode_val(old_data, 'added_time') or 0)
         new_add = int(_get_bencode_val(new_data, 'added_time') or 0)
         valid_adds = [x for x in (old_add, new_add) if x > 0]
