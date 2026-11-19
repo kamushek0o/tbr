@@ -1,67 +1,109 @@
-> [читать на русском](README_RU.md)
+> [Читать на русском](README_RU.md)
 
-# tbr pro — qbittorrent swiss-army knife
+# ⚡ tbr PRO — qBittorrent Swiss-Army Knife
 
-> supports **en / ru** ui toggle right in the header!
+> Core Version: **v3.0.1+** | Android Companion: **tbr-widget v1.3.0**  
+> Integrated **EN / RU** localization toggle and custom themes right in the header!
 
-# features
+# 🚀 Features & Arsenal
 
-1. **pause and resume all torrents at once** (groundbreaking technology, i know)
+1. **Atomic .fastresume Stats Merger with Torrent Diff & Smart Match:**
+   Ratio nerd's wet dream. Transfer `uploaded` & `seeding_time` metadata between torrents without corrupting bencode. Automatically shuts down and revives qBittorrent, inspects payload files via **Torrent Diff** (% volume match), auto-suggests matches via **Smart Match** (ignoring roman/arabic sequel numbering), and safely cleans up the source torrent with directory overlap safety (`content_path` inspection). Target goals auto-transfer seamlessly!
 
-2. **export csv summaries** so you can finally show your wife, mom, dad, or boyfriend why your pc hasn't been turned off in a month
+2. **Honest Like-for-Like (LFL) Analytics, Health Score & 365-Day Heatmap:**
+   Zero phantom spikes from newly added torrents. "Today vs Yesterday" and "This Week vs Last" are calculated down to the exact second. Includes a GitHub-style 365-day upload heatmap, "Last Seeder" alert radar, swarm value metric (Health Score), and weighted historical ETA forecaster powered by 4 independent SQLite databases (WAL mode).
 
-3. **fastresume stats merger with safe source cleanup:** if you're a ratio-obsessed stats nerd and don't want to lose all upload stats on a torrent—or keep 50 versions of the same game on your pc—you can transfer `uploaded` & `seeding_time` metadata to a new torrent using my *innovative* merger (safely closes and restarts qBittorrent so bencode doesn't get corrupted). Now with optional automated source deletion: it checks file paths to prevent accidental data loss and safely downgrades to torrent-only removal if folders overlap
+3. **Hardware & ISP Guard: Native Windows Anti-Sleep, Watchdog & ISP Detector:**
+   Windows native sleep prevention via Win32 API (`SetThreadExecutionState`) keeps your rig awake when upload/download exceeds your threshold. qB Watchdog restarts unresponsive clients (up to 2 attempts with a 30s pause), Auto-Recheck tags dead drives with `io-error`, and the traffic inspector alerts you if your ISP is throttling your bandwidth.
 
-4. **smart eta forecaster & honest speed history:** calculates when you'll hit a specific upload/ratio goal using weighted historical data (SQLite). The load chart is now continuous—no dumb hourly buckets, smoothed phantom spikes from newly added torrents, and detailed tooltips (hover over any point to see exact transfer speed and volume uploaded between snapshots)
+4. **Disaster Recovery Manifest & Panic Killswitch:**
+   Emergency red button for unexpected visitors or panic moments: instantly halts all torrents, locks global transfer limits to 1 B/s, freezes the autopilot for 1 hour, and optionally terminates the client process. Automated weekly Disaster Recovery manifests export your entire library, trackers, and magnet links to compact JSON.
 
-5. **dead torrents & tracker error scanner:** multi-threaded scan through all trackers across your library, groups recurring tracker errors, and lets you pause all dead weight with a single click
+5. **Orphan File Scanner:**
+   Scans download roots for leftover files and abandoned folders that no longer belong to active torrents. Built with Path Traversal protection and double-confirmation safety (never deletes anything to recycle bin automatically).
 
-6. **android home screen widget (`tbr-widget`) + PWA:** yes, you can now stare at your seedbox speeds right from your phone's home screen. Native Android widget with one-tap chart toggling (24h speed vs daily bars) and a manual `↻` refresh button, plus the web UI installs cleanly as an address-bar-free PWA
+6. **Smart Timers: Smart Freeze, Snooze & Expiration:**
+   - **Smart Freeze:** Pauses only active torrents, memorizes them, and resumes exclusively what was running without unpausing long-forgotten torrents.
+   - **Snooze Timer:** Background DB-backed sleep countdown (30m / 1h / 2h / custom) via speed throttling or freezing.
+   - **Expiration Timer:** Self-destruct torrents based on age or upload volume (disk deletion is strictly opt-in).
 
-7. **profiles & RBAC (Admin / Viewer):** generate 1-click magic links with read-only Viewer permissions for friends or family—they get to admire your upload flex without being able to stop torrents or mess up your config
+7. **Zero-Trust Security & Private Vault:**
+   Hashed passwords (`pbkdf2:sha256`) with auto-upgrade, standalone API tokens (`tbr_api_...`), single-use invite tokens (`/invite/<token>`), brute-force protection, and strict RBAC (Admin vs Viewer). The **Private Vault** filters out sensitive tags on the backend: torrents are either purged from guest views or anonymized in global sums without leaking titles.
 
-8. **personal spam bot disguised as automation (tg & discord):** set rules (min ratio / seeding days / upload volume / average speed in window W) so torrents auto-pause or get tagged—or just drop a discord webhook into your friends' server and forcibly subject them to your upload achievements
+8. **Next-Gen Automation & DND Quiet Hours (Telegram & Discord):**
+   Fine-grained autopilot rules (+tags, -tags, pause by ratio, seed duration, or average speed window W). DND Mode ("Quiet Hours") buffers non-critical alerts into a morning digest while letting critical drive/client alerts punch through immediately.
 
-9. **works even without qbittorrent webui running** (well, except tab 1—obviously, it basically mirrors the webui)
+9. **Android Home Screen Widget (`tbr-widget v1.3.0`) + PWA + Command Palette (Ctrl+K):**
+   Native Android home screen companion rendered entirely on Canvas (RGB_565, low memory & battery friendly). One-tap chart toggling (Speed / Days / Top-N / All), offline cache, in-app APK auto-updating from GitHub Releases, and fast pairing via QR scanner. Web UI installs as an address-bar-free PWA, with a full-blown `Ctrl+K` command palette.
 
-10. **light as a feather** — tiny standalone `.exe`, no python required
+10. **Seeder Hall of Fame & Canvas Share Card:**
+    10 permanent achievements ("Ratio God", "Chief Surgeon", "Night Shift"), funny real-world upload equivalents (modern games, 4K movies, OS ISOs), and an HTML5 Canvas Share Card generator with a "Hide torrent names" privacy toggle.
 
-11. **clean (for me) modular architecture** — every file strictly under 300 lines, zero spaghetti code
+---
 
-# screenshots
+# 📸 Interfaces
 
-### 1. torrents
+### 1. Torrents & Peer Inspector
 ![torrents](interfaces/interface1.png)
 
-### 2. fastresume merger
+### 2. Fastresume Merger & Torrent Diff
 ![merger](interfaces/interface2.png)
 
-### 3. summary
+### 3. Summary & Table Customizer
 ![summary](interfaces/interface3.png)
 
-### 4. analytics & forecaster
+### 4. Charts, Heatmap & Analytics
 ![analytics](interfaces/interface4.png)
 
-# why should i download your vibecode?
+---
 
-1. i haven't seen any real alternatives
+# 🛠️ Architecture
 
-2. the features are actually useful
+- **Backend:** Python 3, multi-threaded **Waitress** WSGI server (threads=8) with graceful Werkzeug fallback, modular Blueprint architecture (every file strictly < 300 lines).
+- **Databases:** 4 isolated SQLite WAL-mode databases with `busy_timeout=30000` (upload history, profiles/invites, automation rules, app state).
+- **Backup & Recovery:** Hot atomic backup via `sqlite3.backup()` into `.zip` (with secret-stripping options) and pre-boot restore.
+- **Android Companion:** Kotlin, Android SDK 26–35, WorkManager, Jetpack Security Crypto, ZXing QR Scanner.
 
-3. please
+---
 
-# what do i need to make it work?
+# 💻 Quick Start
 
-1. **qbittorrent webui** — password protected setups are supported! just enter your qB webui login/password in `⚙️ settings` (or leave it bypassed on localhost, up to you)
+### Option 1: Standalone `.exe` (Windows)
+1. Grab the latest `tbr.exe` from [Releases](https://github.com/kamushek0o/tbr/releases).
+2. Run it. The tray icon will appear, and the web UI will open in your default browser.
+3. Updates are delivered seamlessly: checks SHA-256 checksums, downloads patches, and restarts automatically.
 
-2. **qbittorrent** — haven't tested other clients (transmission doesn't count, it's kinda creepy). and if you don't use qB, why are you even here, normie?
+### Option 2: Docker / Headless (Linux / TrueNAS / Unraid)
+```bash
+docker build -t tbr-pro .
+docker run -d \
+  --name tbr-pro \
+  -p 5000:5000 \
+  -v /path/to/data:/data \
+  -v /path/to/qBittorrent/BT_backup:/bt_backup \
+  -e TBR_WEB_PASSWORD=your_super_password \
+  tbr-pro
+```
+*Or headless via CLI:* `python main.py --headless --host 0.0.0.0 --port 5000`
 
-3. **windows / linux / docker** — `.exe` is built for windows (tested on win 11), and now it also runs headless on linux & docker (`python main.py --headless` or via `Dockerfile`)
+### Option 3: From Source
+```bash
+git clone https://github.com/kamushek0o/tbr.git
+cd tbr
+pip install -r requirements.txt
+python main.py
+```
+*(To build your own standalone `.exe`, execute `build.bat`)*
 
-4. **want the phone widget?** grab the prebuilt `.apk` from the companion repo [tbr-widget](https://github.com/kamushek0o/tbr-widget/releases) — plug in your server URL and Viewer token, and you're good to go
+### 📱 Android Home Screen Widget
+Download the pre-built `.apk` from the companion repo [tbr-widget Releases](https://github.com/kamushek0o/tbr-widget/releases). In the web interface, open `⚙️ Settings` -> `📱 QR Code`, scan it with your phone, and the widget will auto-configure without manual typing.
 
-5. **paranoid about random `.exe` files?** fair enough! the `.exe` in releases is auto-compiled by **github actions** straight from this open-source code (no sketchy local builds). or just run `pip install -r requirements.txt` -> `python main.py`, or build it yourself via `build.bat`
+---
 
-# outro
+# 🤝 Outro
 
-fellow pirates and piratesses, enjoy! don't eat yellow snow. if anything breaks or sucks, open an [issue](https://github.com/kamushek0o/tbr/issues) or hit me up at `loh260330@gmail.com`
+Fellow pirates and seedboxers: seed hard, protect your drives, and don't eat yellow snow. If you encounter bugs or have feature ideas, submit an [Issue](https://github.com/kamushek0o/tbr/issues) or reach out at `loh260330@gmail.com`.
+
+
+---
+
