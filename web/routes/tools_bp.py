@@ -1,0 +1,56 @@
+# web/routes/tools_bp.py
+from flask import Blueprint, request, jsonify, g
+from core.orphan_scanner import get_download_roots, scan_orphan_entries, delete_orphan_entries
+from core.private_vault import get_vault_settings, save_vault_settings
+from core.app_state_db import app_state_db
+
+tools_bp = Blueprint('tools_bp', __name__)
+
+
+def _actor_name():
+    prof = g.get('profile')
+    return (prof.get('login') or prof.get('name') or 'admin') if prof else 'admin'
+
+
+@tools_bp.route('/api/tools/orphans/roots')
+def api_orphans_roots():
+    if g.get('role') != 'admin':
+        return jsonify({'error': 'Только для Admin'}), 403
+    return jsonify({'roots': get_download_roots()})
+
+
+@tools_bp.route('/api/tools/orphans/scan', methods=['POST'])
+def api_orphans_scan():
+    if g.get('role') != 'admin':
+        return jsonify({'success': False, 'error': 'Только для Admin'}), 403
+    data = request.get_json(silent=True) or {}
+    custom_roots = data.get('roots')
+    if custom_roots is not None and not isinstance(custom_roots, list):
+        return jsonify({'success': False, 'error': 'Ожидался список папок'}), 400
+    res = scan_orphan_entries(custom_roots=custom_roots)
+    return jsonify({'success': True, **res})
+
+
+@tools_bp.route('/api/tools/orphans/delete', methods=['POST'])
+def api_orphans_delete():
+    if g.get('role') != 'admin':
+        return jsonify({'success': False, 'error': 'Только для Admin'}), 403
+    data = request.get_json(silent=True) or {}
+    paths = data.get('paths')
+    confirmed = bool(data.get('confirmed', False))
+    if not confirmed or not isinstance(paths, list) or not paths:
+        return jsonify({'success': False, 'error': 'Требуется явное подтверждение и непустой список путей'}), 400
+    ok, deleted, errors = delete_orphan_entries(paths, actor=_actor_name())
+    return jsonify({'success': ok, 'deleted': deleted, 'errors': errors}), (200 if deleted or ok else 400)
+
+
+@tools_bp.route('/api/vault/settings', methods=['GET', 'POST'])
+def api_vault_settings():
+    if g.get('role') != 'admin':
+        return jsonify({'error': 'Только для Admin'}), 403
+    if request.method == 'GET':
+        return jsonify(get_vault_settings())
+    data = request.get_json(silent=True) or {}
+    saved = save_vault_settings(data.get('tags', ''), data.get('aggregate_mode', 'exclude'))
+    app_state_db.add_audit_event('system', 'Private Vault обновлён', f"tags={','.join(saved['tags'])}", actor=_actor_name())
+    return jsonify({'success': True, **saved})
