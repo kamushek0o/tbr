@@ -29,6 +29,7 @@ class HistoryDB:
     def _get_connection(self):
         conn = sqlite3.connect(self.db_file, timeout=30.0)
         conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA busy_timeout = 30000;")
         conn.execute("PRAGMA foreign_keys=ON;")
         conn.row_factory = sqlite3.Row
         return conn
@@ -109,7 +110,8 @@ class HistoryDB:
 
     def downsample_old_snapshots(self):
         now = time.time()
-        cutoff_hourly = now - (30 * 86400)
+        # Сохраняем детальные записи по раздачам минимум на 31 день (защита 30-дневного графика)
+        cutoff_hourly = now - (31 * 86400)
         cutoff_daily = now - (365 * 86400)
 
         with self._lock:

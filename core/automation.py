@@ -9,9 +9,19 @@ from core.qb_api import (
     detect_qbittorrent_port, get_live_torrent_info, send_qb_command,
     add_torrent_tags, remove_torrent_tags
 )
+from core.torrent_parser import get_all_torrents
 from core.summary_tracker import summary_tracker
 from core.notifiers import notify_all, test_notifications
 from core.system_alerts import system_alerts
+from core.app_state_db import app_state_db
+from core.keep_awake import keep_awake
+from core.reliability import run_auto_recheck, run_watchdog
+from core.disaster_recovery import maybe_run_weekly_manifest
+from core.smart_timers import tick_snooze, tick_expirations
+from core.smart_tagging import run_smart_tagging
+from core.dnd_digest import flush_dnd_if_ready, maybe_send_digest
+from core.torrent_targets import evaluate_targets
+from core.achievements import evaluate_achievements
 
 VALID_TIME_MODES = ('seeding_time', 'time_active')
 VALID_SPEED_OPS = ('', '>=', '<')
@@ -37,6 +47,7 @@ class AutomationEngine:
     def _get_conn(self):
         conn = sqlite3.connect(self.db_file, timeout=30.0)
         conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA busy_timeout = 30000;")
         conn.execute("PRAGMA foreign_keys=ON;")
         conn.row_factory = sqlite3.Row
         return conn
@@ -179,18 +190,40 @@ class AutomationEngine:
     def test_notifications(self):
         return test_notifications()
 
-    def run_cycle(self):
+    def run_system_tick(self):
         ip, port = detect_qbittorrent_port(cfg.config)
         live = get_live_torrent_info(ip, port) if port else {}
-        system_alerts.check(bool(port and live), live=live)
+        qb_up = bool(port and live)
+        keep_awake.evaluate(live)
+        system_alerts.check(qb_up, live=live)
+        run_watchdog(qb_up)
+        maybe_run_weekly_manifest()
+        tick_snooze()
+        flush_dnd_if_ready(notify_all)
+        maybe_send_digest(notify_all)
+        evaluate_achievements(force=False)
+        if qb_up:
+            evaluate_targets(live)
+        if qb_up and time.time() >= cfg.getint('Autopilot_Frozen_Until', 0):
+            tick_expirations(ip, port, live)
+            run_smart_tagging(ip, port, live, get_all_torrents(use_cache=True))
+        return ip, port, live
 
-        rules = [r for r in self.get_rules() if r.get('enabled')]
-        if not rules or not live:
+    def run_cycle(self):
+        ip, port, live = self.run_system_tick()
+        if not live:
             return 0
 
         now_ts = time.time()
-        triggered_count = 0
+        if now_ts < cfg.getint('Autopilot_Frozen_Until', 0):
+            return 0
 
+        run_auto_recheck(ip, port, live)
+        rules = [r for r in self.get_rules() if r.get('enabled')]
+        if not rules:
+            return 0
+
+        triggered_count = 0
         for r in rules:
             t_mode = r.get('time_mode') if r.get('time_mode') in VALID_TIME_MODES else 'seeding_time'
             min_r, min_d = float(r.get('min_ratio', 0) or 0), float(r.get('min_seed_days', 0) or 0)
@@ -240,6 +273,7 @@ class AutomationEngine:
                 t_name = info.get('name', t_hash)
                 time_lbl, dur_fmt = ("Сид" if t_mode == 'seeding_time' else "Актив"), format_duration_ru(time_sec)
                 write_log('automation', f"Правило '{r['name']}' -> '{t_name}' (Ratio: {ratio:.2f}, {time_lbl}: {dur_fmt})")
+                app_state_db.add_audit_event('automation', f"Правило: {r['name']}", t_name)
                 if r.get('notify'):
                     stat_line = f"Отдано: {format_file_size(uploaded)} | Ratio: {ratio:.2f}x | {time_lbl}: {dur_fmt}"
                     if v_avg is not None:
@@ -255,14 +289,20 @@ class AutomationEngine:
         self._running = True
 
         def loop():
-            time.sleep(10)
+            time.sleep(8)
+            last_auto_ts = 0.0
             while self._running:
+                now = time.time()
                 try:
-                    if cfg.getboolean('Auto_Enabled', False):
+                    auto_due = cfg.getboolean('Auto_Enabled', False) and (now - last_auto_ts) >= max(1, cfg.getint('Auto_Interval_Min', 5)) * 60
+                    if auto_due:
                         self.run_cycle()
+                        last_auto_ts = time.time()
+                    else:
+                        self.run_system_tick()
                 except Exception as e:
                     write_error_log("AutomationEngine loop", e)
-                for _ in range(max(1, cfg.getint('Auto_Interval_Min', 5)) * 60):
+                for _ in range(30):
                     if not self._running:
                         return
                     time.sleep(1)

@@ -1,9 +1,13 @@
 <!-- МОДАЛЬНОЕ ОКНО НАСТРОЕК -->
 <div id="settings-modal" class="modal-backdrop">
-    <div class="modal" style="max-width: 540px; max-height: 90vh; overflow-y: auto;">
+    <div class="modal" style="max-width: 560px; max-height: 90vh; overflow-y: auto;">
         <div class="row-between mb-10">
             <div class="card-title" style="margin:0;" data-i18n="modal_settings">⚙️ НАСТРОЙКИ СЕТИ И УМНОГО РАСЧЁТА</div>
-            <a href="https://github.com/kamushek0o/tbr-widget/releases" target="_blank" class="btn btn-secondary btn-xs">📱 Виджет Android</a>
+            <div class="row-gap" style="gap:6px;">
+                <a href="{{ releases_url }}" target="_blank" class="badge badge-up" style="text-decoration:none;">tbr PRO v{{ app_version }}</a>
+                <button class="btn btn-secondary btn-xs" onclick="openUpdateModal(true)">🔄 Обновление</button>
+                <a href="https://github.com/kamushek0o/tbr-widget/releases" target="_blank" class="btn btn-secondary btn-xs">📱 APK</a>
+            </div>
         </div>
         <div class="autostart-box">
             <div><div style="font-size:13px;font-weight:700;" data-i18n="autostart_win">Автозагрузка Windows</div><div class="lbl-xs muted-text" data-i18n="autostart_desc">Автостарт при включении ПК</div></div>
@@ -35,6 +39,40 @@
                 <option value="1440">1440 мин (24 ч)</option>
             </select>
         </div>
+
+        <div class="card-title mt-10">🛡️ НАДЁЖНОСТЬ И КОНТРОЛЬ qBITTORRENT</div>
+        <div class="card mb-10" style="background:var(--bg-input); padding:10px; border-radius:6px; border:1px solid var(--border);">
+            <div id="settings-keepawake-block" class="mb-8" style="border-bottom:1px dashed var(--border); padding-bottom:8px;">
+                <label class="row-gap pointer lbl-xs mb-8">
+                    <input type="checkbox" id="setting-keepawake-enabled"> <b>Не усыплять ПК при активной отдаче или закачке (Windows)</b>
+                </label>
+                <div class="row-wrap" style="gap:10px;">
+                    <div class="row-gap">
+                        <span class="lbl-xs muted-text">Порог отдачи (КБ/с):</span>
+                        <input type="number" id="setting-keepawake-kb" class="form-control" style="width:85px;" min="0" value="500">
+                    </div>
+                    <label class="row-gap pointer lbl-xs">
+                        <input type="checkbox" id="setting-keepawake-display"> Будить также и экран
+                    </label>
+                </div>
+            </div>
+            <div id="settings-watchdog-block">
+                <label class="row-gap pointer lbl-xs mb-8">
+                    <input type="checkbox" id="setting-watchdog-enabled"> <b>Сторожевой таймер qBittorrent (Watchdog: макс. 2 рестарта)</b>
+                </label>
+                <div class="grid-2">
+                    <div class="form-group" style="margin-bottom:0;">
+                        <label>Таймаут ответа (2..10 мин):</label>
+                        <input type="number" id="setting-watchdog-timeout" class="form-control" min="2" max="10" value="3">
+                    </div>
+                    <div class="form-group" style="margin-bottom:0;">
+                        <label>Путь к qbittorrent.exe:</label>
+                        <input type="text" id="setting-watchdog-exe" class="form-control" placeholder="автоопределение">
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div class="card-title mt-10" data-i18n="modal_weights">⚖️ ВЕСА УМНОГО ПРОГНОЗА (ПРИВОДЯТСЯ К 100%)</div>
         <div class="grid-3">
             <div class="form-group"><label data-i18n="lbl_w1">1 неделя (168ч):</label><input type="number" min="0" id="setting-w1" class="form-control"></div>
@@ -42,7 +80,6 @@
             <div class="form-group"><label data-i18n="lbl_w3">3 неделя (504ч):</label><input type="number" min="0" id="setting-w3" class="form-control"></div>
         </div>
 
-        <!-- Резервное копирование .zip -->
         <div class="card-title mt-10">📦 РЕЗЕРВНОЕ КОПИРОВАНИЕ (.ZIP)</div>
         <div class="card mb-10" style="background:var(--bg-input); padding:10px; border-radius:6px; border:1px solid var(--border);">
             <div class="row-between mb-8">
@@ -60,30 +97,37 @@
             </div>
         </div>
 
+        <!-- Private Vault (Задача 10) -->
+        <div class="card-title mt-10">🔒 PRIVATE VAULT (СКРЫТЫЕ РАЗДАЧИ ДЛЯ ГОСТЕЙ)</div>
+        <div class="card mb-10" style="background:var(--bg-input); padding:10px; border-radius:6px; border:1px solid var(--border);">
+            <div class="form-group">
+                <label>Скрытые теги через запятую (вырезаются на сервере для роли Viewer):</label>
+                <input type="text" id="vault-tags-input" class="form-control" placeholder="private, nsfw, hide">
+            </div>
+            <div class="row-between" style="gap:8px;">
+                <select id="vault-aggregate-mode" class="form-control grow-1" style="font-size:12px;">
+                    <option value="exclude">Вычитать скрытые из общей статистики гостей</option>
+                    <option value="anonymize">Суммировать обезличенно в общих цифрах (без названий)</option>
+                </select>
+                <button class="btn btn-secondary btn-xs" onclick="saveVaultSettings()">💾 Применить Vault</button>
+            </div>
+        </div>
+
         <div class="card-title mt-10">🔑 ПРОФИЛИ, ИНВАЙТЫ И API-ТОКЕНЫ</div>
         <div class="row-wrap mb-8" style="gap:6px;">
             <input type="text" id="new-profile-name" class="form-control" style="width:110px;" placeholder="Имя">
             <input type="text" id="new-profile-login" class="form-control" style="width:100px;" placeholder="Логин">
             <input type="text" id="new-profile-token" class="form-control grow-1" placeholder="Пароль (или авто)">
-            <select id="new-profile-role" class="form-control" style="width:90px;">
-                <option value="viewer">Viewer</option>
-                <option value="admin">Admin</option>
-            </select>
+            <select id="new-profile-role" class="form-control" style="width:90px;"><option value="viewer">Viewer</option><option value="admin">Admin</option></select>
             <button class="btn" onclick="createProfile()">➕</button>
         </div>
         <div id="profiles-list" class="scroll-box" style="max-height:130px; font-size:12px;"></div>
 
         <div id="qr-panel" class="hidden mt-10" style="background:var(--bg-input); padding:10px; border-radius:6px; border:1px solid var(--border);">
-            <div class="row-between mb-8">
-                <b id="qr-title" style="font-size:12px;">📱 QR-код подключения</b>
-                <button class="btn btn-secondary btn-xs" onclick="document.getElementById('qr-panel').classList.add('hidden')">✕</button>
-            </div>
+            <div class="row-between mb-8"><b id="qr-title" style="font-size:12px;">📱 QR-код подключения</b><button class="btn btn-secondary btn-xs" onclick="document.getElementById('qr-panel').classList.add('hidden')">✕</button></div>
             <div class="row-wrap mb-8" style="gap:6px;">
                 <select id="qr-host-select" class="form-control grow-1" onchange="refreshActiveQr()"></select>
-                <select id="qr-mode-select" class="form-control" style="width:140px;" onchange="refreshActiveQr()">
-                    <option value="widget">tbr-widget (APK)</option>
-                    <option value="browser">Браузер / PWA</option>
-                </select>
+                <select id="qr-mode-select" class="form-control" style="width:140px;" onchange="refreshActiveQr()"><option value="widget">tbr-widget (APK)</option><option value="browser">Браузер / PWA</option></select>
             </div>
             <input type="text" id="qr-custom-url" class="form-control mb-8" placeholder="Или полный URL (напр. https://wowaplus.duckdns.org)" oninput="refreshActiveQr()">
             <div id="qr-admin-warn" class="lbl-xs hidden mb-8" style="color:var(--danger);">⚠️ ВНИМАНИЕ: QR содержит API-токен с правами ADMIN!</div>
@@ -157,3 +201,5 @@
         </div>
     </div>
 </div>
+
+{% include 'partials/modal_system.html' %}

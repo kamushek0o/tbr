@@ -3,6 +3,7 @@ from flask import Blueprint, request, jsonify
 
 from utils.config import cfg
 from core.automation import automation_engine, VALID_TIME_MODES, VALID_SPEED_OPS
+from core.app_state_db import app_state_db
 
 automation_bp = Blueprint('automation_bp', __name__)
 
@@ -50,7 +51,8 @@ def api_automation_get():
             'tg_chat_id': cfg.get('TG_Chat_ID', ''),
             'has_discord': bool(cfg.get('Discord_Webhook', '').strip()),
             'alert_disk_gib': cfg.getint('Alert_Disk_Min_GiB', 0),
-            'alert_qb_down': cfg.getboolean('Alert_QB_Down', False)
+            'alert_qb_down': cfg.getboolean('Alert_QB_Down', False),
+            'auto_recheck_enabled': cfg.getboolean('AutoRecheck_Enabled', False)
         },
         'rules': automation_engine.get_rules()
     })
@@ -77,6 +79,7 @@ def api_automation_settings():
     cfg.set('Auto_Interval_Min', str(interval))
     cfg.set('Alert_Disk_Min_GiB', str(alert_disk))
     cfg.set('Alert_QB_Down', str(bool(data.get('alert_qb_down', False))))
+    cfg.set('AutoRecheck_Enabled', str(bool(data.get('auto_recheck_enabled', False))))
     if tg_token:
         cfg.set('TG_Bot_Token', tg_token)
     cfg.set('TG_Chat_ID', tg_chat)
@@ -84,6 +87,7 @@ def api_automation_settings():
         cfg.set('Discord_Webhook', discord)
     cfg.save()
 
+    app_state_db.add_audit_event('automation', 'Настройки автопилота обновлены', f'enabled={enabled}, interval={interval}m', actor='admin')
     return jsonify({'success': True, 'message': 'Настройки автопилота сохранены!'})
 
 

@@ -4,7 +4,6 @@ import sys
 import time
 import threading
 from flask import Flask
-from werkzeug.exceptions import HTTPException
 
 try:
     import waitress
@@ -21,12 +20,18 @@ from core.torrent_parser import get_global_torrent_summaries
 from core.summary_tracker import summary_tracker
 from core.automation import automation_engine
 from web.security import register_security
+from web.errors import register_error_handlers
 from web.routes.torrents_bp import torrents_bp
 from web.routes.analytics_bp import analytics_bp
 from web.routes.automation_bp import automation_bp
 from web.routes.settings_bp import settings_bp
 from web.routes.profiles_bp import profiles_bp
 from web.routes.widget_bp import widget_bp
+from web.routes.system_bp import system_bp
+from web.routes.tools_bp import tools_bp
+from web.routes.timers_bp import timers_bp
+from web.routes.insights_bp import insights_bp
+from web.routes.social_bp import social_bp
 
 
 def get_resource_path(relative_path):
@@ -44,15 +49,7 @@ app.config['BUILD_VER'] = str(int(time.time()))
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
-
-@app.errorhandler(Exception)
-def handle_unhandled_exception(e):
-    if isinstance(e, HTTPException):
-        return e
-    write_error_log("Flask HTTP 500", e)
-    return "Internal Server Error", 500
-
-
+register_error_handlers(app)
 register_security(app)
 app.register_blueprint(torrents_bp)
 app.register_blueprint(analytics_bp)
@@ -60,6 +57,11 @@ app.register_blueprint(automation_bp)
 app.register_blueprint(settings_bp)
 app.register_blueprint(profiles_bp)
 app.register_blueprint(widget_bp)
+app.register_blueprint(system_bp)
+app.register_blueprint(tools_bp)
+app.register_blueprint(timers_bp)
+app.register_blueprint(insights_bp)
+app.register_blueprint(social_bp)
 
 
 class WebServerController:

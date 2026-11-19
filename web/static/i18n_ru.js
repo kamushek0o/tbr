@@ -3,7 +3,7 @@ const I18N_RU = {
     title: 'tbr PRO — Швейцарский нож qBittorrent',
     qb_loading: '⏳ qB...', qb_running: '🟢 qB Запущен', qb_stopped: '🔴 qB Остановлен (клик для пуска)',
     tab_torrents: '⚡ Раздачи', tab_merger: '🔀 Подменщик', tab_summary: '📊 Сводка',
-    tab_analytics: '📈 Аналитика', tab_automation: '🤖 Автопилот',
+    tab_analytics: '📈 Аналитика', tab_automation: '🤖 Автопилот', tab_tools: '🛠️ Инструменты',
     btn_settings: '⚙️ Настройки', btn_restart_qb: '🔄 Перезапуск qB', btn_logout: '🚪 Выйти',
     search_ph: '🔍 Поиск раздач...', btn_scan_dead: '🩺 Мёртвые раздачи', btn_refresh: '🔄 Обновить',
     th_name: 'Имя раздачи', th_size: 'Размер', th_uploaded: 'Отдано', th_ratio: 'Ratio', th_state: 'Состояние', th_path: 'Путь',

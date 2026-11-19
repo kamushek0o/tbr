@@ -1,15 +1,19 @@
 # web/routes/settings_bp.py
+import os
 import hmac
 import datetime
 from flask import Blueprint, request, jsonify, render_template, redirect, session, current_app, Response, g
 
 from utils.config import cfg
-from core.qb_api import reset_qb_session
+from core.version import APP_VERSION, GITHUB_RELEASES_URL
+from core.qb_api import reset_qb_session, get_qb_executable_path
 from core.autostart import is_autostart_enabled
 from core.summary_tracker import summary_tracker
 from core.scheduler import ALLOWED_INTERVALS, normalize_interval
 from core.profiles_db import profiles_db
 from core.backup_manager import create_backup_zip, stage_restore_zip
+from core.keep_awake import keep_awake
+from core.app_state_db import app_state_db
 from web.security import get_csrf_token, is_allowed_qb_ip, check_rate_limit, record_failed_login
 
 settings_bp = Blueprint('settings_bp', __name__)
@@ -30,6 +34,7 @@ def invite_accept(token):
         return render_template('invite.html', csrf_token=get_csrf_token(), error=err or 'Ошибка активации', invite=inv), 400
     session['authenticated'] = True
     session['profile_id'] = prof['id']
+    app_state_db.add_audit_event('auth', 'Активация инвайта', f"Профиль {prof['login']}", actor=prof['login'])
     return redirect('/')
 
 
@@ -48,15 +53,18 @@ def login():
         adm = profiles_db.get_default_admin()
         if adm:
             session['profile_id'] = adm['id']
+        app_state_db.add_audit_event('auth', 'Успешный вход', f'IP: {ip}', actor='admin')
         return redirect('/')
 
     prof = profiles_db.authenticate_login(login_val, pwd) if login_val else profiles_db.authenticate_api_token(pwd)
     if prof:
         session['authenticated'] = True
         session['profile_id'] = prof['id']
+        app_state_db.add_audit_event('auth', 'Успешный вход', f'IP: {ip}', actor=prof.get('login') or prof['name'])
         return redirect('/')
 
     record_failed_login(ip)
+    app_state_db.add_audit_event('auth', 'Неудачный вход', f"IP: {ip}, login={login_val or '-'}", actor=login_val or 'guest')
     return render_template('login.html', csrf_token=get_csrf_token(), error='Неверный логин или пароль!'), 401
 
 
@@ -69,7 +77,14 @@ def logout():
 
 @settings_bp.route('/')
 def index():
-    return render_template('index.html', csrf_token=get_csrf_token(), auth_enabled=current_app.config.get('IS_EXPOSED', False), v=current_app.config.get('BUILD_VER', '1'))
+    return render_template(
+        'index.html',
+        csrf_token=get_csrf_token(),
+        auth_enabled=current_app.config.get('IS_EXPOSED', False),
+        v=current_app.config.get('BUILD_VER', '1'),
+        app_version=APP_VERSION,
+        releases_url=GITHUB_RELEASES_URL
+    )
 
 
 @settings_bp.route('/api/backup/export')
@@ -91,6 +106,8 @@ def api_backup_restore():
     if not f:
         return jsonify({'success': False, 'error': 'Файл не передан'}), 400
     ok, msg = stage_restore_zip(f.read())
+    if ok:
+        app_state_db.add_audit_event('system', 'Восстановление бэкапа', msg, actor='admin')
     return jsonify({'success': ok, 'message': msg}), (200 if ok else 400)
 
 
@@ -104,7 +121,17 @@ def api_settings():
             'qb_user': cfg.get('WebUI_User', 'admin'), 'has_qb_password': bool(cfg.get('WebUI_Password', '').strip()),
             'w1': cfg.getint('Weight_W1', 70), 'w2': cfg.getint('Weight_W2', 30), 'w3': cfg.getint('Weight_W3', 0),
             'snapshot_interval': normalize_interval(cfg.getint('Snapshot_Interval_Min', 60)),
-            'autostart': is_autostart_enabled()
+            'autostart': is_autostart_enabled(),
+            'is_windows': (os.name == 'nt'),
+            'keep_awake_enabled': cfg.getboolean('KeepAwake_Enabled', False),
+            'keep_awake_min_kb': cfg.getint('KeepAwake_Min_KB', 500),
+            'keep_awake_display': cfg.getboolean('KeepAwake_Display', False),
+            'auto_recheck_enabled': cfg.getboolean('AutoRecheck_Enabled', False),
+            'watchdog_enabled': cfg.getboolean('Watchdog_Enabled', False),
+            'watchdog_timeout_min': cfg.getint('Watchdog_Timeout_Min', 3),
+            'watchdog_exe_path': cfg.get('Watchdog_Exe_Path', ''),
+            'watchdog_exe_detected': get_qb_executable_path() if os.name == 'nt' else '',
+            'manifest_weekly': cfg.getboolean('Manifest_Weekly', False)
         })
 
     data = request.get_json(silent=True)
@@ -138,13 +165,19 @@ def api_settings():
         snap_iv = int(data.get('snapshot_interval', 60))
         if snap_iv not in ALLOWED_INTERVALS:
             raise ValueError
+        ka_min_kb = max(0, min(1000000, int(data.get('keep_awake_min_kb', 500))))
+        wd_timeout = max(2, min(10, int(data.get('watchdog_timeout_min', 3))))
     except (ValueError, TypeError):
-        return jsonify({'success': False, 'error': 'Некорректные веса или интервал замеров'}), 400
+        return jsonify({'success': False, 'error': 'Некорректные числовые параметры'}), 400
 
     new_host = str(data.get('web_host', '127.0.0.1')).strip() or '127.0.0.1'
     new_pass = str(data.get('web_password', '')).strip()
     if new_host not in ('127.0.0.1', 'localhost') and not (new_pass or cfg.get('Web_Password', '').strip()):
         return jsonify({'success': False, 'error': 'Для внешнего хоста обязательно задайте пароль!'}), 400
+
+    wd_exe = str(data.get('watchdog_exe_path', '')).strip()
+    if wd_exe and ('..' in wd_exe or (os.name == 'nt' and not wd_exe.lower().endswith('.exe'))):
+        return jsonify({'success': False, 'error': 'Некорректный путь к исполняемому файлу qBittorrent'}), 400
 
     old_snap_iv = normalize_interval(cfg.getint('Snapshot_Interval_Min', 60))
     cfg.set('Web_Port', new_p); cfg.set('Web_Host', new_host)
@@ -155,12 +188,28 @@ def api_settings():
     if str(data.get('qb_password', '')):
         cfg.set('WebUI_Password', str(data.get('qb_password', '')))
     cfg.set('Weight_W1', w1); cfg.set('Weight_W2', w2); cfg.set('Weight_W3', w3)
-    cfg.set('Snapshot_Interval_Min', snap_iv); cfg.save()
+    cfg.set('Snapshot_Interval_Min', snap_iv)
 
+    ka_en = bool(data.get('keep_awake_enabled', False))
+    cfg.set('KeepAwake_Enabled', str(ka_en))
+    cfg.set('KeepAwake_Min_KB', str(ka_min_kb))
+    cfg.set('KeepAwake_Display', str(bool(data.get('keep_awake_display', False))))
+    cfg.set('Watchdog_Enabled', str(bool(data.get('watchdog_enabled', False))))
+    cfg.set('Watchdog_Timeout_Min', str(wd_timeout))
+    cfg.set('Watchdog_Exe_Path', wd_exe)
+    if 'auto_recheck_enabled' in data:
+        cfg.set('AutoRecheck_Enabled', str(bool(data.get('auto_recheck_enabled'))))
+    if 'manifest_weekly' in data:
+        cfg.set('Manifest_Weekly', str(bool(data.get('manifest_weekly'))))
+    cfg.save()
+
+    if not ka_en:
+        keep_awake.release()
     reset_qb_session()
     if old_snap_iv != snap_iv:
         summary_tracker.notify_interval_changed()
 
+    app_state_db.add_audit_event('system', 'Изменение настроек', f'host={new_host}:{new_p}', actor='admin')
     net_changed = (old_p != new_p) or (old_h != new_host)
     if net_changed:
         ws = current_app.config.get('WEB_SERVER')

@@ -37,7 +37,7 @@ def send_discord(text_md):
     req = urllib.request.Request(
         webhook,
         data=payload,
-        headers={'Content-Type': 'application/json', 'User-Agent': 'tbr-pro/2.0'}
+        headers={'Content-Type': 'application/json', 'User-Agent': 'tbr-pro/3.0'}
     )
     try:
         with urllib.request.urlopen(req, timeout=8) as resp:
@@ -47,7 +47,16 @@ def send_discord(text_md):
         return False, f"Discord: {e}"
 
 
-def notify_all(title, lines):
+def notify_all(title, lines, critical=False):
+    if not critical:
+        try:
+            from core.dnd_digest import is_dnd_active_now, queue_dnd_message
+            if is_dnd_active_now():
+                queue_dnd_message(title, lines)
+                return ["DND: отложено в тихий час"]
+        except Exception:
+            pass
+
     tg_msg = f"<b>{html.escape(title)}</b>\n" + "\n".join(html.escape(l) for l in lines)
     dc_msg = f"**{title}**\n" + "\n".join(lines)
 
@@ -69,6 +78,7 @@ def test_notifications():
 
     res = notify_all(
         "⚡ tbr PRO — Тест уведомлений",
-        ["Связь настроена! Бот готов присылать отчёты по правилам."]
+        ["Связь настроена! Бот готов присылать отчёты по правилам."],
+        critical=True
     )
     return True, res

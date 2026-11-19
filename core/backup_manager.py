@@ -12,6 +12,7 @@ from utils.config import CONFIG_FILE
 DB_TARGETS = [
     ('profiles.db', os.path.join(APP_DATA_DIR, 'profiles.db')),
     ('automation.db', os.path.join(APP_DATA_DIR, 'automation.db')),
+    ('app_state.db', os.path.join(APP_DATA_DIR, 'app_state.db')),
     ('summary_history.db', os.path.join(LOG_FOLDER, 'auto_hourly', 'summary_history.db')),
 ]
 PENDING_DIR = os.path.join(APP_DATA_DIR, '_restore_pending')

@@ -61,7 +61,30 @@ class AppConfig:
             'Auto_Interval_Min': '5',
             'TG_Bot_Token': '',
             'TG_Chat_ID': '',
-            'Discord_Webhook': ''
+            'Discord_Webhook': '',
+            'Alert_Disk_Min_GiB': '0',
+            'Alert_QB_Down': 'False',
+            'KeepAwake_Enabled': 'False',
+            'KeepAwake_Min_KB': '500',
+            'KeepAwake_Display': 'False',
+            'AutoRecheck_Enabled': 'False',
+            'Watchdog_Enabled': 'False',
+            'Watchdog_Timeout_Min': '3',
+            'Watchdog_Exe_Path': '',
+            'Manifest_Weekly': 'False',
+            'Manifest_Last_Run': '0',
+            'Autopilot_Frozen_Until': '0',
+            'Vault_Aggregate_Mode': 'exclude',
+            'DND_Enabled': 'False',
+            'DND_Start': '23:00',
+            'DND_End': '08:00',
+            'DND_Days': '0,1,2,3,4,5,6',
+            'Digest_Mode': 'off',
+            'Digest_Hour': '21',
+            'Digest_Weekday': '6',
+            'Digest_Last_Sent_Ts': '0',
+            'Snooze_Saved_DL': '0',
+            'Snooze_Saved_UP': '0'
         }
         changed = False
         for k, v in defaults.items():

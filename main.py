@@ -12,13 +12,16 @@ apply_pending_restore_if_any()
 
 from utils.config import cfg
 from utils.helpers import write_log
+from core.version import APP_VERSION
 from core.single_instance import SingleInstanceLock
+from core.keep_awake import keep_awake
+from core.updater import register_shutdown_hook
 from web.app import web_server
 from core.summary_tracker import summary_tracker
 
 
 def parse_arguments():
-    parser = argparse.ArgumentParser(description="tbr v2.0 (Швейцарский нож qBittorrent)")
+    parser = argparse.ArgumentParser(description=f"tbr PRO v{APP_VERSION} (Швейцарский нож qBittorrent)")
     parser.add_argument("--port", type=int, default=None, help="Порт веб-сервера")
     parser.add_argument("--host", type=str, default=None, help="Хост веб-сервера")
     parser.add_argument("--web-only", "--headless", dest="web_only", action="store_true",
@@ -47,7 +50,7 @@ def main():
             from tkinter import messagebox
             tmp_root = tk.Tk()
             tmp_root.withdraw()
-            messagebox.showinfo("tbr PRO", msg)
+            messagebox.showinfo(f"tbr PRO v{APP_VERSION}", msg)
             tmp_root.destroy()
         except Exception:
             print(f"⚠️ {msg}")
@@ -67,10 +70,12 @@ def main():
     web_host = cfg.get('Web_Host', '127.0.0.1')
 
     def on_shutdown():
+        keep_awake.stop()
         summary_tracker.flush_on_exit()
         web_server.stop()
         instance_lock.release()
 
+    register_shutdown_hook(on_shutdown)
     atexit.register(on_shutdown)
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -88,7 +93,7 @@ def main():
                 webbrowser.open(url)
             except Exception:
                 pass
-        print(f"✅ Сервер запущен на {url}. Нажмите Ctrl+C для выхода.")
+        print(f"✅ tbr PRO v{APP_VERSION} запущен на {url}. Нажмите Ctrl+C для выхода.")
         try:
             while True:
                 threading.Event().wait(1)

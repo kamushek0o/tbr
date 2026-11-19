@@ -1,0 +1,85 @@
+<!-- TAB 6: Инструменты -->
+<div id="tab-tools" class="tab-content col-wide">
+    <div class="tools-grid">
+        <!-- Плитка 1: Аварийный манифест -->
+        <div class="card admin-only">
+            <div class="row-between mb-8">
+                <div class="card-title" style="margin:0;">🧯 АВАРИЙНЫЙ МАНИФЕСТ (DISASTER RECOVERY)</div>
+                <button class="btn btn-xs" onclick="createManifestNow()">📥 Выгрузить сейчас</button>
+            </div>
+            <p class="muted-text mb-10">Компактный JSON со списком всех раздач, трекеров и готовыми magnet-ссылками. Хранятся только 2 последние копии.</p>
+            <label class="row-gap pointer lbl-xs mb-10">
+                <input type="checkbox" id="tools-manifest-weekly" onchange="toggleManifestWeeklyFromTools()">
+                <span>Создавать резервный список еженедельно</span>
+            </label>
+            <div id="tools-manifest-list" class="col-gap" style="font-size:12px;">
+                <span class="muted-text">Загрузка списка манифестов...</span>
+            </div>
+        </div>
+
+        <!-- Плитка 4: Зал славы и Ачивки (доступно всем, включая Viewer) -->
+        <div class="card" id="tools-achievements-card">
+            <div class="row-between mb-8">
+                <div class="card-title" style="margin:0;">🏆 АЧИВКИ И ЗАЛ СЛАВЫ СИДЕРА</div>
+                <div class="row-gap">
+                    <span id="ach-progress-badge" class="badge badge-up">0 / 10</span>
+                    <button class="btn btn-secondary btn-xs" onclick="loadAchievements()">🔄</button>
+                </div>
+            </div>
+            <div id="ach-grid" class="grid-2" style="gap:8px; max-height:280px; overflow-y:auto;">
+                <span class="muted-text">Загрузка достижений...</span>
+            </div>
+        </div>
+
+        <!-- Плитка 2: Сканер сирот -->
+        <div class="card admin-only" id="tools-orphan-card" style="grid-column: 1 / -1;">
+            <div class="row-between mb-8">
+                <div class="card-title" style="margin:0;">🧹 СКАНЕР «СИРОТ» НА ДИСКЕ (ORPHAN FILES FINDER)</div>
+                <div class="row-gap">
+                    <button class="btn btn-secondary btn-xs" onclick="scanOrphans()">🔎 Сканировать папки</button>
+                    <button id="btn-delete-orphans" class="btn btn-danger btn-xs hidden" onclick="deleteSelectedOrphans()">🗑️ Удалить выбранные навсегда</button>
+                </div>
+            </div>
+            <p class="muted-text mb-8">Находит папки и файлы в каталогах загрузок, от которых нет активных торрентов. Удаление строго вручную и безвозвратно мимо корзины.</p>
+            <div class="row-wrap mb-8" style="gap:8px;">
+                <input type="text" id="orphan-custom-root" class="form-control grow-1" placeholder="Опционально: свой путь корневой папки (пусто = автоопределение из qB)">
+                <span id="orphan-summary" class="badge badge-pause">Не сканировалось</span>
+            </div>
+            <div id="orphan-roots-info" class="lbl-xs muted-text mb-8"></div>
+            <div class="scroll-box" style="max-height:260px; border:1px solid var(--border); border-radius:6px;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width:28px;"><input type="checkbox" id="orphan-chk-all" onchange="toggleAllOrphans(this)"></th>
+                            <th>Имя / Путь</th><th>Тип</th><th>Размер</th><th>Изменён</th>
+                        </tr>
+                    </thead>
+                    <tbody id="orphan-tbody"><tr><td colspan="5" class="center-msg">Нажмите «Сканировать папки»</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Плитка 3: Лента событий / Мини-аудит (Задача 31) -->
+        <div class="card admin-only" id="tools-audit-card" style="grid-column: 1 / -1;">
+            <div class="row-between mb-8">
+                <div class="card-title" style="margin:0;">📜 ЛЕНТА СОБЫТИЙ / МИНИ-АУДИТ (ПОСЛЕДНИЕ 1000)</div>
+                <div class="row-gap">
+                    <select id="audit-cat-filter" class="form-control" style="width:150px; padding:3px 6px; font-size:12px;" onchange="loadAuditLog()">
+                        <option value="">Все категории</option>
+                        <option value="auth">🔑 Авторизация</option>
+                        <option value="automation">🤖 Автопилот</option>
+                        <option value="merger">🔀 Мерджер</option>
+                        <option value="system">⚙️ Система</option>
+                    </select>
+                    <button class="btn btn-secondary btn-xs" onclick="loadAuditLog()">🔄</button>
+                </div>
+            </div>
+            <div class="scroll-box" style="max-height:260px; border:1px solid var(--border); border-radius:6px;">
+                <table>
+                    <thead><tr><th>Время</th><th>Категория</th><th>Актор</th><th>Событие</th><th>Детали</th></tr></thead>
+                    <tbody id="audit-tbody"><tr><td colspan="5" class="center-msg">Загрузка событий...</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>

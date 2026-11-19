@@ -7,6 +7,7 @@ let chartHourly = null;
 async function loadAnalyticsTab() {
     syncAnalyticsControlsFromUi();
     loadAnalyticsCharts();
+    if (typeof loadAnalyticsInsights === 'function') loadAnalyticsInsights(false);
     initDayLogs();
     if (!rawSummaryItems.length) await loadSummary();
     else populateAnalyticsSelectors();

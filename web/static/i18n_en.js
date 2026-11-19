@@ -3,7 +3,7 @@ const I18N_EN = {
     title: 'tbr PRO — qBittorrent Swiss-Army Knife',
     qb_loading: '⏳ qB...', qb_running: '🟢 qB Running', qb_stopped: '🔴 qB Stopped (click to start)',
     tab_torrents: '⚡ Torrents', tab_merger: '🔀 Fastresume Merger', tab_summary: '📊 Summary',
-    tab_analytics: '📈 Analytics', tab_automation: '🤖 Autopilot',
+    tab_analytics: '📈 Analytics', tab_automation: '🤖 Autopilot', tab_tools: '🛠️ Tools',
     btn_settings: '⚙️ Settings', btn_restart_qb: '🔄 Restart qB', btn_logout: '🚪 Logout',
     search_ph: '🔍 Search torrents...', btn_scan_dead: '🩺 Dead Torrents', btn_refresh: '🔄 Refresh',
     th_name: 'Torrent Name', th_size: 'Size', th_uploaded: 'Uploaded', th_ratio: 'Ratio', th_state: 'Status', th_path: 'Save Path',

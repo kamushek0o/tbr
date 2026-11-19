@@ -10,6 +10,7 @@ from core.qb_api import (
     is_qb_running, close_qbittorrent, launch_qbittorrent, get_qb_executable_path
 )
 from core.torrent_parser import force_clear_cache
+from core.torrent_targets import transfer_target_on_merge
 
 VALID_DELETE_MODES = ('none', 'safe', 'force')
 STAT_FIELDS = ('total_uploaded', 'total_downloaded', 'active_time', 'seeding_time', 'added_time', 'completed_time')
@@ -41,7 +42,7 @@ def paths_overlap(path_a, path_b):
     na = _norm_path(path_a)
     nb = _norm_path(path_b)
     if not na or not nb:
-        return True  # Неизвестный путь в безопасном режиме трактуем как риск пересечения
+        return True
     if na == nb:
         return True
     try:
@@ -99,7 +100,6 @@ def _evaluate_delete_plan(old_hash, new_hash, delete_mode, expected_up, live_bef
             'dst_path': dst_path
         }, None
 
-    # WebUI недоступен — проверяем .fastresume на диске и блокируем удаление контента
     new_file = _find_fastresume_file(new_hash)
     if new_file and os.path.exists(new_file):
         with open(new_file, 'rb') as f:
@@ -198,6 +198,8 @@ def run_fastresume_merge(old_hash, new_hash, delete_mode='none'):
                     pass
 
         force_clear_cache()
+        if transfer_target_on_merge(old_hash, new_hash):
+            log.append("🎯 Целевая планка (Goal) автоматически перенесена на новый хэш.")
         log.append("🎉 Статистика успешно и атомарно записана в .fastresume!")
     except Exception as e:
         write_error_log("Ошибка merger API", e)
@@ -253,7 +255,6 @@ def execute_source_deletion(old_hash, new_hash, delete_mode):
             return True, [f"🗑️ Исходник удалён через WebUI {act}."]
         return False, ["❌ WebUI отклонил удаление исходника."]
 
-    # disk_only fallback: удаляем только .fastresume/.torrent исходника
     removed = []
     if old_file and os.path.exists(old_file):
         os.remove(old_file)

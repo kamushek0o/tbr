@@ -6,9 +6,14 @@ import datetime
 import urllib.parse
 from flask import Blueprint, request, jsonify, Response, g
 
+from utils.config import cfg
 from utils.helpers import sanitize_csv_cell, format_file_size, LOG_FOLDER
 from core.torrent_parser import get_global_torrent_summaries
 from core.summary_tracker import summary_tracker
+from core.qb_api import detect_qbittorrent_port, get_live_torrent_info
+from core.private_vault import get_hidden_hashes, filter_summary_stats_for_role
+from core.torrent_targets import list_targets
+from core.health_score import enrich_live_metrics
 from web.security import HASH_RE
 
 analytics_bp = Blueprint('analytics_bp', __name__)
@@ -32,10 +37,28 @@ def _is_strict_localhost():
     return (request.remote_addr or '').strip() in ('127.0.0.1', '::1')
 
 
+def _get_live_dict():
+    ip, port = detect_qbittorrent_port(cfg.config)
+    return get_live_torrent_info(ip, port) if port else {}
+
+
 @analytics_bp.route('/api/summary')
 def api_summary():
     summaries = get_global_torrent_summaries()
-    return jsonify(summary_tracker.get_stats(summaries))
+    stats = summary_tracker.get_stats(summaries)
+    live = _get_live_dict()
+    targets = list_targets()
+    live_lower = {k.lower(): v for k, v in live.items()}
+
+    for it in stats.get('items', []):
+        hl = (it.get('hash_id') or it.get('hash') or '').lower()
+        enrich_live_metrics(it, live_lower.get(hl), targets.get(hl))
+
+    role = g.get('role') or 'viewer'
+    if role != 'admin':
+        hidden = get_hidden_hashes(live)
+        stats = filter_summary_stats_for_role(stats, role, hidden)
+    return jsonify(stats)
 
 
 @analytics_bp.route('/api/analytics/history')
@@ -43,6 +66,9 @@ def api_analytics_history():
     t_hash = request.args.get('hash', 'all')
     if t_hash != 'all' and not HASH_RE.fullmatch(t_hash):
         return jsonify([])
+    if t_hash != 'all' and g.get('role') != 'admin':
+        if t_hash.lower() in get_hidden_hashes(_get_live_dict()):
+            return jsonify([])
     limit = min(100, max(1, request.args.get('limit', 36, type=int)))
     return jsonify(summary_tracker.get_torrent_hourly_history(t_hash, limit_hours=limit))
 
@@ -53,6 +79,10 @@ def api_analytics_charts():
     top_n = request.args.get('top_n', 5, type=int)
     top_period = request.args.get('top_period', '1d')
     summaries = get_global_torrent_summaries()
+    if g.get('role') != 'admin':
+        hidden = get_hidden_hashes(_get_live_dict())
+        if hidden:
+            summaries = [s for s in summaries if (s.get('hash_id') or s.get('hash') or '').lower() not in hidden]
     return jsonify(summary_tracker.get_charts_data(summaries, hours=hours, top_n=top_n, top_period=top_period))
 
 

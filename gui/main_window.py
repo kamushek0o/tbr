@@ -6,6 +6,7 @@ from tkinter import messagebox
 
 from utils.config import cfg
 from utils.helpers import LOG_FOLDER
+from core.version import APP_VERSION
 from core.qb_api import detect_qbittorrent_port, is_qb_running, launch_qbittorrent, close_qbittorrent
 from core.autostart import set_autostart, is_autostart_enabled
 from core.summary_tracker import summary_tracker
@@ -22,9 +23,9 @@ class TorrentApp:
         self.port = cfg.getint('Web_Port', 5000)
         self._closing = False
 
-        self.root.title("tbr PRO — Control Panel")
-        self.root.geometry("480x540")
-        self.root.minsize(440, 510)
+        self.root.title(f"tbr PRO v{APP_VERSION} — Control Panel")
+        self.root.geometry("480x555")
+        self.root.minsize(440, 520)
         self.root.configure(bg="#121214")
 
         summary_tracker.start_auto_export(get_global_torrent_summaries)
@@ -50,9 +51,9 @@ class TorrentApp:
         f = tk.Frame(self.root, bg="#1a1a20", bd=1, relief="solid")
         f.pack(fill="both", expand=True, padx=14, pady=14)
 
-        tk.Label(f, text="⚡ tbr PRO CONTROL PANEL", font=("Segoe UI", 13, "bold"), fg="#2ecc71", bg="#1a1a20").pack(
+        tk.Label(f, text=f"⚡ tbr PRO v{APP_VERSION}", font=("Segoe UI", 13, "bold"), fg="#2ecc71", bg="#1a1a20").pack(
             pady=(14, 4))
-        tk.Label(f, text="Веб-сервер работает в фоне", font=("Segoe UI", 9), fg="#95a5a6", bg="#1a1a20").pack(
+        tk.Label(f, text=f"tbr PRO v{APP_VERSION} • Веб-сервер работает в фоне", font=("Segoe UI", 9), fg="#95a5a6", bg="#1a1a20").pack(
             pady=(0, 12))
 
         tk.Button(f, text="🌐 ОТКРЫТЬ ВЕБ-ИНТЕРФЕЙС", font=("Segoe UI", 11, "bold"), bd=0,

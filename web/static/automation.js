@@ -67,9 +67,12 @@ async function loadAutomation() {
     if (diskInp) diskInp.value = s.alert_disk_gib || '';
     const qbChk = document.getElementById('auto-alert-qb');
     if (qbChk) qbChk.checked = Boolean(s.alert_qb_down);
+    const recheckChk = document.getElementById('auto-recheck-io');
+    if (recheckChk) recheckChk.checked = Boolean(s.auto_recheck_enabled);
 
     currentRules = d.rules || [];
     renderRules(currentRules);
+    if (typeof loadDndDigestAndTagging === 'function') loadDndDigestAndTagging();
 }
 
 function _fmtBytesBinary(b) {
@@ -207,6 +210,7 @@ async function saveAutomationSettings() {
         interval: parseInt(document.getElementById('auto-interval').value) || 5,
         alert_disk_gib: parseInt(document.getElementById('auto-alert-disk')?.value || 0) || 0,
         alert_qb_down: document.getElementById('auto-alert-qb')?.checked || false,
+        auto_recheck_enabled: document.getElementById('auto-recheck-io')?.checked || false,
         tg_token: document.getElementById('auto-tg-token').value.trim(),
         tg_chat_id: document.getElementById('auto-tg-chat').value.trim(),
         discord_webhook: document.getElementById('auto-discord').value.trim()

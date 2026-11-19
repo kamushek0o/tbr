@@ -103,42 +103,80 @@ def detect_qbittorrent_port(config=None):
     return '127.0.0.1', (port_from_conf or 8080)
 
 
-def get_live_torrent_info(qb_ip, qb_port):
+def _get_qb_json(qb_ip, qb_port, path, timeout=1.8):
     if not qb_ip or not qb_port:
-        return {}
+        return None
     qb_ip = _norm_ip(qb_ip)
     base_url = f"http://{qb_ip}:{qb_port}"
     req = urllib.request.Request(
-        f"{base_url}/api/v2/torrents/info",
+        f"{base_url}/api/v2/{path}",
         headers={'Referer': base_url, 'Origin': base_url, 'User-Agent': 'Mozilla/5.0'}
     )
     try:
-        with opener.open(req, timeout=1.5) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
-            return {t['hash']: t for t in data}
+        with opener.open(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode('utf-8'))
     except urllib.error.HTTPError as e:
         if e.code in (401, 403) and qb_login(qb_ip, qb_port):
             try:
-                with opener.open(req, timeout=1.5) as resp:
-                    data = json.loads(resp.read().decode('utf-8'))
-                    return {t['hash']: t for t in data}
+                with opener.open(req, timeout=timeout) as resp2:
+                    return json.loads(resp2.read().decode('utf-8'))
             except Exception:
                 pass
-        return {}
+        return None
     except Exception:
-        return {}
+        return None
+
+
+def _post_qb_api(qb_ip, qb_port, path, payload=None):
+    if not qb_ip or not qb_port:
+        return False
+    qb_ip = _norm_ip(qb_ip)
+    base_url = f"http://{qb_ip}:{qb_port}"
+    body = urllib.parse.urlencode(payload or {}).encode('utf-8')
+    req = urllib.request.Request(
+        f"{base_url}/api/v2/{path}",
+        data=body,
+        method='POST',
+        headers={'Content-Type': 'application/x-www-form-urlencoded', 'Referer': base_url, 'Origin': base_url}
+    )
+    try:
+        with opener.open(req, timeout=3) as resp:
+            return resp.getcode() == 200
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403) and qb_login(qb_ip, qb_port):
+            try:
+                with opener.open(req, timeout=3) as resp2:
+                    return resp2.getcode() == 200
+            except Exception:
+                pass
+        return False
+    except Exception:
+        return False
+
+
+def get_live_torrent_info(qb_ip, qb_port):
+    data = _get_qb_json(qb_ip, qb_port, "torrents/info", timeout=1.8)
+    return {t['hash']: t for t in data} if isinstance(data, list) else {}
+
+
+def get_transfer_info(qb_ip, qb_port):
+    data = _get_qb_json(qb_ip, qb_port, "transfer/info", timeout=1.5)
+    return data if isinstance(data, dict) else {}
 
 
 def get_torrent_trackers(qb_ip, qb_port, t_hash):
-    qb_ip = _norm_ip(qb_ip)
-    base_url = f"http://{qb_ip}:{qb_port}"
-    url = f"{base_url}/api/v2/torrents/trackers?hash={urllib.parse.quote(t_hash)}"
-    req = urllib.request.Request(url, headers={'Referer': base_url, 'Origin': base_url, 'User-Agent': 'Mozilla/5.0'})
-    try:
-        with opener.open(req, timeout=2.0) as resp:
-            return json.loads(resp.read().decode('utf-8'))
-    except Exception:
-        return []
+    data = _get_qb_json(qb_ip, qb_port, f"torrents/trackers?hash={urllib.parse.quote(t_hash)}", timeout=2.0)
+    return data if isinstance(data, list) else []
+
+
+def get_torrent_files(qb_ip, qb_port, t_hash):
+    data = _get_qb_json(qb_ip, qb_port, f"torrents/files?hash={urllib.parse.quote(t_hash)}", timeout=3.0)
+    return data if isinstance(data, list) else []
+
+
+def get_torrent_peers(qb_ip, qb_port, t_hash):
+    data = _get_qb_json(qb_ip, qb_port, f"sync/torrentPeers?hash={urllib.parse.quote(t_hash)}&rid=0", timeout=2.0)
+    return data if isinstance(data, dict) else {}
 
 
 def scan_dead_torrents(qb_ip, qb_port):
@@ -194,45 +232,32 @@ def scan_dead_torrents(qb_ip, qb_port):
     return {'success': True, 'total_scanned': len(live), 'dead_count': len(dead_items), 'groups': grouped_list, 'items': dead_items}
 
 
-def _post_qb(qb_ip, qb_port, endpoint, payload):
-    if not qb_ip or not qb_port:
-        return False
-    qb_ip = _norm_ip(qb_ip)
-    base_url = f"http://{qb_ip}:{qb_port}"
-    req = urllib.request.Request(
-        f"{base_url}/api/v2/torrents/{endpoint}",
-        data=urllib.parse.urlencode(payload).encode('utf-8'),
-        method='POST',
-        headers={'Content-Type': 'application/x-www-form-urlencoded', 'Referer': base_url, 'Origin': base_url}
-    )
-    try:
-        with opener.open(req, timeout=3) as resp:
-            return resp.getcode() == 200
-    except urllib.error.HTTPError as e:
-        if e.code in (401, 403) and qb_login(qb_ip, qb_port):
-            try:
-                with opener.open(req, timeout=3) as resp2:
-                    return resp2.getcode() == 200
-            except Exception:
-                pass
-        return False
-    except Exception:
-        return False
-
-
 def add_torrent_tags(qb_ip, qb_port, hash_val, tags):
-    return bool(hash_val and tags and _post_qb(qb_ip, qb_port, 'addTags', {'hashes': hash_val, 'tags': tags}))
+    return bool(hash_val and tags and _post_qb_api(qb_ip, qb_port, 'torrents/addTags', {'hashes': hash_val, 'tags': tags}))
 
 
 def remove_torrent_tags(qb_ip, qb_port, hash_val, tags):
-    return bool(hash_val and tags and _post_qb(qb_ip, qb_port, 'removeTags', {'hashes': hash_val, 'tags': tags}))
+    return bool(hash_val and tags and _post_qb_api(qb_ip, qb_port, 'torrents/removeTags', {'hashes': hash_val, 'tags': tags}))
 
 
 def delete_torrents(qb_ip, qb_port, hashes, delete_files=False):
     if not hashes:
         return False
-    payload = {'hashes': hashes, 'deleteFiles': 'true' if delete_files else 'false'}
-    return _post_qb(qb_ip, qb_port, 'delete', payload)
+    return _post_qb_api(qb_ip, qb_port, 'torrents/delete', {'hashes': hashes, 'deleteFiles': 'true' if delete_files else 'false'})
+
+
+def recheck_torrents(qb_ip, qb_port, hashes):
+    return bool(hashes and _post_qb_api(qb_ip, qb_port, 'torrents/recheck', {'hashes': hashes}))
+
+
+def set_global_speed_limits(qb_ip, qb_port, dl_limit_bps, up_limit_bps):
+    ok1 = _post_qb_api(qb_ip, qb_port, 'transfer/setDownloadLimit', {'limit': str(max(0, int(dl_limit_bps)))})
+    ok2 = _post_qb_api(qb_ip, qb_port, 'transfer/setUploadLimit', {'limit': str(max(0, int(up_limit_bps)))})
+    return ok1 and ok2
+
+
+def shutdown_qb_webui(qb_ip, qb_port):
+    return _post_qb_api(qb_ip, qb_port, 'app/shutdown', {})
 
 
 def send_qb_command(qb_ip, qb_port, action, hash_val):
@@ -241,4 +266,4 @@ def send_qb_command(qb_ip, qb_port, action, hash_val):
     payload = {'hashes': hash_val}
     if action == 'setForceStart':
         payload['value'] = 'true'
-    return _post_qb(qb_ip, qb_port, action, payload)
+    return _post_qb_api(qb_ip, qb_port, f'torrents/{action}', payload)

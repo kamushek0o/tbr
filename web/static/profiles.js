@@ -11,7 +11,7 @@ async function loadMeAndApplyRole() {
         CURRENT_UI_SETTINGS = d.ui_settings || null;
         if (typeof applyUiSettings === 'function' && d.ui_settings) applyUiSettings(d.ui_settings);
         if (CURRENT_ROLE === 'viewer') {
-            document.querySelectorAll('[data-tab="merger"], [data-tab="automation"]').forEach(el => el.classList.add('hidden'));
+            document.querySelectorAll('[data-tab="merger"], [data-tab="automation"], .admin-only').forEach(el => el.classList.add('hidden'));
             document.querySelectorAll('button[onclick*="openSettingsModal"], button[onclick*="restartQb"], button[onclick*="scanDeadTorrents"], button[onclick*="torrentAction"], button[onclick*="globalTorrentAction"]').forEach(el => el.classList.add('hidden'));
         }
     } catch (e) {}

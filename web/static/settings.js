@@ -44,6 +44,7 @@ async function toggleAutostart() {
 async function openSettingsModal() {
     checkAutostart();
     if (typeof loadProfilesList === 'function') loadProfilesList();
+    if (typeof loadVaultSettings === 'function') loadVaultSettings();
     const res = await api('/api/settings');
     const d = await res.json();
     document.getElementById('setting-web-host').value = d.web_host;
@@ -59,6 +60,26 @@ async function openSettingsModal() {
     document.getElementById('setting-w1').value = d.w1;
     document.getElementById('setting-w2').value = d.w2;
     document.getElementById('setting-w3').value = d.w3;
+
+    const kaBlock = document.getElementById('settings-keepawake-block');
+    if (kaBlock) kaBlock.classList.toggle('hidden', !d.is_windows);
+    const kaChk = document.getElementById('setting-keepawake-enabled');
+    if (kaChk) kaChk.checked = Boolean(d.keep_awake_enabled);
+    const kaKb = document.getElementById('setting-keepawake-kb');
+    if (kaKb) kaKb.value = d.keep_awake_min_kb ?? 500;
+    const kaDisp = document.getElementById('setting-keepawake-display');
+    if (kaDisp) kaDisp.checked = Boolean(d.keep_awake_display);
+
+    const wdChk = document.getElementById('setting-watchdog-enabled');
+    if (wdChk) wdChk.checked = Boolean(d.watchdog_enabled);
+    const wdTo = document.getElementById('setting-watchdog-timeout');
+    if (wdTo) wdTo.value = d.watchdog_timeout_min ?? 3;
+    const wdExe = document.getElementById('setting-watchdog-exe');
+    if (wdExe) {
+        wdExe.value = d.watchdog_exe_path || '';
+        wdExe.placeholder = d.watchdog_exe_detected || 'автоопределение';
+    }
+
     document.getElementById('settings-modal').style.display = 'flex';
 }
 
@@ -78,7 +99,13 @@ async function saveSettings() {
         snapshot_interval: parseInt(document.getElementById('setting-snapshot-interval').value) || 60,
         w1: parseInt(document.getElementById('setting-w1').value) || 0,
         w2: parseInt(document.getElementById('setting-w2').value) || 0,
-        w3: parseInt(document.getElementById('setting-w3').value) || 0
+        w3: parseInt(document.getElementById('setting-w3').value) || 0,
+        keep_awake_enabled: document.getElementById('setting-keepawake-enabled')?.checked || false,
+        keep_awake_min_kb: parseInt(document.getElementById('setting-keepawake-kb')?.value) || 0,
+        keep_awake_display: document.getElementById('setting-keepawake-display')?.checked || false,
+        watchdog_enabled: document.getElementById('setting-watchdog-enabled')?.checked || false,
+        watchdog_timeout_min: parseInt(document.getElementById('setting-watchdog-timeout')?.value) || 3,
+        watchdog_exe_path: document.getElementById('setting-watchdog-exe')?.value.trim() || ''
     };
     const res = await api('/api/settings', 'POST', payload);
     const d = await res.json();
@@ -111,9 +138,7 @@ async function uploadRestoreZip(file) {
         });
         const d = await res.json();
         alert(d.message || d.error);
-        if (d.success) {
-            closeSettingsModal();
-        }
+        if (d.success) closeSettingsModal();
     } catch (e) {
         alert('Ошибка загрузки: ' + e.message);
     } finally {

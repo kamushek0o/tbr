@@ -1,5 +1,5 @@
 // web/static/common.js
-const VALID_TABS = ['torrents', 'merger', 'summary', 'analytics', 'automation'];
+const VALID_TABS = ['torrents', 'merger', 'summary', 'analytics', 'automation', 'tools'];
 const CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]')?.content || '';
 
 function escapeHtml(str) {
@@ -59,6 +59,7 @@ function switchTab(name, updateHash = true) {
     if (name === 'summary') loadSummary();
     if (name === 'analytics') loadAnalyticsTab();
     if (name === 'automation') loadAutomation();
+    if (name === 'tools' && typeof loadToolsTab === 'function') loadToolsTab();
 }
 
 function refreshActiveTab() {
@@ -68,6 +69,7 @@ function refreshActiveTab() {
     else if (active === 'analytics') loadAnalyticsTab();
     else if (active === 'automation') loadAutomation();
     else if (active === 'merger') loadTorrents(true);
+    else if (active === 'tools' && typeof loadToolsTab === 'function') loadToolsTab();
     checkQbStatus();
 }
 
@@ -77,9 +79,18 @@ function syncTabWithHash() {
 }
 window.addEventListener('hashchange', syncTabWithHash);
 
+document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        if (typeof openCommandPalette === 'function') openCommandPalette();
+    }
+});
+
 window.onload = async () => {
     applyI18n();
     await loadMeAndApplyRole();
     syncTabWithHash();
+    if (typeof initSystemStatusAndUpdates === 'function') initSystemStatusAndUpdates();
+    if (typeof initTimersUi === 'function') initTimersUi();
     setInterval(checkQbStatus, 5000);
 };

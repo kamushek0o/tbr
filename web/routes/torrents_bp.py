@@ -1,21 +1,70 @@
 # web/routes/torrents_bp.py
 import time
 import urllib.parse
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, g
 
 from utils.config import cfg
 from utils.helpers import format_file_size
 from core.torrent_parser import get_all_torrents, force_clear_cache
 from core.qb_api import (
     detect_qbittorrent_port, get_live_torrent_info, send_qb_command,
-    add_torrent_tags, remove_torrent_tags,
+    add_torrent_tags, remove_torrent_tags, delete_torrents,
     is_qb_running, close_qbittorrent, launch_qbittorrent, scan_dead_torrents
 )
 from core.autostart import set_autostart, is_autostart_enabled
 from core.fastresume_merger import run_fastresume_merge, execute_source_deletion, VALID_DELETE_MODES
+from core.torrent_diff import compute_torrent_diff, find_smart_merge_candidates
+from core.private_vault import get_hidden_hashes, filter_torrents_for_role
+from core.torrent_targets import list_targets
+from core.health_score import enrich_live_metrics
+from core.tracker_inspector import inspect_tracker_errors
+from core.app_state_db import app_state_db
 from web.security import HASH_RE
 
 torrents_bp = Blueprint('torrents_bp', __name__)
+
+
+def _build_torrents_list(ip, port):
+    data_dict = get_all_torrents(use_cache=True)
+    live_info = get_live_torrent_info(ip, port) if port else {}
+    targets = list_targets()
+
+    result = []
+    for t_id, static in data_dict.items():
+        live = live_info.get(t_id) or live_info.get(t_id.lower()) or live_info.get(t_id.upper()) or {}
+        size = live.get('total_size', static.get('size', 1))
+        uploaded = live.get('uploaded', static.get('uploaded', 0))
+        ratio = round(uploaded / size, 4) if size > 0 else 0.0
+        state = live.get('state', 'seeding' if static.get('active_seconds', 0) > 0 else 'unknown')
+        save_path = live.get('save_path', static.get('save_path', ''))
+        content_path = live.get('content_path', '')
+        tags = str(live.get('tags', '') or '')
+
+        tracker_host = ''
+        tr_url = str(live.get('tracker', '') or '')
+        if not tr_url and static.get('trackers'):
+            tr_url = str(static['trackers'][0] or '')
+        if tr_url:
+            tracker_host = urllib.parse.urlparse(tr_url).netloc.lower()
+
+        name = static.get('name', '')
+        if not name or name.lower() == t_id.lower() or len(name) in (40, 64):
+            if live.get('name'):
+                name = live['name']
+        if not name:
+            name = t_id
+
+        item = {
+            'hash': t_id, 'name': name, 'size': size, 'size_fmt': format_file_size(size),
+            'uploaded': uploaded, 'uploaded_fmt': format_file_size(uploaded),
+            'ratio': ratio, 'state': state, 'save_path': save_path, 'content_path': content_path,
+            'tags': tags, 'tracker': tracker_host,
+            'active_seconds': static.get('active_seconds', 0)
+        }
+        enrich_live_metrics(item, live, targets.get(t_id.lower()))
+        result.append(item)
+    result.sort(key=lambda x: str(x['name']).lower())
+    return result, live_info
 
 
 @torrents_bp.route('/api/qb/status')
@@ -60,43 +109,24 @@ def api_autostart_toggle():
 @torrents_bp.route('/api/torrents')
 def api_torrents():
     ip, port = detect_qbittorrent_port(cfg.config)
-    data_dict = get_all_torrents(use_cache=True)
-    live_info = get_live_torrent_info(ip, port) if port else {}
-
-    result = []
-    for t_id, static in data_dict.items():
-        live = live_info.get(t_id, {})
-        size = live.get('total_size', static.get('size', 1))
-        uploaded = live.get('uploaded', static.get('uploaded', 0))
-        ratio = round(uploaded / size, 4) if size > 0 else 0.0
-        state = live.get('state', 'seeding' if static.get('active_seconds', 0) > 0 else 'unknown')
-        save_path = live.get('save_path', static.get('save_path', ''))
-        tags = str(live.get('tags', '') or '')
-
-        # Домен трекера для фильтрации
-        tracker_host = ''
-        tr_url = str(live.get('tracker', '') or '')
-        if not tr_url and static.get('trackers'):
-            tr_url = str(static['trackers'][0] or '')
-        if tr_url:
-            tracker_host = urllib.parse.urlparse(tr_url).netloc.lower()
-
-        name = static.get('name', '')
-        if not name or name.lower() == t_id.lower() or len(name) in (40, 64):
-            if live.get('name'):
-                name = live['name']
-        if not name:
-            name = t_id
-
-        result.append({
-            'hash': t_id, 'name': name, 'size': size, 'size_fmt': format_file_size(size),
-            'uploaded': uploaded, 'uploaded_fmt': format_file_size(uploaded),
-            'ratio': ratio, 'state': state, 'save_path': save_path,
-            'tags': tags, 'tracker': tracker_host,
-            'active_seconds': static.get('active_seconds', 0)
-        })
-    result.sort(key=lambda x: str(x['name']).lower())
+    result, live_info = _build_torrents_list(ip, port)
+    role = g.get('role') or 'viewer'
+    hidden = get_hidden_hashes(live_info)
+    result = filter_torrents_for_role(result, role, hidden)
     return jsonify({'torrents': result, 'qb_connected': bool(port), 'qb_running': is_qb_running()})
+
+
+@torrents_bp.route('/api/torrents/tracker_errors')
+def api_torrents_tracker_errors():
+    ip, port = detect_qbittorrent_port(cfg.config)
+    live_info = get_live_torrent_info(ip, port) if port else {}
+    force = request.args.get('force', '0') == '1'
+    err_map = inspect_tracker_errors(ip, port, live_info, force=force)
+    if g.get('role') != 'admin':
+        hidden = get_hidden_hashes(live_info)
+        if hidden:
+            err_map = {k: v for k, v in err_map.items() if k not in hidden}
+    return jsonify({'errors': err_map})
 
 
 @torrents_bp.route('/api/torrents/refresh', methods=['POST'])
@@ -142,6 +172,26 @@ def api_torrent_action():
     return jsonify({'success': send_qb_command(ip, port, action, joined)})
 
 
+@torrents_bp.route('/api/torrents/delete', methods=['POST'])
+def api_torrents_delete():
+    if g.get('role') != 'admin':
+        return jsonify({'success': False, 'error': 'Только для Admin'}), 403
+    data = request.get_json(silent=True) or {}
+    t_hash = str(data.get('hash', '')).strip()
+    delete_files = bool(data.get('delete_files', False))
+    hashes = [h.strip() for h in t_hash.split('|') if h.strip()]
+    if not hashes or not all(HASH_RE.fullmatch(h) for h in hashes):
+        return jsonify({'success': False, 'error': 'Некорректные хэши'}), 400
+    ip, port = detect_qbittorrent_port(cfg.config)
+    if not port:
+        return jsonify({'success': False, 'error': 'qBittorrent недоступен'}), 400
+    ok = delete_torrents(ip, port, '|'.join(hashes), delete_files=delete_files)
+    if ok:
+        force_clear_cache()
+        app_state_db.add_audit_event('system', 'Удаление торрента', f'count={len(hashes)}, files={delete_files}', actor='admin')
+    return jsonify({'success': ok})
+
+
 @torrents_bp.route('/api/torrents/action_all', methods=['POST'])
 def api_torrents_action_all():
     data = request.get_json(silent=True) or {}
@@ -154,6 +204,27 @@ def api_torrents_action_all():
     ok = send_qb_command(ip, port, action, 'all')
     msg = "Все раздачи поставлены на паузу" if action == 'stop' else "Все раздачи возобновлены"
     return jsonify({'success': ok, 'message': msg})
+
+
+@torrents_bp.route('/api/merger/diff')
+def api_merger_diff():
+    if g.get('role') != 'admin':
+        return jsonify({'success': False, 'error': 'Только для Admin'}), 403
+    old_hash = str(request.args.get('old_hash', '')).strip()
+    new_hash = str(request.args.get('new_hash', '')).strip()
+    if not HASH_RE.fullmatch(old_hash) or not HASH_RE.fullmatch(new_hash) or old_hash.lower() == new_hash.lower():
+        return jsonify({'success': False, 'error': 'Укажите два разных корректных хэша'}), 400
+    ip, port = detect_qbittorrent_port(cfg.config)
+    return jsonify(compute_torrent_diff(ip, port, old_hash, new_hash))
+
+
+@torrents_bp.route('/api/merger/candidates')
+def api_merger_candidates():
+    if g.get('role') != 'admin':
+        return jsonify({'candidates': []}), 403
+    ip, port = detect_qbittorrent_port(cfg.config)
+    items, _ = _build_torrents_list(ip, port)
+    return jsonify({'candidates': find_smart_merge_candidates(items)})
 
 
 @torrents_bp.route('/api/merger/run', methods=['POST'])
@@ -169,6 +240,8 @@ def api_merger_run():
         return jsonify({'success': False, 'log': ['❌ Некорректные или одинаковые хэши торрентов!']}), 400
 
     ok, log, confirm_info, code = run_fastresume_merge(old_hash, new_hash, delete_mode=delete_mode)
+    if ok:
+        app_state_db.add_audit_event('merger', 'Перенос .fastresume', f'{old_hash[:8]} -> {new_hash[:8]} (mode={delete_mode})', actor='admin')
     return jsonify({'success': ok, 'log': log, 'needs_delete_confirm': bool(ok and confirm_info), 'confirm_info': confirm_info}), code
 
 
@@ -184,4 +257,6 @@ def api_merger_delete_source():
         return jsonify({'success': False, 'log': ['❌ Некорректные или одинаковые хэши!']}), 400
 
     ok, log = execute_source_deletion(old_hash, new_hash, delete_mode)
+    if ok:
+        app_state_db.add_audit_event('merger', 'Удалён исходник', f'{old_hash[:8]} (mode={delete_mode})', actor='admin')
     return jsonify({'success': ok, 'log': log}), (200 if ok else 400)

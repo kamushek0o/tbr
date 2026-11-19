@@ -77,6 +77,7 @@ class ProfilesDB:
     def _get_conn(self):
         conn = sqlite3.connect(self.db_file, timeout=30.0)
         conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA busy_timeout = 30000;")
         conn.execute("PRAGMA foreign_keys=ON;")
         conn.row_factory = sqlite3.Row
         return conn
@@ -114,7 +115,6 @@ class ProfilesDB:
                     if 'api_token' not in cols:
                         cur.execute("ALTER TABLE profiles ADD COLUMN api_token TEXT")
 
-                    # Миграция login = name.lower() с защитой от коллизий
                     cur.execute("SELECT id, name, login, api_token FROM profiles ORDER BY id ASC")
                     rows = cur.fetchall()
                     used_logins = {r['login'].lower() for r in rows if r['login']}
@@ -205,7 +205,6 @@ class ProfilesDB:
                     row = cur.fetchone()
                     if row:
                         return dict(row)
-                    # Обратная совместимость со старыми токенами-паролями в Bearer
                     cur.execute("SELECT * FROM profiles")
                     for r in cur.fetchall():
                         ok, needs_upgrade = _verify_stored_token(r['token_hash'], clean)

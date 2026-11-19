@@ -160,6 +160,40 @@ class SummaryTracker:
             }
         }
 
+    def get_torrent_chart_series(self, t_hash, period='24h'):
+        hours = {'24h': 24, '7d': 168, '30d': 720}.get(period, 24)
+        since_ts = time.time() - (hours * 3600)
+        hl = (t_hash or '').lower()
+        points = []
+        with self.db._lock:
+            try:
+                with self.db._get_connection() as conn:
+                    rows = conn.execute("""
+                        SELECT s.timestamp, s.datetime, ts.uploaded
+                        FROM snapshots s
+                        JOIN torrent_snapshots ts ON s.id = ts.snapshot_id
+                        WHERE ts.hash_id = ? AND s.timestamp >= ?
+                        ORDER BY s.timestamp ASC
+                    """, (hl, since_ts)).fetchall()
+            except Exception:
+                rows = []
+
+        prev = None
+        for r in rows:
+            if prev is not None:
+                dt = float(r['timestamp']) - float(prev['timestamp'])
+                delta = max(0, int(r['uploaded']) - int(prev['uploaded']))
+                if dt >= MIN_DELTA_SEC:
+                    bps = delta / dt
+                    lbl = str(r['datetime'] or '')[11:16] if hours <= 24 else str(r['datetime'] or '')[5:16]
+                    points.append({
+                        'label': lbl,
+                        'speed_mbs': round(bps / (1024 * 1024), 3),
+                        'delta_fmt': format_file_size(delta)
+                    })
+            prev = r
+        return points
+
     def calculate_smart_forecast(self, target_type, target_hash, target_str, speed_str, summaries):
         return calculate_smart_forecast(self.db, target_type, target_hash, target_str, speed_str, summaries)
 
