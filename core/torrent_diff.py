@@ -1,16 +1,23 @@
 # core/torrent_diff.py
 import os
 import re
+import datetime
 from difflib import SequenceMatcher
 from utils.bencode import decode_bencode
 from utils.helpers import BT_BACKUP_PATH, format_file_size
 from core.qb_api import get_torrent_files
 
-_SEASON_EP_RE = re.compile(r'(?:s(\d{1,2})(?:e(\d{1,3}))?|season\s*(\d{1,2})|сезон\s*(\d{1,2})|\b(\d{1,2})x(\d{1,3})\b)', re.IGNORECASE)
-_JUNK_TAGS_RE = re.compile(
-    r'\[[^\]]*\]|\([^\)]*\)|\b(?:repack|rip|bdrip|web-dl|webdl|hdrip|bluray|1080p|720p|2160p|480p|4k|uhd|x264|x265|h264|h265|hevc|rus|eng|multi|portable|fitgirl|dodi|xatab|v?\d+\.\d+(?:\.\d+)*|build\s*\d+|\d+(?:gb|mb|tb|gib|mib|tib|fps|hz|bit|ch))\b',
+_SEASON_EP_RE = re.compile(
+    r'(?:s(\d{1,2})(?:e(\d{1,3}))?|season\s*(\d{1,2})|сезон\s*(\d{1,2})|\b(\d{1,2})x(\d{1,3})\b)',
     re.IGNORECASE
 )
+_JUNK_TAGS_RE = re.compile(
+    r'\[[^\]]*\]|\([^\)]*\)|\b(?:repack|rip|bdrip|web-dl|webdl|hdrip|bluray|1080p|720p|2160p|480p|4k|uhd|x264|x265|h264|h265|hevc|rus|eng|multi|portable|fitgirl|dodi|xatab|build\s*\d+|\d+(?:gb|mb|tb|gib|mib|tib|fps|hz|bit|ch))\b',
+    re.IGNORECASE
+)
+_VERSION_EXPLICIT_RE = re.compile(r'\bv(?:er(?:sion)?)?[\s._-]*(\d+(?:\.\d+)*)\b', re.IGNORECASE)
+_VERSION_NUMERIC_RE = re.compile(r'\b(\d+(?:\.\d+)+)\b')
+
 _ROMAN_MAP = {
     'I': 1, 'II': 2, 'III': 3, 'IV': 4, 'V': 5, 'VI': 6, 'VII': 7, 'VIII': 8,
     'IX': 9, 'X': 10, 'XI': 11, 'XII': 12, 'XIII': 13, 'XIV': 14, 'XV': 15
@@ -19,7 +26,10 @@ _ROMAN_MULTI_RE = re.compile(r'(?:^|[\s._:\-])(XIII|XIV|XV|XII|XI|VIII|VII|VI|IV
 _ROMAN_SINGLE_RE = re.compile(r'(?:^|[\s._:\-])(I|V|X)(?=$|[\s._:\-])')
 _ROMAN_TRAIL_RE = re.compile(r'\s+(i|v|x)$', re.IGNORECASE)
 _ARABIC_PART_RE = re.compile(r'(?:^|[\s._:\-])(\d{1,4})(?=$|[\s._:\-])')
-_GENERIC_ROOT_NAMES = {'downloads', 'download', 'torrents', 'torrent', 'games', 'movies', 'films', 'series', 'music', 'video', 'загрузки', 'игры', 'фильмы', 'сериалы', 'торренты'}
+_GENERIC_ROOT_NAMES = {
+    'downloads', 'download', 'torrents', 'torrent', 'games', 'movies',
+    'films', 'series', 'music', 'video', 'загрузки', 'игры', 'фильмы', 'сериалы', 'торренты'
+}
 
 
 def _norm_rel(path):
@@ -153,9 +163,42 @@ def _extract_sequel_numbers(name):
     return tuple(nums)
 
 
+def _extract_version_tuple(name):
+    raw = str(name or '')
+    m = _VERSION_EXPLICIT_RE.search(raw)
+    if m:
+        try:
+            return tuple(int(x) for x in m.group(1).split('.') if x.isdigit())
+        except Exception:
+            pass
+    m2 = _VERSION_NUMERIC_RE.search(raw)
+    if m2:
+        try:
+            parts = [int(x) for x in m2.group(1).split('.') if x.isdigit()]
+            if len(parts) >= 2:
+                return tuple(parts)
+        except Exception:
+            pass
+    return None
+
+
+def _compare_version_tuples(ver_a, ver_b):
+    if not ver_a or not ver_b:
+        return 0
+    max_len = max(len(ver_a), len(ver_b))
+    pad_a = ver_a + (0,) * (max_len - len(ver_a))
+    pad_b = ver_b + (0,) * (max_len - len(ver_b))
+    if pad_a < pad_b:
+        return -1
+    if pad_a > pad_b:
+        return 1
+    return 0
+
+
 def _clean_title(name):
     s = re.sub(r'\.[a-z0-9]{2,4}$', '', str(name or '').lower())
     s = _JUNK_TAGS_RE.sub(' ', s)
+    s = _VERSION_EXPLICIT_RE.sub(' ', s)
     s = re.sub(r'[._\-]+', ' ', s)
     return ' '.join(s.split())
 
@@ -185,9 +228,11 @@ def find_smart_merge_candidates(items, max_results=20):
         prepared.append({
             'item': it,
             'clean': _clean_title(nm),
+            'version': _extract_version_tuple(nm),
             'seasons': _extract_season_sig(nm),
             'sequels': _extract_sequel_numbers(nm),
-            'cp_leaf': _extract_content_leaf(it)
+            'cp_leaf': _extract_content_leaf(it),
+            'added_on': int(it.get('added_on') or it.get('created_ts') or 0)
         })
 
     candidates = []
@@ -204,21 +249,35 @@ def find_smart_merge_candidates(items, max_results=20):
             same_content_dir = bool(a['cp_leaf'] and b['cp_leaf'] and a['cp_leaf'] == b['cp_leaf'])
             sim = SequenceMatcher(None, a['clean'], b['clean']).ratio() if (a['clean'] and b['clean']) else 0.0
 
-            if not ((same_content_dir and sim >= 0.55) or sim >= 0.80):
+            if not ((same_content_dir and sim >= 0.55) or sim >= 0.78):
                 continue
 
-            ia, ib = a['item'], b['item']
-            score_a = (int(ia.get('uploaded', 0) or 0), int(ia.get('active_seconds', 0) or 0))
-            score_b = (int(ib.get('uploaded', 0) or 0), int(ib.get('active_seconds', 0) or 0))
-            old_it, new_it = (ia, ib) if score_a >= score_b else (ib, ia)
+            # Приоритет №1: сравнение версий в названии (меньшая -> большая)
+            ver_cmp = _compare_version_tuples(a['version'], b['version'])
+            if ver_cmp != 0:
+                old_it, new_it = (a['item'], b['item']) if ver_cmp < 0 else (b['item'], a['item'])
+                v_old = a['version'] if ver_cmp < 0 else b['version']
+                v_new = b['version'] if ver_cmp < 0 else a['version']
+                reason = f"Обновление версии: v{'.'.join(map(str, v_old))} → v{'.'.join(map(str, v_new))}"
+            else:
+                # Приоритет №2: сравнение даты добавления (раньше -> позже)
+                ta, tb = a['added_on'], b['added_on']
+                if ta > 0 and tb > 0 and ta != tb:
+                    old_it, new_it = (a['item'], b['item']) if ta < tb else (b['item'], a['item'])
+                    d_old = datetime.datetime.fromtimestamp(min(ta, tb)).strftime('%d.%m.%Y')
+                    d_new = datetime.datetime.fromtimestamp(max(ta, tb)).strftime('%d.%m.%Y')
+                    reason = f"По дате добавления ({d_old} → {d_new})"
+                else:
+                    old_it, new_it = a['item'], b['item']
+                    reason = f"Одинаковая папка контента: {a['cp_leaf']}" if same_content_dir else f"Совпадение названия {int(sim * 100)}%"
 
-            reason = f"Одинаковая папка контента: {a['cp_leaf']}" if same_content_dir else f"Совпадение имени {int(sim * 100)}%"
             candidates.append({
                 'old_hash': old_it['hash'], 'new_hash': new_it['hash'],
                 'old_name': old_it['name'], 'new_name': new_it['name'],
                 'old_up_fmt': old_it.get('uploaded_fmt', '0 B'), 'new_up_fmt': new_it.get('uploaded_fmt', '0 B'),
+                'old_up_bytes': int(old_it.get('uploaded', 0) or 0), 'new_up_bytes': int(new_it.get('uploaded', 0) or 0),
                 'similarity': int(round(sim * 100)), 'same_dir': same_content_dir,
-                'reason': reason, 'rank': (1 if same_content_dir else 0) + sim
+                'reason': reason, 'rank': (1.5 if ver_cmp != 0 else (1.0 if same_content_dir else 0.0)) + sim
             })
 
     candidates.sort(key=lambda x: x['rank'], reverse=True)

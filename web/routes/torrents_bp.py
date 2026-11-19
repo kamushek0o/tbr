@@ -12,7 +12,10 @@ from core.qb_api import (
     is_qb_running, close_qbittorrent, launch_qbittorrent, scan_dead_torrents
 )
 from core.autostart import set_autostart, is_autostart_enabled
-from core.fastresume_merger import run_fastresume_merge, execute_source_deletion, VALID_DELETE_MODES
+from core.fastresume_merger import (
+    run_fastresume_merge, execute_source_deletion,
+    VALID_DELETE_MODES, VALID_MERGE_MODES
+)
 from core.torrent_diff import compute_torrent_diff, find_smart_merge_candidates
 from core.private_vault import get_hidden_hashes, filter_torrents_for_role
 from core.torrent_targets import list_targets
@@ -39,6 +42,7 @@ def _build_torrents_list(ip, port):
         save_path = live.get('save_path', static.get('save_path', ''))
         content_path = live.get('content_path', '')
         tags = str(live.get('tags', '') or '')
+        added_on = int(live.get('added_on') or static.get('created_ts') or 0)
 
         tracker_host = ''
         tr_url = str(live.get('tracker', '') or '')
@@ -58,7 +62,7 @@ def _build_torrents_list(ip, port):
             'hash': t_id, 'name': name, 'size': size, 'size_fmt': format_file_size(size),
             'uploaded': uploaded, 'uploaded_fmt': format_file_size(uploaded),
             'ratio': ratio, 'state': state, 'save_path': save_path, 'content_path': content_path,
-            'tags': tags, 'tracker': tracker_host,
+            'tags': tags, 'tracker': tracker_host, 'added_on': added_on,
             'active_seconds': static.get('active_seconds', 0)
         }
         enrich_live_metrics(item, live, targets.get(t_id.lower()))
@@ -227,22 +231,61 @@ def api_merger_candidates():
     return jsonify({'candidates': find_smart_merge_candidates(items)})
 
 
+@torrents_bp.route('/api/merger/check_pair')
+def api_merger_check_pair():
+    if g.get('role') != 'admin':
+        return jsonify({'error': 'Только для Admin'}), 403
+    old_h = str(request.args.get('old_hash', '')).strip().lower()
+    new_h = str(request.args.get('new_hash', '')).strip().lower()
+    if not HASH_RE.fullmatch(old_h) or not HASH_RE.fullmatch(new_h) or old_h == new_h:
+        return jsonify({'has_history': False})
+    hist = app_state_db.get_merger_history(old_h, new_h)
+    return jsonify({
+        'has_history': len(hist) > 0,
+        'count': len(hist),
+        'last_merged_at': hist[0]['created_at'] if hist else None
+    })
+
+
 @torrents_bp.route('/api/merger/run', methods=['POST'])
 def api_merger_run():
     data = request.get_json(silent=True) or {}
     old_hash = str(data.get('old_hash', '')).strip()
     new_hash = str(data.get('new_hash', '')).strip()
     delete_mode = str(data.get('delete_mode', 'none')).strip()
+    merge_mode = str(data.get('merge_mode', 'add')).strip()
+    force_dup = bool(data.get('force_duplicate', False))
+
     if delete_mode not in VALID_DELETE_MODES:
         delete_mode = 'none'
+    if merge_mode not in VALID_MERGE_MODES:
+        merge_mode = 'add'
 
     if not HASH_RE.fullmatch(old_hash) or not HASH_RE.fullmatch(new_hash) or old_hash.lower() == new_hash.lower():
         return jsonify({'success': False, 'log': ['❌ Некорректные или одинаковые хэши торрентов!']}), 400
 
-    ok, log, confirm_info, code = run_fastresume_merge(old_hash, new_hash, delete_mode=delete_mode)
+    ok, log, confirm_info, code, extra = run_fastresume_merge(
+        old_hash, new_hash, delete_mode=delete_mode, merge_mode=merge_mode, force_duplicate=force_dup
+    )
+
+    if code == 409 and extra and extra.get('is_duplicate'):
+        return jsonify({
+            'success': False,
+            'needs_duplicate_confirm': True,
+            'warning': extra.get('warning'),
+            'log': log
+        }), 409
+
     if ok:
-        app_state_db.add_audit_event('merger', 'Перенос .fastresume', f'{old_hash[:8]} -> {new_hash[:8]} (mode={delete_mode})', actor='admin')
-    return jsonify({'success': ok, 'log': log, 'needs_delete_confirm': bool(ok and confirm_info), 'confirm_info': confirm_info}), code
+        app_state_db.add_audit_event(
+            'merger', f'Перенос .fastresume ({merge_mode})',
+            f'{old_hash[:8]} -> {new_hash[:8]} (del={delete_mode})', actor='admin'
+        )
+
+    return jsonify({
+        'success': ok, 'log': log, 'needs_delete_confirm': bool(ok and confirm_info),
+        'confirm_info': confirm_info, 'calc_info': extra
+    }), code
 
 
 @torrents_bp.route('/api/merger/delete_source', methods=['POST'])

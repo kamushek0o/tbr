@@ -53,29 +53,51 @@ def delete_target(t_hash):
             return False
 
 
-def transfer_target_on_merge(old_hash, new_hash):
+def handle_targets_on_merge(old_hash, new_hash, final_uploaded=0):
+    """
+    При мердже переносит цель на получателя (если у цели её не было).
+    При сложении сразу проверяет достижение планки по новому объёму отдачи.
+    """
     oh = str(old_hash or '').strip().lower()
     nh = str(new_hash or '').strip().lower()
     if not oh or not nh or oh == nh:
         return False
+
     with app_state_db._lock:
         try:
             with app_state_db._get_conn() as conn:
-                row = conn.execute("SELECT * FROM torrent_targets WHERE hash_id = ?", (oh,)).fetchone()
-                if not row:
-                    return False
-                conn.execute(
-                    """INSERT OR REPLACE INTO torrent_targets
-                       (hash_id, target_ratio, target_bytes, achieved_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (nh, row['target_ratio'], row['target_bytes'], row['achieved_at'], time.time())
-                )
-                conn.execute("DELETE FROM torrent_targets WHERE hash_id = ?", (oh,))
+                src_row = conn.execute("SELECT * FROM torrent_targets WHERE hash_id = ?", (oh,)).fetchone()
+                dst_row = conn.execute("SELECT * FROM torrent_targets WHERE hash_id = ?", (nh,)).fetchone()
+
+                active_target = None
+                if src_row and not dst_row:
+                    conn.execute(
+                        """INSERT OR REPLACE INTO torrent_targets
+                           (hash_id, target_ratio, target_bytes, achieved_at, updated_at)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (nh, src_row['target_ratio'], src_row['target_bytes'], src_row['achieved_at'], time.time())
+                    )
+                    active_target = src_row
+                elif dst_row:
+                    active_target = dst_row
+
+                if active_target and final_uploaded > 0:
+                    tgt_bytes = int(active_target['target_bytes'] or 0)
+                    if tgt_bytes > 0 and final_uploaded >= tgt_bytes and not active_target['achieved_at']:
+                        conn.execute("UPDATE torrent_targets SET achieved_at = ? WHERE hash_id = ?", (time.time(), nh))
+
+                if src_row:
+                    conn.execute("DELETE FROM torrent_targets WHERE hash_id = ?", (oh,))
+
                 conn.commit()
-                return True
+                return bool(active_target)
         except Exception as e:
-            write_error_log("transfer_target_on_merge", e)
+            write_error_log("handle_targets_on_merge", e)
             return False
+
+
+def transfer_target_on_merge(old_hash, new_hash):
+    return handle_targets_on_merge(old_hash, new_hash)
 
 
 def compute_target_progress(target_row, uploaded, ratio):

@@ -91,6 +91,18 @@ class AppStateDB:
                             halted INTEGER NOT NULL DEFAULT 0,
                             recheck_attempts_json TEXT NOT NULL DEFAULT '{}'
                         );
+
+                        CREATE TABLE IF NOT EXISTS merger_history (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            source_hash TEXT NOT NULL,
+                            target_hash TEXT NOT NULL,
+                            mode TEXT NOT NULL DEFAULT 'add',
+                            source_uploaded INTEGER NOT NULL DEFAULT 0,
+                            target_uploaded INTEGER NOT NULL DEFAULT 0,
+                            final_uploaded INTEGER NOT NULL DEFAULT 0,
+                            created_at REAL NOT NULL
+                        );
+                        CREATE INDEX IF NOT EXISTS idx_merger_pair ON merger_history(source_hash, target_hash);
                     """)
                     conn.execute(
                         """INSERT OR IGNORE INTO watchdog_state
@@ -179,6 +191,34 @@ class AppStateDB:
     def save_recheck_attempts(self, attempts_map):
         clean = {str(k).lower(): float(v) for k, v in (attempts_map or {}).items()}
         self.update_watchdog_state(recheck_attempts_json=json.dumps(clean))
+
+    def add_merger_record(self, src_hash, dst_hash, mode, src_up, dst_up, final_up):
+        with self._lock:
+            try:
+                with self._get_conn() as conn:
+                    conn.execute(
+                        """INSERT INTO merger_history
+                           (source_hash, target_hash, mode, source_uploaded, target_uploaded, final_uploaded, created_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (src_hash.lower(), dst_hash.lower(), str(mode), int(src_up), int(dst_up), int(final_up), time.time())
+                    )
+                    conn.commit()
+            except Exception as e:
+                write_error_log("add_merger_record", e)
+
+    def get_merger_history(self, src_hash, dst_hash):
+        with self._lock:
+            try:
+                with self._get_conn() as conn:
+                    rows = conn.execute(
+                        """SELECT * FROM merger_history
+                           WHERE source_hash = ? AND target_hash = ?
+                           ORDER BY id DESC""",
+                        (src_hash.lower(), dst_hash.lower())
+                    ).fetchall()
+                    return [dict(r) for r in rows]
+            except Exception:
+                return []
 
 
 app_state_db = AppStateDB()
