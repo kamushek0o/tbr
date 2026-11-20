@@ -103,6 +103,13 @@ class AppStateDB:
                             created_at REAL NOT NULL
                         );
                         CREATE INDEX IF NOT EXISTS idx_merger_pair ON merger_history(source_hash, target_hash);
+
+                        CREATE TABLE IF NOT EXISTS torrent_lineage (
+                            torrent_hash TEXT PRIMARY KEY,
+                            torrent_uid TEXT NOT NULL,
+                            created_at REAL NOT NULL
+                        );
+                        CREATE INDEX IF NOT EXISTS idx_lineage_uid ON torrent_lineage(torrent_uid);
                     """)
                     conn.execute(
                         """INSERT OR IGNORE INTO watchdog_state
@@ -219,6 +226,60 @@ class AppStateDB:
                     return [dict(r) for r in rows]
             except Exception:
                 return []
+
+    def get_merges_for_targets(self, hashes):
+        clean = [str(h).strip().lower() for h in (hashes or []) if h]
+        if not clean:
+            return []
+        placeholders = ",".join("?" for _ in clean)
+        with self._lock:
+            try:
+                with self._get_conn() as conn:
+                    rows = conn.execute(
+                        f"SELECT * FROM merger_history WHERE target_hash IN ({placeholders}) ORDER BY created_at ASC",
+                        clean
+                    ).fetchall()
+                    return [dict(r) for r in rows]
+            except Exception:
+                return []
+
+    def link_torrent_lineage(self, src_hash, dst_hash):
+        sh = str(src_hash or "").strip().lower()
+        dh = str(dst_hash or "").strip().lower()
+        if not sh or not dh or sh == dh:
+            return None
+        now = time.time()
+        with self._lock:
+            try:
+                with self._get_conn() as conn:
+                    r_src = conn.execute("SELECT torrent_uid FROM torrent_lineage WHERE torrent_hash = ?", (sh,)).fetchone()
+                    r_dst = conn.execute("SELECT torrent_uid FROM torrent_lineage WHERE torrent_hash = ?", (dh,)).fetchone()
+                    uid = r_src["torrent_uid"] if r_src else sh
+                    if r_dst and r_dst["torrent_uid"] != uid:
+                        conn.execute("UPDATE torrent_lineage SET torrent_uid = ? WHERE torrent_uid = ?", (uid, r_dst["torrent_uid"]))
+                    conn.execute("INSERT OR REPLACE INTO torrent_lineage (torrent_hash, torrent_uid, created_at) VALUES (?, ?, ?)", (sh, uid, now))
+                    conn.execute("INSERT OR REPLACE INTO torrent_lineage (torrent_hash, torrent_uid, created_at) VALUES (?, ?, ?)", (dh, uid, now))
+                    conn.commit()
+                    return uid
+            except Exception as e:
+                write_error_log("link_torrent_lineage", e)
+                return None
+
+    def get_lineage_hashes(self, t_hash):
+        hl = str(t_hash or "").strip().lower()
+        if not hl:
+            return []
+        with self._lock:
+            try:
+                with self._get_conn() as conn:
+                    row = conn.execute("SELECT torrent_uid FROM torrent_lineage WHERE torrent_hash = ?", (hl,)).fetchone()
+                    if not row:
+                        return [hl]
+                    rows = conn.execute("SELECT torrent_hash FROM torrent_lineage WHERE torrent_uid = ?", (row["torrent_uid"],)).fetchall()
+                    hashes = [r["torrent_hash"] for r in rows]
+                    return hashes if hashes else [hl]
+            except Exception:
+                return [hl]
 
 
 app_state_db = AppStateDB()

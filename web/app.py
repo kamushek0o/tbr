@@ -19,6 +19,7 @@ from utils.helpers import write_error_log
 from core.torrent_parser import get_global_torrent_summaries
 from core.summary_tracker import summary_tracker
 from core.automation import automation_engine
+from core.batch_relocate import resume_pending_relocate_if_any
 from web.security import register_security
 from web.errors import register_error_handlers
 from web.routes.torrents_bp import torrents_bp
@@ -32,6 +33,14 @@ from web.routes.tools_bp import tools_bp
 from web.routes.timers_bp import timers_bp
 from web.routes.insights_bp import insights_bp
 from web.routes.social_bp import social_bp
+from web.routes.safety_bp import safety_bp
+from web.routes.hygiene_bp import hygiene_bp
+from web.routes.batch_bp import batch_bp
+from web.routes.net_ops_bp import net_ops_bp
+from web.routes.inbox_ops_bp import inbox_ops_bp
+from web.routes.deep_analytics_bp import deep_analytics_bp
+from web.routes.ux_bp import ux_bp
+from web.routes.hardcore_bp import hardcore_bp
 
 
 def get_resource_path(relative_path):
@@ -51,17 +60,13 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
 register_error_handlers(app)
 register_security(app)
-app.register_blueprint(torrents_bp)
-app.register_blueprint(analytics_bp)
-app.register_blueprint(automation_bp)
-app.register_blueprint(settings_bp)
-app.register_blueprint(profiles_bp)
-app.register_blueprint(widget_bp)
-app.register_blueprint(system_bp)
-app.register_blueprint(tools_bp)
-app.register_blueprint(timers_bp)
-app.register_blueprint(insights_bp)
-app.register_blueprint(social_bp)
+for bp in (
+    torrents_bp, analytics_bp, automation_bp, settings_bp, profiles_bp,
+    widget_bp, system_bp, tools_bp, timers_bp, insights_bp, social_bp,
+    safety_bp, hygiene_bp, batch_bp, net_ops_bp, inbox_ops_bp,
+    deep_analytics_bp, ux_bp, hardcore_bp
+):
+    app.register_blueprint(bp)
 
 
 class WebServerController:
@@ -91,6 +96,7 @@ class WebServerController:
 
         summary_tracker.start_auto_export(get_global_torrent_summaries)
         automation_engine.start()
+        resume_pending_relocate_if_any()
 
         try:
             if HAS_WAITRESS and create_server:

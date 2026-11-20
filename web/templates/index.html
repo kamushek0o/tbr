@@ -62,9 +62,11 @@
                     <option value="unregistered">🚫 Не зарегистрирована</option><option value="auth">🔑 Ошибка passkey/авторизации</option>
                     <option value="timeout">⏱️ Превышен таймаут</option><option value="other">❓ Прочие ошибки</option>
                 </select>
+                <button class="btn btn-xs admin-only" onclick="openPreflightModal()">➕ Добавить</button>
                 <button class="btn btn-secondary admin-only" onclick="scanDeadTorrents()" data-i18n="btn_scan_dead">🩺 Мёртвые</button>
                 <button class="btn btn-secondary" onclick="loadTorrents(true)" data-i18n="btn_refresh">🔄</button>
             </div>
+            <div id="saved-views-bar" class="row-wrap" style="padding:5px 12px; border-bottom:1px solid var(--border); gap:6px;"></div>
             <div id="bulk-actions-bar" class="row-between hidden" style="background:var(--bg-input); padding:6px 12px; border-bottom:1px solid var(--border);">
                 <span class="lbl-xs">Выбрано раздач: <b id="bulk-selected-count" class="accent-txt">0</b></span>
                 <div class="row-gap" style="gap:6px;">
@@ -102,12 +104,16 @@
                     <button class="btn btn-secondary admin-only" onclick="torrentAction('setForceStart')" data-i18n="btn_force">⚡ Форс</button>
                 </div>
                 <button class="btn w-full center-btn mb-8" onclick="goToAnalyticsWithTorrent()" data-i18n="btn_forecast">🔮 Рассчитать прогноз</button>
-                <button class="btn btn-secondary w-full center-btn mb-8" onclick="openTorrentInspectorModal()">🔬 Пиры и график</button>
-                <div class="grid-2">
+                <button class="btn btn-secondary w-full center-btn mb-8" onclick="openTorrentInspectorModal()">🔬 Пиры, заметки и файлы</button>
+                <div class="grid-2 mb-8">
                     <button class="btn btn-secondary center-btn admin-only" onclick="openTargetModal()">🎯 Цель</button>
                     <button class="btn btn-secondary center-btn admin-only" onclick="openExpirationModal()">⏳ Срок</button>
                 </div>
-                <button class="btn btn-danger w-full center-btn mt-10 admin-only" onclick="deleteSelectedTorrent()">🗑️ Удалить раздачу</button>
+                <div class="grid-2 mb-8">
+                    <button class="btn btn-secondary center-btn admin-only" onclick="toggleSelectedSniper()">📡 Маячок</button>
+                    <button class="btn btn-secondary center-btn admin-only" onclick="enqueueSelectedRecheck()">💽 Речек (очер.)</button>
+                </div>
+                <button class="btn btn-danger w-full center-btn admin-only" onclick="deleteSelectedTorrent()">🗑️ Удалить раздачу</button>
             </div>
             <div class="card danger-border admin-only">
                 <div class="card-title" style="color: var(--danger);" data-i18n="card_seedbox">УПРАВЛЕНИЕ ВСЕМ СИДБОКСОМ</div>
@@ -133,30 +139,12 @@
             <p class="muted-text mb-10" data-i18n="merger_desc">qBittorrent выгружается перед подменой и перезапускается автоматически — бенкод не пострадает.</p>
             <div class="form-group"><label data-i18n="lbl_old_tor">1. Исходная раздача (старая):</label><select id="merger-old" class="form-control" onchange="onMergerSelectionChange()"></select></div>
             <div class="form-group"><label data-i18n="lbl_new_tor">2. Целевая раздача (приёмник):</label><select id="merger-new" class="form-control" onchange="onMergerSelectionChange()"></select></div>
-            <div class="form-group">
-                <label>3. Режим переноса статистики:</label>
-                <select id="merger-mode" class="form-control" onchange="updateMergerCalcPreview()">
-                    <option value="add" selected>➕ Сложить (рекомендуется, если на цели уже есть отдача)</option>
-                    <option value="replace">🔄 Заменить (переписать статистику цели начисто)</option>
-                </select>
-            </div>
-            <div id="merger-calc-preview" class="card mb-8" style="background:var(--bg-input); padding:8px 12px; border-radius:6px; border:1px solid var(--border);">
-                <div class="row-between"><span class="lbl-xs">Итоговый расчёт отдачи:</span><b id="merger-calc-txt" class="accent-txt">—</b></div>
-            </div>
+            <div class="form-group"><label>3. Режим переноса статистики:</label><select id="merger-mode" class="form-control" onchange="updateMergerCalcPreview()"><option value="add" selected>➕ Сложить (рекомендуется, если на цели уже есть отдача)</option><option value="replace">🔄 Заменить (переписать статистику цели начисто)</option></select></div>
+            <div id="merger-calc-preview" class="card mb-8" style="background:var(--bg-input); padding:8px 12px; border-radius:6px; border:1px solid var(--border);"><div class="row-between"><span class="lbl-xs">Итоговый расчёт отдачи:</span><b id="merger-calc-txt" class="accent-txt">—</b></div></div>
             <div id="merger-dup-warn" class="lbl-xs hidden mb-8" style="color:var(--warning); background:rgba(243,156,18,0.12); padding:6px 10px; border-radius:6px; border:1px solid rgba(243,156,18,0.3);">⚠️ Внимание: эти раздачи уже объединялись ранее!</div>
-            <div class="form-group">
-                <label data-i18n="lbl_del_mode">4. Исходная раздача после переноса:</label>
-                <select id="merger-delete-mode" class="form-control" onchange="onMergerDeleteModeChange()">
-                    <option value="none" data-i18n="del_mode_none">Не удалять (оставить всё)</option>
-                    <option value="safe" data-i18n="del_mode_safe">Удалить всё (безопасно: с проверкой путей)</option>
-                    <option value="force" data-i18n="del_mode_force">Удалить всё (принудительно: файлы с диска)</option>
-                </select>
-            </div>
+            <div class="form-group"><label data-i18n="lbl_del_mode">4. Исходная раздача после переноса:</label><select id="merger-delete-mode" class="form-control" onchange="onMergerDeleteModeChange()"><option value="none" data-i18n="del_mode_none">Не удалять (оставить всё)</option><option value="safe" data-i18n="del_mode_safe">Удалить всё (безопасно: с проверкой путей)</option><option value="force" data-i18n="del_mode_force">Удалить всё (принудительно: файлы с диска)</option></select></div>
             <div id="merger-force-warn" class="lbl-xs hidden" style="color: var(--danger); margin-bottom: 8px;" data-i18n="del_force_warn">⚠️ ОПАСНО: принудительный режим удалит файлы с диска, даже если пути исходника и получателя совпадают!</div>
-            <div class="grid-2 mt-10">
-                <button id="btn-merger-diff" class="btn btn-secondary w-full center-btn" onclick="openTorrentDiffModal()">🔍 Сравнить файлы раздач</button>
-                <button class="btn w-full center-btn" onclick="runMerger()" data-i18n="btn_merge">🚀 ПЕРЕНЕСТИ СТАТИСТИКУ</button>
-            </div>
+            <div class="grid-2 mt-10"><button id="btn-merger-diff" class="btn btn-secondary w-full center-btn" onclick="openTorrentDiffModal()">🔍 Сравнить файлы раздач</button><button class="btn w-full center-btn" onclick="runMerger()" data-i18n="btn_merge">🚀 ПЕРЕНЕСТИ СТАТИСТИКУ</button></div>
         </div>
         <div class="card mt-12"><div class="card-title" data-i18n="card_op_log">ЛОГ ОПЕРАЦИИ</div><div id="merger-log" class="terminal" data-i18n="ready">Готов к работе...</div></div>
     </div>
@@ -196,11 +184,38 @@
 
 <footer class="app-footer">
     <a href="{{ releases_url }}" target="_blank" class="version-pill" title="Открыть релизы на GitHub">⚡ tbr PRO v{{ app_version }}</a>
+    <a href="/kiosk" target="_blank" class="btn btn-secondary btn-xs">🖥️ Режим Киоск</a>
     <span id="autopilot-freeze-badge" class="badge badge-stall hidden">❄️ Автопилот заморожен</span>
     <button class="btn btn-secondary btn-xs admin-only" onclick="openUpdateModal(true)">🔄 Ченджлог и обновление</button>
 </footer>
 
 {% include 'partials/modals.html' %}
+
+<div id="dry-run-modal" class="modal-backdrop"><div class="modal" style="max-width:740px; max-height:85vh; display:flex; flex-direction:column;">
+    <div class="row-between mb-8"><div class="card-title" style="margin:0;">🧪 ПЕСОЧНИЦА АВТОПИЛОТА (DRY-RUN)</div><button class="btn btn-secondary btn-xs" onclick="document.getElementById('dry-run-modal').style.display='none'">✕</button></div>
+    <div id="dry-run-summary" class="lbl-xs muted-text mb-8">—</div>
+    <div class="scroll-box" style="flex:1; max-height:55vh; border:1px solid var(--border); border-radius:6px;">
+        <table><thead><tr><th>Раздача / Правило</th><th>Ratio</th><th>Отдано</th><th>Планируемые действия</th></tr></thead><tbody id="dry-run-tbody"></tbody></table>
+    </div>
+</div></div>
+
+<div id="qb-diff-modal" class="modal-backdrop"><div class="modal" style="max-width:780px; max-height:85vh; display:flex; flex-direction:column;">
+    <div class="row-between mb-8"><div class="card-title" style="margin:0;">🔍 DIFF КОНФИГОВ qBITTORRENT</div><button class="btn btn-secondary btn-xs" onclick="document.getElementById('qb-diff-modal').style.display='none'">✕</button></div>
+    <div class="row-wrap mb-8" style="gap:6px;">
+        <select id="qb-diff-a" class="form-control grow-1" onchange="runQbConfigDiff()"></select>
+        <select id="qb-diff-b" class="form-control grow-1" onchange="runQbConfigDiff()"></select>
+        <select id="qb-diff-file" class="form-control" style="width:160px;" onchange="runQbConfigDiff()"><option>qBittorrent.ini</option><option>qBittorrent.conf</option><option>categories.json</option><option>watched_folders.json</option></select>
+    </div>
+    <pre id="qb-diff-out" class="terminal" style="height:320px; color:var(--text);">—</pre>
+</div></div>
+
+<div id="onboarding-modal" class="modal-backdrop"><div class="modal" style="max-width:480px;">
+    <div class="card-title">🚀 МАСТЕР ПЕРВОГО ЗАПУСКА tbr PRO</div>
+    <div id="onb-step-1"><p class="muted-text mb-10">Шаг 1/4: Автопоиск qBittorrent и окружения</p><div id="onb-probe-status" class="card mb-10" style="background:var(--bg-input); font-size:12px;">Проверка...</div><div class="row-between"><button class="btn btn-secondary" onclick="finishOnboarding(true)">Пропустить</button><button class="btn" onclick="_setOnbStep(2)">Далее →</button></div></div>
+    <div id="onb-step-2" class="hidden"><p class="muted-text mb-10">Шаг 2/4: Подключение к WebUI qBittorrent</p><div class="grid-2 mb-8"><input id="onb-qb-ip" class="form-control" placeholder="IP"><input id="onb-qb-port" class="form-control" placeholder="Порт"></div><div class="grid-2 mb-10"><input id="onb-qb-user" class="form-control" placeholder="Логин (admin)"><input id="onb-qb-pass" type="password" class="form-control" placeholder="Пароль"></div><div class="row-between"><button class="btn btn-secondary" onclick="_setOnbStep(1)">← Назад</button><button class="btn" onclick="_setOnbStep(3)">Далее →</button></div></div>
+    <div id="onb-step-3" class="hidden"><p class="muted-text mb-10">Шаг 3/4: Диски и потолок канала</p><div class="form-group"><label>Основной диск:</label><select id="onb-disk" class="form-control"></select></div><div class="form-group"><label>Потолок канала (Мбит/с):</label><input id="onb-mbps" type="number" class="form-control" value="1000"></div><div class="row-between"><button class="btn btn-secondary" onclick="_setOnbStep(2)">← Назад</button><button class="btn" onclick="_setOnbStep(4)">Далее →</button></div></div>
+    <div id="onb-step-4" class="hidden"><p class="muted-text mb-12">Шаг 4/4: Всё готово к взлёту! Нажмите «Завершить», чтобы сохранить параметры и начать работу.</p><div class="row-between"><button class="btn btn-secondary" onclick="_setOnbStep(3)">← Назад</button><button class="btn" onclick="finishOnboarding(false)">✅ Завершить</button></div></div>
+</div></div>
 
 <script src="/static/common.js?v={{ v }}"></script>
 <script src="/static/i18n_ru.js?v={{ v }}"></script>
@@ -221,5 +236,10 @@
 <script src="/static/timers_ui.js?v={{ v }}"></script>
 <script src="/static/palette_targets.js?v={{ v }}"></script>
 <script src="/static/social_ui.js?v={{ v }}"></script>
+<script src="/static/safety_ui.js?v={{ v }}"></script>
+<script src="/static/hygiene_ui.js?v={{ v }}"></script>
+<script src="/static/phase3_ui.js?v={{ v }}"></script>
+<script src="/static/phase4_ui.js?v={{ v }}"></script>
+<script src="/static/hardcore_ui.js?v={{ v }}"></script>
 </body>
 </html>

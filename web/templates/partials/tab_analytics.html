@@ -1,5 +1,7 @@
 <!-- TAB 4: Аналитика -->
     <div id="tab-analytics" class="tab-content col-wide">
+        <div id="live-activity-ticker" class="card" style="padding:7px 12px; font-size:12px; overflow:hidden; white-space:nowrap;">📡 <b>Пульс:</b> ожидание событий...</div>
+
         <div class="grid-cards">
             <div class="card"><div class="lbl-sm">Сегодня vs Вчера</div><div id="rec-today-val" class="val-md accent-txt">—</div><div id="rec-today-cmp" class="lbl-xs muted-text">—</div></div>
             <div class="card"><div class="lbl-sm">Эта неделя vs Прошлая</div><div id="rec-week-val" class="val-md blue-txt">—</div><div id="rec-week-cmp" class="lbl-xs muted-text">—</div></div>
@@ -85,13 +87,21 @@
 
         <div class="card">
             <div class="row-between mb-8">
-                <div class="card-title" style="margin:0;">🟩 ТЕПЛОВАЯ КАРТА АКТИВНОСТИ (365 ДНЕЙ)</div>
+                <div class="row-gap">
+                    <div class="card-title" style="margin:0;">🟩 ТЕПЛОВАЯ КАРТА АКТИВНОСТИ</div>
+                    <button class="btn btn-secondary btn-xs" onclick="toggleHeatmapMode('365')">365 дней</button>
+                    <button class="btn btn-secondary btn-xs" onclick="toggleHeatmapMode('7x24')">Ритм 7×24</button>
+                </div>
                 <div class="row-gap lbl-xs muted-text" style="gap:4px;">
                     <span>Меньше</span><span class="hm-cell hm-l0"></span><span class="hm-cell hm-l1"></span><span class="hm-cell hm-l2"></span><span class="hm-cell hm-l3"></span><span class="hm-cell hm-l4"></span><span>Больше</span>
                 </div>
             </div>
             <div id="heatmap-scroll-wrap" class="heatmap-scroll"><div id="heatmap-grid" class="heatmap-grid"></div></div>
+            <div id="rhythm-7x24-box" class="hidden scroll-box"></div>
+            <div id="heatmap-day-detail" class="hidden mt-10 lbl-xs" style="background:var(--bg-input); padding:8px; border-radius:6px;"></div>
         </div>
+
+        {% include 'partials/tab_analytics_deep.html' %}
 
         <div class="card">
             <div class="card-title" data-i18n="card_smart_calc">🔮 УМНЫЙ КАЛЬКУЛЯТОР ПРОГНОЗОВ</div>

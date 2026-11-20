@@ -1,7 +1,7 @@
 # core/version.py
 import re
 
-APP_VERSION = "3.0.1"
+APP_VERSION = "4.0.0"
 GITHUB_OWNER = "kamushek0o"
 GITHUB_REPO = "tbr"
 GITHUB_RELEASES_URL = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases"

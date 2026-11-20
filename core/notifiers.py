@@ -37,7 +37,7 @@ def send_discord(text_md):
     req = urllib.request.Request(
         webhook,
         data=payload,
-        headers={'Content-Type': 'application/json', 'User-Agent': 'tbr-pro/3.0'}
+        headers={'Content-Type': 'application/json', 'User-Agent': 'tbr-pro/3.2'}
     )
     try:
         with urllib.request.urlopen(req, timeout=8) as resp:
@@ -47,19 +47,9 @@ def send_discord(text_md):
         return False, f"Discord: {e}"
 
 
-def notify_all(title, lines, critical=False):
-    if not critical:
-        try:
-            from core.dnd_digest import is_dnd_active_now, queue_dnd_message
-            if is_dnd_active_now():
-                queue_dnd_message(title, lines)
-                return ["DND: отложено в тихий час"]
-        except Exception:
-            pass
-
+def _deliver_direct(title, lines):
     tg_msg = f"<b>{html.escape(title)}</b>\n" + "\n".join(html.escape(l) for l in lines)
     dc_msg = f"**{title}**\n" + "\n".join(lines)
-
     results = []
     if cfg.get('TG_Bot_Token', '').strip() and cfg.get('TG_Chat_ID', '').strip():
         _, res_tg = send_telegram(tg_msg)
@@ -70,15 +60,30 @@ def notify_all(title, lines, critical=False):
     return results
 
 
+def notify_all(title, lines, critical=False, bundle=False):
+    if not critical:
+        try:
+            from core.dnd_digest import is_dnd_active_now, queue_dnd_message
+            if is_dnd_active_now():
+                queue_dnd_message(title, lines)
+                return ["DND: отложено в тихий час"]
+        except Exception:
+            pass
+        if bundle or cfg.getboolean('Alert_Bundler_Enabled', True):
+            try:
+                from core.webhooks_bundler import queue_bundled_alert
+                queue_bundled_alert(title, lines, _deliver_direct)
+                return ["Bundled (45s)"]
+            except Exception:
+                pass
+
+    return _deliver_direct(title, lines)
+
+
 def test_notifications():
     has_tg = bool(cfg.get('TG_Bot_Token', '').strip() and cfg.get('TG_Chat_ID', '').strip())
     has_dc = bool(cfg.get('Discord_Webhook', '').strip())
     if not has_tg and not has_dc:
         return False, ["Не настроен ни Telegram, ни Discord."]
-
-    res = notify_all(
-        "⚡ tbr PRO — Тест уведомлений",
-        ["Связь настроена! Бот готов присылать отчёты по правилам."],
-        critical=True
-    )
+    res = notify_all("⚡ tbr PRO — Тест уведомлений", ["Связь настроена! Бот готов присылать отчёты."], critical=True)
     return True, res

@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>tbr PRO — Kiosk</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        body { background: #000; color: #f5f5f5; justify-content: center; align-items: center; padding: 24px; overflow: hidden; }
+        #kiosk-wrap { width: 100%; max-width: 1100px; transition: transform 1.2s ease; }
+        .k-val { font-size: 2.2rem; font-weight: 800; }
+    </style>
+</head>
+<body>
+<div id="kiosk-wrap">
+    <div class="row-between mb-12">
+        <span class="logo-text" style="font-size:1.5rem;">⚡ tbr PRO KIOSK</span>
+        <span id="k-qb-badge" class="badge badge-pause">...</span>
+    </div>
+    <div class="grid-cards mb-12">
+        <div class="card"><div class="lbl-sm">Скорость отдачи</div><div id="k-speed" class="k-val blue-txt">—</div></div>
+        <div class="card"><div class="lbl-sm">Отдано за 24ч</div><div id="k-24h" class="k-val accent-txt">—</div></div>
+        <div class="card"><div class="lbl-sm">Свободно на диске</div><div id="k-disk" class="k-val orange-txt">—</div></div>
+        <div class="card"><div class="lbl-sm">Активные раздачи</div><div id="k-cnt" class="k-val purple-txt">—</div></div>
+    </div>
+    <div class="card">
+        <div class="card-title">🏆 ТОП-5 РАЗДАЧ (24Ч)</div>
+        <div id="k-top" class="col-gap" style="font-size:15px;"></div>
+    </div>
+</div>
+<script>
+let _shift = 0;
+async function refreshKiosk() {
+    try {
+        const res = await fetch('/api/widget');
+        if (!res.ok) return;
+        const d = await res.json();
+        document.getElementById('k-speed').textContent = d.current_speed_fmt || '—';
+        document.getElementById('k-24h').textContent = d.uploaded_24h_fmt || '—';
+        document.getElementById('k-disk').textContent = d.disk_free_fmt || '—';
+        document.getElementById('k-cnt').textContent = `${d.active_torrents} / ${d.total_torrents}`;
+        const qb = document.getElementById('k-qb-badge');
+        qb.className = d.qb_running ? 'badge badge-up' : 'badge badge-stop';
+        qb.textContent = d.qb_running ? '🟢 qBittorrent OK' : '🔴 qBittorrent OFF';
+        const top = d.charts?.top_5 || [];
+        document.getElementById('k-top').innerHTML = top.map((x, i) => `<div class="row-between"><span>${i + 1}. ${x.name}</span><b class="accent-txt">${x.gb} GiB</b></div>`).join('') || 'Нет данных';
+        // Лёгкий сдвиг против выгорания экрана
+        _shift = (_shift + 1) % 4;
+        const offsets = ['translate(0,0)', 'translate(3px,2px)', 'translate(-2px,3px)', 'translate(2px,-2px)'];
+        document.getElementById('kiosk-wrap').style.transform = offsets[_shift];
+    } catch (e) {}
+}
+refreshKiosk();
+setInterval(refreshKiosk, 5000);
+</script>
+</body>
+</html>

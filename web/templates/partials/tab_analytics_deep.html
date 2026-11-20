@@ -1,0 +1,62 @@
+<!-- Панель Фазы 4: Глубокая аналитика, Treemap, Квота, Машина времени, Wrapped, Экспорт -->
+<div class="grid-2" style="gap:12px;">
+    <div class="card">
+        <div class="card-title">🛫 ВЗЛЁТНАЯ ПОЛОСА ДИСКА (#18)</div>
+        <div id="runway-box" style="font-size:12px;">Загрузка...</div>
+    </div>
+    <div class="card">
+        <div class="row-between mb-8">
+            <div class="card-title" style="margin:0;">📊 МЕСЯЧНАЯ КВОТА ТРАФИКА (#42)</div>
+            <div class="row-gap admin-only" style="gap:4px;">
+                <input id="inp-quota-tib" type="number" step="0.5" min="0" class="form-control" style="width:65px; padding:2px 4px; font-size:11px;" placeholder="TiB">
+                <input id="inp-reserve-gib" type="number" min="0" class="form-control" style="width:65px; padding:2px 4px; font-size:11px;" placeholder="Резерв GiB">
+                <button class="btn btn-secondary btn-xs" onclick="saveQuotaAndReserve()">💾</button>
+            </div>
+        </div>
+        <div id="quota-box" style="font-size:12px;">Загрузка...</div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="row-between mb-8">
+        <div class="card-title" style="margin:0;">🗺️ КАРТА ТЯЖЕЛОВЕСОВ — TREEMAP (#22)</div>
+        <div class="row-gap">
+            <button class="btn btn-secondary btn-xs" onclick="loadTreemap('tags')">По тегам</button>
+            <button class="btn btn-secondary btn-xs" onclick="loadTreemap('trackers')">По трекерам</button>
+            <button class="btn btn-secondary btn-xs" onclick="loadTreemap('torrents')">Топ раздач</button>
+        </div>
+    </div>
+    <div id="treemap-box" class="row-wrap" style="gap:6px;"></div>
+</div>
+
+<div class="card">
+    <div class="card-title">⏳ МАШИНА ВРЕМЕНИ — СРАВНЕНИЕ ПЕРИОДОВ A / B (#33)</div>
+    <div class="row-wrap mb-8" style="gap:6px;">
+        <input type="date" id="ab-a1" class="form-control" style="width:130px;"> — <input type="date" id="ab-a2" class="form-control" style="width:130px;">
+        <span>vs</span>
+        <input type="date" id="ab-b1" class="form-control" style="width:130px;"> — <input type="date" id="ab-b2" class="form-control" style="width:130px;">
+        <label class="lbl-xs"><input type="checkbox" id="ab-same-n" checked> За те же N дней</label>
+        <button class="btn btn-xs" onclick="runABCompare()">Сравнить</button>
+    </div>
+    <div id="ab-out" class="lbl-xs muted-text">Выберите два периода дат</div>
+</div>
+
+<div class="card">
+    <div class="card-title">🧬 ЖИВУЧЕСТЬ ТРЕКЕРОВ (#19), uTP vs TCP (#43) И АВТО-ТЮНЕР (#50)</div>
+    <div id="swarm-analytics-box" style="font-size:12px;">Загрузка...</div>
+</div>
+
+<div class="card">
+    <div class="row-between mb-8">
+        <div class="card-title" style="margin:0;">🎁 WRAPPED (#40), ГРУППИРОВЩИК ВЕРСИЙ (#39) И ЭКСПОРТ (#53)</div>
+        <div class="row-gap" style="flex-wrap:wrap;">
+            <button class="btn btn-xs" onclick="openWrappedModal('month')">🎁 Wrapped (Месяц)</button>
+            <button class="btn btn-secondary btn-xs" onclick="openWrappedModal('year')">📅 Wrapped (Год)</button>
+            <button class="btn btn-secondary btn-xs" onclick="loadNormalizedTitleGroups()">👯 Дубли версий</button>
+            <button class="btn btn-secondary btn-xs" onclick="exportFullInventory('json')">📥 JSON</button>
+            <button class="btn btn-secondary btn-xs" onclick="exportFullInventory('csv')">📥 CSV</button>
+            <button class="btn btn-secondary btn-xs" onclick="exportFullInventory('md')">📥 MD</button>
+        </div>
+    </div>
+    <div id="title-groups-box" class="scroll-box" style="max-height:160px; font-size:12px;"></div>
+</div>

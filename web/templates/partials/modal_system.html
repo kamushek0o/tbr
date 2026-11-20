@@ -70,27 +70,18 @@
         <div class="card-title">😴 ТАЙМЕР СНА (SNOOZE)</div>
         <p class="muted-text mb-10">Поставит раздачи на паузу (или ограничит скорость до минимума) и автоматически разбудит клиент по истечении таймера — даже при закрытом браузере.</p>
         <div id="snooze-active-box" class="hidden mb-10" style="background:var(--bg-input); padding:10px; border-radius:6px; border:1px solid var(--warning);">
-            <div class="row-between">
-                <span class="lbl-xs orange-txt">⏳ Активен таймер: <b id="snooze-modal-countdown">—</b></span>
-                <button class="btn btn-danger btn-xs" onclick="cancelSnoozeTimer()">❌ Отменить сон</button>
-            </div>
+            <div class="row-between"><span class="lbl-xs orange-txt">⏳ Активен таймер: <b id="snooze-modal-countdown">—</b></span><button class="btn btn-danger btn-xs" onclick="cancelSnoozeTimer()">❌ Отменить сон</button></div>
         </div>
         <div class="form-group">
             <label>Режим ограничения:</label>
-            <select id="snooze-mode" class="form-control">
-                <option value="pause">Пауза активных раздач (через Smart Freeze)</option>
-                <option value="limit">Урезать глобальную скорость до 1 B/s</option>
-            </select>
+            <select id="snooze-mode" class="form-control"><option value="pause">Пауза активных раздач (через Smart Freeze)</option><option value="limit">Урезать глобальную скорость до 1 B/s</option></select>
         </div>
         <div class="grid-3 mb-10">
             <button class="btn btn-secondary center-btn" onclick="startSnoozeQuick(30)">30 мин</button>
             <button class="btn btn-secondary center-btn" onclick="startSnoozeQuick(60)">1 час</button>
             <button class="btn btn-secondary center-btn" onclick="startSnoozeQuick(120)">2 часа</button>
         </div>
-        <div class="row-gap mb-12">
-            <input type="number" id="snooze-custom-min" class="form-control" min="1" max="1440" placeholder="Своё время (мин)">
-            <button class="btn" onclick="startSnoozeCustom()">Запустить</button>
-        </div>
+        <div class="row-gap mb-12"><input type="number" id="snooze-custom-min" class="form-control" min="1" max="1440" placeholder="Своё время (мин)"><button class="btn" onclick="startSnoozeCustom()">Запустить</button></div>
         <div class="row-end"><button class="btn btn-secondary" onclick="closeSnoozeModal()">Закрыть</button></div>
     </div>
 </div>
@@ -101,25 +92,13 @@
         <div class="card-title">⏳ ТАЙМЕР САМОУНИЧТОЖЕНИЯ РАЗДАЧИ</div>
         <div id="exp-torrent-name" class="muted-text mb-10" style="font-weight:700;">—</div>
         <div class="grid-2 mb-8">
-            <div class="form-group">
-                <label>Удалить через:</label>
-                <div class="row-gap">
-                    <input type="number" step="0.5" min="0" id="exp-time-val" class="form-control" placeholder="0 (выкл)">
-                    <select id="exp-time-unit" class="form-control" style="width:85px;"><option value="hours">часы</option><option value="days">дни</option></select>
-                </div>
-            </div>
+            <div class="form-group"><label>Удалить через:</label><div class="row-gap"><input type="number" step="0.5" min="0" id="exp-time-val" class="form-control" placeholder="0 (выкл)"><select id="exp-time-unit" class="form-control" style="width:85px;"><option value="hours">часы</option><option value="days">дни</option></select></div></div>
             <div class="form-group"><label>Или по достижении отдачи (GiB):</label><input type="number" step="1" min="0" id="exp-target-gib" class="form-control" placeholder="0 (выкл)"></div>
         </div>
-        <label class="row-gap pointer lbl-xs mb-12" style="background:rgba(231,76,60,0.12); padding:8px; border-radius:6px; border:1px solid rgba(231,76,60,0.3);">
-            <input type="checkbox" id="exp-delete-files">
-            <span style="color:#ff6b6b;"><b>Удалить вместе с файлами на диске</b> (по умолчанию выключено)</span>
-        </label>
+        <label class="row-gap pointer lbl-xs mb-12" style="background:rgba(231,76,60,0.12); padding:8px; border-radius:6px; border:1px solid rgba(231,76,60,0.3);"><input type="checkbox" id="exp-delete-files"><span style="color:#ff6b6b;"><b>Удалить вместе с файлами на диске</b> (по умолчанию выключено)</span></label>
         <div class="row-between">
             <button id="btn-exp-remove" class="btn btn-secondary btn-xs hidden" onclick="removeExpirationForSelected()">🗑️ Снять таймер</button>
-            <div class="row-gap" style="margin-left:auto;">
-                <button class="btn btn-secondary" onclick="closeExpirationModal()">Отмена</button>
-                <button class="btn" onclick="saveExpirationForSelected()">💾 Установить</button>
-            </div>
+            <div class="row-gap" style="margin-left:auto;"><button class="btn btn-secondary" onclick="closeExpirationModal()">Отмена</button><button class="btn" onclick="saveExpirationForSelected()">💾 Установить</button></div>
         </div>
     </div>
 </div>
@@ -127,7 +106,7 @@
 <!-- ПАЛИТРА КОМАНД (CTRL+K) -->
 <div id="cmd-palette-modal" class="modal-backdrop" onclick="if(event.target===this)closeCommandPalette()">
     <div class="modal" style="max-width: 580px; align-self: flex-start; margin-top: 8vh; padding: 14px;">
-        <input type="text" id="cmd-palette-input" class="form-control mb-10" placeholder="🔍 Поиск раздачи (имя/хэш), вкладки, темы или команды..." oninput="renderCommandPalette()" onkeydown="onCmdPaletteKey(event)">
+        <input type="text" id="cmd-palette-input" class="form-control mb-10" placeholder="🔍 Поиск раздачи, файла (FTS5), вкладки или команды..." oninput="renderCommandPalette()" onkeydown="onCmdPaletteKey(event)">
         <div id="cmd-palette-list" class="scroll-box col-gap" style="max-height: 55vh; gap: 4px;"></div>
         <div class="lbl-xs muted-text mt-10">↑↓ навигация • Enter выбор • Esc закрыть</div>
     </div>
@@ -144,61 +123,56 @@
         </div>
         <div class="row-between">
             <button id="btn-tgt-remove" class="btn btn-secondary btn-xs hidden" onclick="removeTargetForSelected()">🗑️ Убрать цель</button>
-            <div class="row-gap" style="margin-left:auto;">
-                <button class="btn btn-secondary" onclick="closeTargetModal()">Отмена</button>
-                <button class="btn" onclick="saveTargetForSelected()">💾 Сохранить цель</button>
-            </div>
+            <div class="row-gap" style="margin-left:auto;"><button class="btn btn-secondary" onclick="closeTargetModal()">Отмена</button><button class="btn" onclick="saveTargetForSelected()">💾 Сохранить цель</button></div>
         </div>
     </div>
 </div>
 
-<!-- ИНСПЕКТОР РАЗДАЧИ: ПИРЫ И ЛИЧНЫЙ ГРАФИК -->
+<!-- ИНСПЕКТОР РАЗДАЧИ: ПИРЫ, ГРАФИК, ЗАМЕТКА, БИОГРАФИЯ, ФАЙЛЫ И MEDIAINFO -->
 <div id="inspector-modal" class="modal-backdrop">
-    <div class="modal" style="max-width: 820px; max-height: 88vh; display: flex; flex-direction: column;">
-        <div class="row-between mb-10">
-            <div class="card-title" style="margin:0;">🔬 ИНСПЕКТОР РАЗДАЧИ: ПИРЫ И ИСТОРИЯ</div>
-            <button class="btn btn-secondary btn-xs" onclick="closeInspectorModal()">✕</button>
+    <div class="modal" style="max-width: 860px; max-height: 90vh; display: flex; flex-direction: column; overflow-y:auto;">
+        <div class="row-between mb-8"><div class="card-title" style="margin:0;">🔬 ИНСПЕКТОР РАЗДАЧИ</div><button class="btn btn-secondary btn-xs" onclick="closeInspectorModal()">✕</button></div>
+        <div id="insp-title" class="muted-text mb-8" style="font-weight:700;">—</div>
+        <div class="row-gap mb-8">
+            <input id="insp-note-inp" class="form-control grow-1" placeholder="📝 Личная заметка по UID (переживает Мерджер)...">
+            <button class="btn btn-xs admin-only" onclick="saveInspectorNote()">💾</button>
         </div>
-        <div id="insp-title" class="muted-text mb-10" style="font-weight:700;">—</div>
         <div class="row-between mb-8">
             <span class="lbl-xs accent-txt">📈 ЛИЧНЫЙ ГРАФИК ОТДАЧИ</span>
-            <div class="row-gap" style="gap:4px;">
-                <button class="btn btn-secondary btn-xs" onclick="loadInspectorChart('24h')">24ч</button>
-                <button class="btn btn-secondary btn-xs" onclick="loadInspectorChart('7d')">7д</button>
-                <button class="btn btn-secondary btn-xs" onclick="loadInspectorChart('30d')">30д</button>
+            <div class="row-gap" style="gap:4px;"><button class="btn btn-secondary btn-xs" onclick="loadInspectorChart('24h')">24ч</button><button class="btn btn-secondary btn-xs" onclick="loadInspectorChart('7d')">7д</button><button class="btn btn-secondary btn-xs" onclick="loadInspectorChart('30d')">30д</button></div>
+        </div>
+        <div style="height:140px; background:var(--bg-input); border:1px solid var(--border); border-radius:6px; padding:8px; margin-bottom:10px;"><canvas id="chart-torrent-personal"></canvas></div>
+        <div id="insp-mediainfo-box" class="mb-8"></div>
+        <div class="grid-2" style="gap:10px;">
+            <div class="scroll-box" style="max-height:160px; border:1px solid var(--border); border-radius:6px; padding:6px;">
+                <div class="lbl-xs blue-txt mb-8">👥 ПИРЫ</div>
+                <table><thead><tr><th>Клиент</th><th>%</th><th>Им</th><th>Нам</th><th>Фл</th></tr></thead><tbody id="insp-peers-tbody"></tbody></table>
+            </div>
+            <div class="scroll-box" style="max-height:160px; border:1px solid var(--border); border-radius:6px; padding:6px;">
+                <div class="lbl-xs purple-txt mb-8">📜 БИОГРАФИЯ ПО UID</div>
+                <div id="insp-timeline-box" class="col-gap"></div>
             </div>
         </div>
-        <div style="height:170px; background:var(--bg-input); border:1px solid var(--border); border-radius:6px; padding:8px; margin-bottom:10px;"><canvas id="chart-torrent-personal"></canvas></div>
-        <div class="row-between mb-8">
-            <span class="lbl-xs blue-txt">👥 ПОДКЛЮЧЁННЫЕ ПИРЫ (БЕЗ ВНЕШНИХ ЗАПРОСОВ)</span>
-            <button class="btn btn-secondary btn-xs" onclick="loadInspectorPeers()">🔄 Обновить пиров</button>
-        </div>
-        <div class="scroll-box" style="flex:1; max-height:240px; border:1px solid var(--border); border-radius:6px;">
-            <table>
-                <thead><tr><th>Клиент</th><th>Прогресс</th><th>Отдача им</th><th>От них</th><th>Флаги</th></tr></thead>
-                <tbody id="insp-peers-tbody"><tr><td colspan="5" class="center-msg">Загрузка...</td></tr></tbody>
-            </table>
+        <div class="scroll-box mt-10" style="max-height:160px; border:1px solid var(--border); border-radius:6px; padding:6px;">
+            <div class="row-between mb-8"><span class="lbl-xs orange-txt">📁 ФАЙЛЫ И ПРИОРИТЕТЫ</span><span class="lbl-xs muted-text">Снятие галочки с уже скачанного не удаляет его с диска (.parts)</span></div>
+            <table><thead><tr><th>Файл</th><th>Размер</th><th>%</th><th>Приоритет</th></tr></thead><tbody id="insp-files-tbody"></tbody></table>
         </div>
     </div>
 </div>
 
-<!-- ГЕНЕРАТОР SHARE CARD PNG -->
+<!-- ГЕНЕРАТОР SHARE CARD PNG + WRAPPED -->
 <div id="share-card-modal" class="modal-backdrop">
     <div class="modal" style="max-width: 720px;">
-        <div class="row-between mb-10">
-            <div class="card-title" style="margin:0;">🖼️ КАРТОЧКА СТАТИСТИКИ (SHARE CARD PNG)</div>
-            <label class="row-gap pointer lbl-xs">
-                <input type="checkbox" id="share-hide-names" checked onchange="renderShareCardCanvas()">
-                <span>🔒 Скрыть названия раздач</span>
-            </label>
-        </div>
+        <div class="row-between mb-10"><div class="card-title" style="margin:0;">🖼️ КАРТОЧКА СТАТИСТИКИ (SHARE CARD PNG)</div><label class="row-gap pointer lbl-xs"><input type="checkbox" id="share-hide-names" checked onchange="renderShareCardCanvas()"><span>🔒 Скрыть названия раздач</span></label></div>
         <canvas id="share-card-canvas" width="900" height="500" style="width:100%; border-radius:8px; border:1px solid var(--border); margin-bottom:10px;"></canvas>
-        <div class="row-between">
-            <button class="btn btn-secondary" onclick="closeShareCardModal()">Закрыть</button>
-            <div class="row-gap">
-                <button class="btn btn-secondary" onclick="copyShareCardPng()">📋 Копировать PNG</button>
-                <button class="btn" onclick="downloadShareCardPng()">📥 Скачать PNG</button>
-            </div>
-        </div>
+        <div class="row-between"><button class="btn btn-secondary" onclick="closeShareCardModal()">Закрыть</button><div class="row-gap"><button class="btn btn-secondary" onclick="copyShareCardPng()">📋 Копировать PNG</button><button class="btn" onclick="downloadShareCardPng()">📥 Скачать PNG</button></div></div>
+    </div>
+</div>
+
+<div id="wrapped-modal" class="modal-backdrop">
+    <div class="modal" style="max-width: 680px;">
+        <div class="row-between mb-10"><div class="card-title" style="margin:0;">🎁 tbr WRAPPED</div><button class="btn btn-secondary btn-xs" onclick="document.getElementById('wrapped-modal').style.display='none'">✕</button></div>
+        <canvas id="wrapped-canvas" width="800" height="380" style="width:100%; border-radius:8px; border:1px solid var(--border); margin-bottom:10px;"></canvas>
+        <div class="row-end"><button class="btn" onclick="downloadWrappedPng()">📥 Скачать Wrapped PNG</button></div>
     </div>
 </div>

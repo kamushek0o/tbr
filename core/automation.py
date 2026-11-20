@@ -22,6 +22,8 @@ from core.smart_tagging import run_smart_tagging
 from core.dnd_digest import flush_dnd_if_ready, maybe_send_digest
 from core.torrent_targets import evaluate_targets
 from core.achievements import evaluate_achievements
+from core.autopilot_extras import tick_autopilot_extras
+from core.hdd_smart_queue import tick_recheck_queue
 
 VALID_TIME_MODES = ('seeding_time', 'time_active')
 VALID_SPEED_OPS = ('', '>=', '<')
@@ -94,9 +96,7 @@ class AutomationEngine:
         with self._lock:
             try:
                 with self._get_conn() as conn:
-                    cur = conn.cursor()
-                    cur.execute("SELECT * FROM rules ORDER BY id DESC")
-                    return [dict(r) for r in cur.fetchall()]
+                    return [dict(r) for r in conn.execute("SELECT * FROM rules ORDER BY id DESC").fetchall()]
             except Exception:
                 return []
 
@@ -172,9 +172,7 @@ class AutomationEngine:
         with self._lock:
             try:
                 with self._get_conn() as conn:
-                    cur = conn.cursor()
-                    cur.execute("SELECT 1 FROM notified_events WHERE rule_id = ? AND hash_id = ?", (rule_id, t_hash))
-                    return cur.fetchone() is not None
+                    return conn.execute("SELECT 1 FROM notified_events WHERE rule_id = ? AND hash_id = ?", (rule_id, t_hash)).fetchone() is not None
             except Exception:
                 return False
 
@@ -186,6 +184,69 @@ class AutomationEngine:
                     conn.commit()
             except Exception:
                 pass
+
+    def _evaluate_rule_match(self, r, t_hash, info, now_ts, ignore_history=False):
+        t_mode = r.get('time_mode') if r.get('time_mode') in VALID_TIME_MODES else 'seeding_time'
+        min_r, min_d = float(r.get('min_ratio', 0) or 0), float(r.get('min_seed_days', 0) or 0)
+        min_up = int(r.get('min_uploaded_bytes', 0) or 0)
+        s_op, s_bytes = r.get('speed_op', '') or '', float(r.get('speed_bytes', 0) or 0)
+        w_sec = max(60, int(r.get('speed_window_min', 60) or 60) * 60)
+        use_speed = (s_op in ('>=', '<') and s_bytes > 0)
+        if min_r <= 0 and min_d <= 0 and min_up <= 0 and not use_speed:
+            return None
+
+        ratio, uploaded = float(info.get('ratio', 0) or 0), int(info.get('uploaded', 0) or 0)
+        time_sec = float(info.get(t_mode, 0) or 0)
+        if (min_r > 0 and ratio < min_r) or (min_d > 0 and (time_sec / 86400.0) < min_d) or (min_up > 0 and uploaded < min_up):
+            return None
+
+        v_avg = None
+        if use_speed:
+            first, last, cnt = summary_tracker.db.get_torrent_window_bounds(t_hash, now_ts - w_sec, now_ts)
+            if cnt < 2 or not first or not last or (last[0] - first[0]) < (0.5 * w_sec):
+                return None
+            v_avg = max(0.0, (last[1] - first[1]) / (last[0] - first[0]))
+            if (s_op == '>=' and v_avg < s_bytes) or (s_op == '<' and v_avg >= s_bytes):
+                return None
+
+        if not ignore_history and self._is_triggered(r['id'], t_hash):
+            return None
+
+        cur_tags = {tg.strip().lower() for tg in str(info.get('tags', '') or '').split(',') if tg.strip()}
+        add_tag, rem_tag = str(r.get('action_tag', '') or '').strip(), str(r.get('action_remove_tag', '') or '').strip()
+        want_pause = bool(r.get('action_pause'))
+        planned = []
+        if want_pause:
+            planned.append("⏸️ Пауза")
+        if add_tag and add_tag.lower() not in cur_tags:
+            planned.append(f"🏷️ +Тег: {add_tag}")
+        if rem_tag and rem_tag.lower() in cur_tags:
+            planned.append(f"✂️ -Тег: {rem_tag}")
+
+        return {
+            'rule_id': r['id'], 'rule_name': r['name'], 'hash': t_hash, 'name': info.get('name', t_hash),
+            'ratio': ratio, 'uploaded': uploaded, 'uploaded_fmt': format_file_size(uploaded),
+            'time_mode': t_mode, 'time_sec': time_sec, 'dur_fmt': format_duration_ru(time_sec),
+            'v_avg': v_avg, 'want_pause': want_pause,
+            'add_tag': add_tag if (add_tag and add_tag.lower() not in cur_tags) else '',
+            'rem_tag': rem_tag if (rem_tag and rem_tag.lower() in cur_tags) else '',
+            'planned': planned, 'already_triggered': self._is_triggered(r['id'], t_hash)
+        }
+
+    def dry_run(self, rule_id=None):
+        ip, port = detect_qbittorrent_port(cfg.config)
+        live = get_live_torrent_info(ip, port) if port else {}
+        if not live:
+            return {'success': False, 'error': 'qBittorrent недоступен', 'matches': []}
+        rules = self.get_rules()
+        rules = [r for r in rules if r['id'] == int(rule_id)] if rule_id is not None else [r for r in rules if r.get('enabled')]
+        now_ts, matches = time.time(), []
+        for r in rules:
+            for t_hash, info in live.items():
+                m = self._evaluate_rule_match(r, t_hash, info, now_ts, ignore_history=True)
+                if m:
+                    matches.append(m)
+        return {'success': True, 'matches': matches, 'rules_checked': len(rules), 'torrents_scanned': len(live)}
 
     def test_notifications(self):
         return test_notifications()
@@ -204,6 +265,8 @@ class AutomationEngine:
         evaluate_achievements(force=False)
         if qb_up:
             evaluate_targets(live)
+            tick_autopilot_extras(ip, port, live)
+            tick_recheck_queue(ip, port, live)
         if qb_up and time.time() >= cfg.getint('Autopilot_Frozen_Until', 0):
             tick_expirations(ip, port, live)
             run_smart_tagging(ip, port, live, get_all_torrents(use_cache=True))
@@ -211,76 +274,39 @@ class AutomationEngine:
 
     def run_cycle(self):
         ip, port, live = self.run_system_tick()
-        if not live:
+        if not live or time.time() < cfg.getint('Autopilot_Frozen_Until', 0):
             return 0
-
         now_ts = time.time()
-        if now_ts < cfg.getint('Autopilot_Frozen_Until', 0):
-            return 0
-
         run_auto_recheck(ip, port, live)
         rules = [r for r in self.get_rules() if r.get('enabled')]
         if not rules:
             return 0
-
         triggered_count = 0
         for r in rules:
-            t_mode = r.get('time_mode') if r.get('time_mode') in VALID_TIME_MODES else 'seeding_time'
-            min_r, min_d = float(r.get('min_ratio', 0) or 0), float(r.get('min_seed_days', 0) or 0)
-            min_up = int(r.get('min_uploaded_bytes', 0) or 0)
-            s_op, s_bytes = r.get('speed_op', '') or '', float(r.get('speed_bytes', 0) or 0)
-            w_sec = max(60, int(r.get('speed_window_min', 60) or 60) * 60)
-            use_speed = (s_op in ('>=', '<') and s_bytes > 0)
-            if min_r <= 0 and min_d <= 0 and min_up <= 0 and not use_speed:
-                continue
-
             for t_hash, info in live.items():
-                ratio = float(info.get('ratio', 0) or 0)
-                uploaded = int(info.get('uploaded', 0) or 0)
-                time_sec = float(info.get(t_mode, 0) or 0)
-                if (min_r > 0 and ratio < min_r) or (min_d > 0 and (time_sec / 86400.0) < min_d) or (min_up > 0 and uploaded < min_up):
+                m = self._evaluate_rule_match(r, t_hash, info, now_ts, ignore_history=False)
+                if not m:
                     continue
-
-                v_avg = None
-                if use_speed:
-                    first, last, cnt = summary_tracker.db.get_torrent_window_bounds(t_hash, now_ts - w_sec, now_ts)
-                    if cnt < 2 or not first or not last or (last[0] - first[0]) < (0.5 * w_sec):
-                        continue
-                    v_avg = max(0.0, (last[1] - first[1]) / (last[0] - first[0]))
-                    if (s_op == '>=' and v_avg < s_bytes) or (s_op == '<' and v_avg >= s_bytes):
-                        continue
-
-                if self._is_triggered(r['id'], t_hash):
-                    continue
-
-                cur_tags = {tg.strip().lower() for tg in str(info.get('tags', '') or '').split(',') if tg.strip()}
-                add_tag, rem_tag = str(r.get('action_tag', '') or '').strip(), str(r.get('action_remove_tag', '') or '').strip()
-                want_pause = bool(r.get('action_pause'))
                 actions_done = []
-                if want_pause and send_qb_command(ip, port, 'stop', t_hash):
+                if m['want_pause'] and send_qb_command(ip, port, 'stop', t_hash):
                     actions_done.append("⏸️ Поставлено на паузу")
-                if add_tag and add_tag.lower() not in cur_tags and add_torrent_tags(ip, port, t_hash, add_tag):
-                    actions_done.append(f"🏷️ +Тег: {add_tag}")
-                if rem_tag and rem_tag.lower() in cur_tags and remove_torrent_tags(ip, port, t_hash, rem_tag):
-                    actions_done.append(f"✂️ -Тег: {rem_tag}")
-
-                if not want_pause and (add_tag or rem_tag) and not actions_done:
+                if m['add_tag'] and add_torrent_tags(ip, port, t_hash, m['add_tag']):
+                    actions_done.append(f"🏷️ +Тег: {m['add_tag']}")
+                if m['rem_tag'] and remove_torrent_tags(ip, port, t_hash, m['rem_tag']):
+                    actions_done.append(f"✂️ -Тег: {m['rem_tag']}")
+                if not m['want_pause'] and (r.get('action_tag') or r.get('action_remove_tag')) and not actions_done:
                     self._mark_triggered(r['id'], t_hash)
                     continue
-
                 self._mark_triggered(r['id'], t_hash)
                 triggered_count += 1
-                t_name = info.get('name', t_hash)
-                time_lbl, dur_fmt = ("Сид" if t_mode == 'seeding_time' else "Актив"), format_duration_ru(time_sec)
-                write_log('automation', f"Правило '{r['name']}' -> '{t_name}' (Ratio: {ratio:.2f}, {time_lbl}: {dur_fmt})")
-                app_state_db.add_audit_event('automation', f"Правило: {r['name']}", t_name)
+                time_lbl = "Сид" if m['time_mode'] == 'seeding_time' else "Актив"
+                write_log('automation', f"Правило '{r['name']}' -> '{m['name']}' (Ratio: {m['ratio']:.2f}, {time_lbl}: {m['dur_fmt']})")
+                app_state_db.add_audit_event('automation', f"Правило: {r['name']}", m['name'])
                 if r.get('notify'):
-                    stat_line = f"Отдано: {format_file_size(uploaded)} | Ratio: {ratio:.2f}x | {time_lbl}: {dur_fmt}"
-                    if v_avg is not None:
-                        stat_line += f" | Ср. скор.: {format_file_size(v_avg)}/s"
-                    msg_lines = [f"Раздача: {t_name}", stat_line] + (["Действия: " + ", ".join(actions_done)] if actions_done else [])
-                    notify_all(f"🤖 Сработало правило: {r['name']}", msg_lines)
-
+                    stat_line = f"Отдано: {m['uploaded_fmt']} | Ratio: {m['ratio']:.2f}x | {time_lbl}: {m['dur_fmt']}"
+                    if m['v_avg'] is not None:
+                        stat_line += f" | Ср. скор.: {format_file_size(m['v_avg'])}/s"
+                    notify_all(f"🤖 Сработало правило: {r['name']}", [f"Раздача: {m['name']}", stat_line] + (["Действия: " + ", ".join(actions_done)] if actions_done else []))
         return triggered_count
 
     def start(self):

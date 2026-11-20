@@ -8,6 +8,7 @@ from utils.helpers import format_file_size, write_error_log
 from core.torrent_parser import get_all_torrents
 from core.qb_api import detect_qbittorrent_port, get_live_torrent_info
 from core.app_state_db import app_state_db
+from core.soft_trash import move_to_trash
 
 
 def _norm(p):
@@ -32,6 +33,7 @@ def _read_qb_default_save_path():
 
 def get_download_roots():
     roots = {}
+
     def add_root(p):
         if not p or not str(p).strip():
             return
@@ -41,9 +43,7 @@ def get_download_roots():
             if nk not in roots:
                 roots[nk] = ap
 
-    def_sp = _read_qb_default_save_path()
-    add_root(def_sp)
-
+    add_root(_read_qb_default_save_path())
     for t in get_all_torrents(use_cache=True).values():
         add_root(t.get('save_path'))
 
@@ -52,7 +52,6 @@ def get_download_roots():
     for t in live.values():
         add_root(t.get('save_path'))
 
-    # Сортируем от корней к вложенным и убираем подпапки внутри уже найденных корней
     sorted_paths = sorted(roots.values(), key=lambda x: len(os.path.normpath(x)))
     top_roots = []
     for p in sorted_paths:
@@ -97,7 +96,7 @@ def _entry_size(path):
         except OSError:
             return 0
     total = 0
-    for root, dirs, files in os.walk(path, followlinks=False):
+    for root, _, files in os.walk(path, followlinks=False):
         for fname in files:
             try:
                 total += os.path.getsize(os.path.join(root, fname))
@@ -119,24 +118,18 @@ def _is_path_protected(entry_norm, active_paths):
 
 def scan_orphan_entries(custom_roots=None):
     valid_roots = get_download_roots()
-    if custom_roots:
-        roots = [os.path.abspath(str(r).strip()) for r in custom_roots if r and os.path.isdir(str(r).strip())]
-    else:
-        roots = valid_roots
-
+    roots = [os.path.abspath(str(r).strip()) for r in custom_roots if r and os.path.isdir(str(r).strip())] if custom_roots else valid_roots
     active_paths = _collect_active_paths()
-    orphans = []
-    total_bytes = 0
+    orphans, total_bytes = [], 0
 
     for root_dir in roots:
         try:
             with os.scandir(root_dir) as it:
                 for ent in it:
-                    if ent.name.startswith('.') or ent.name in ('$RECYCLE.BIN', 'System Volume Information'):
+                    if ent.name.startswith('.') or ent.name in ('$RECYCLE.BIN', 'System Volume Information', '_tbr_trash'):
                         continue
                     ent_abs = os.path.abspath(ent.path)
-                    ent_norm = _norm(ent_abs)
-                    if _is_path_protected(ent_norm, active_paths):
+                    if _is_path_protected(_norm(ent_abs), active_paths):
                         continue
                     sz = _entry_size(ent_abs)
                     try:
@@ -145,33 +138,22 @@ def scan_orphan_entries(custom_roots=None):
                         mtime = 0
                     total_bytes += sz
                     orphans.append({
-                        'path': ent_abs,
-                        'name': ent.name,
-                        'root': root_dir,
-                        'is_dir': ent.is_dir(follow_symlinks=False),
-                        'size': sz,
-                        'size_fmt': format_file_size(sz),
-                        'mtime': int(mtime),
+                        'path': ent_abs, 'name': ent.name, 'root': root_dir,
+                        'is_dir': ent.is_dir(follow_symlinks=False), 'size': sz,
+                        'size_fmt': format_file_size(sz), 'mtime': int(mtime),
                         'date': datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M') if mtime else '—'
                     })
         except Exception as e:
             write_error_log(f"scan_orphan_entries {root_dir}", e)
 
     orphans.sort(key=lambda x: x['size'], reverse=True)
-    return {
-        'roots': roots,
-        'orphans': orphans,
-        'count': len(orphans),
-        'total_size': total_bytes,
-        'total_size_fmt': format_file_size(total_bytes)
-    }
+    return {'roots': roots, 'orphans': orphans, 'count': len(orphans), 'total_size': total_bytes, 'total_size_fmt': format_file_size(total_bytes)}
 
 
-def delete_orphan_entries(paths, actor='admin'):
+def delete_orphan_entries(paths, actor='admin', use_trash=True):
     allowed_roots = [_norm(r) for r in get_download_roots()]
     active_paths = _collect_active_paths()
-    deleted = []
-    errors = []
+    deleted, errors = [], []
 
     for raw_p in paths:
         if not raw_p or not isinstance(raw_p, str):
@@ -179,7 +161,6 @@ def delete_orphan_entries(paths, actor='admin'):
         target_abs = os.path.abspath(raw_p.strip())
         target_norm = _norm(target_abs)
 
-        # Защита от Path Traversal и выхода за пределы папок загрузок
         inside_allowed = False
         for r_norm in allowed_roots:
             try:
@@ -192,23 +173,29 @@ def delete_orphan_entries(paths, actor='admin'):
         if not inside_allowed:
             errors.append(f"Отклонено (вне корневых папок загрузок): {raw_p}")
             continue
-
         if _is_path_protected(target_norm, active_paths):
             errors.append(f"Отклонено (путь используется активным торрентом): {raw_p}")
             continue
 
         try:
-            if os.path.isdir(target_abs) and not os.path.islink(target_abs):
-                shutil.rmtree(target_abs)
-            elif os.path.exists(target_abs) or os.path.islink(target_abs):
-                os.remove(target_abs)
+            if use_trash:
+                ok, res = move_to_trash(target_abs, name=os.path.basename(target_abs), actor=actor)
+                if not ok:
+                    errors.append(f"Ошибка корзины {os.path.basename(target_abs)}: {res}")
+                    continue
             else:
-                errors.append(f"Не найдено: {raw_p}")
-                continue
+                if os.path.isdir(target_abs) and not os.path.islink(target_abs):
+                    shutil.rmtree(target_abs)
+                elif os.path.exists(target_abs) or os.path.islink(target_abs):
+                    os.remove(target_abs)
+                else:
+                    errors.append(f"Не найдено: {raw_p}")
+                    continue
             deleted.append(target_abs)
         except Exception as e:
             errors.append(f"Ошибка удаления {os.path.basename(target_abs)}: {e}")
 
     if deleted:
-        app_state_db.add_audit_event('system', 'Удаление сирот', f'Удалено объектов: {len(deleted)}', actor=actor)
+        act = 'В корзину _tbr_trash' if use_trash else 'Удаление сирот навсегда'
+        app_state_db.add_audit_event('system', act, f'Объектов: {len(deleted)}', actor=actor)
     return len(errors) == 0, deleted, errors

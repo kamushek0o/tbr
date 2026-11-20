@@ -64,9 +64,7 @@ def detect_qbittorrent_port(config=None):
     else:
         config_path = os.path.join(os.path.expanduser('~'), '.config', 'qBittorrent', 'qBittorrent.conf')
 
-    port_from_conf = None
-    address_from_conf = '127.0.0.1'
-
+    port_from_conf, address_from_conf = None, '127.0.0.1'
     if os.path.exists(config_path):
         try:
             with open(config_path, 'r', encoding='utf-8', errors='ignore') as f:
@@ -84,8 +82,9 @@ def detect_qbittorrent_port(config=None):
         if port_from_conf:
             return address_from_conf, port_from_conf
 
-    ports_to_check = [port_from_conf] if port_from_conf else [8080, 8081, 1488, 8888]
-    for port in filter(None, ports_to_check):
+    for port in ([port_from_conf] if port_from_conf else [8080, 8081, 1488, 8888]):
+        if not port:
+            continue
         for ip in ['127.0.0.1', 'localhost']:
             try:
                 base_url = f"http://{ip}:{port}"
@@ -182,27 +181,18 @@ def get_torrent_peers(qb_ip, qb_port, t_hash):
 def scan_dead_torrents(qb_ip, qb_port):
     live = get_live_torrent_info(qb_ip, qb_port)
     if not live:
-        return {'success': False, 'error': 'Не удалось подключиться к WebUI qBittorrent (проверьте запуск или логин/пароль).'}
-
-    dead_items = []
-    groups = {}
+        return {'success': False, 'error': 'Не удалось подключиться к WebUI qBittorrent.'}
+    dead_items, groups = [], {}
 
     def check_one(t_hash, t_info):
         state = str(t_info.get('state', '')).lower()
-        name = t_info.get('name', t_hash)
-        size = t_info.get('total_size', 0)
-
+        name, size = t_info.get('name', t_hash), t_info.get('total_size', 0)
         if state in ('error', 'missingfiles'):
-            return {
-                'hash': t_hash, 'name': name, 'size': size, 'state': state,
-                'error_msg': 'Ошибка клиента / отсутствуют файлы' if state == 'missingfiles' else 'Ошибка торрента в клиенте'
-            }
-
+            return {'hash': t_hash, 'name': name, 'size': size, 'state': state, 'error_msg': 'Отсутствуют файлы' if state == 'missingfiles' else 'Ошибка торрента в клиенте'}
         trackers = get_torrent_trackers(qb_ip, qb_port, t_hash)
         real_trackers = [tr for tr in trackers if not str(tr.get('url', '')).startswith('**[') and tr.get('status', 0) != 0]
         if not real_trackers or any(tr.get('status') == 2 for tr in real_trackers):
             return None
-
         err_msgs = [str(tr.get('msg', '')).strip() for tr in real_trackers if tr.get('status') == 4 and str(tr.get('msg', '')).strip()]
         if not err_msgs:
             if any(tr.get('status') == 4 for tr in real_trackers):
@@ -211,24 +201,20 @@ def scan_dead_torrents(qb_ip, qb_port):
                 return None
         else:
             err_msg = err_msgs[0]
-
         return {'hash': t_hash, 'name': name, 'size': size, 'state': state, 'error_msg': err_msg}
 
     with ThreadPoolExecutor(max_workers=12) as pool:
-        futures = {pool.submit(check_one, h, info): h for h, info in live.items()}
-        for fut in as_completed(futures):
+        for fut in as_completed([pool.submit(check_one, h, info) for h, info in live.items()]):
             try:
                 res = fut.result()
                 if res:
                     dead_items.append(res)
-                    msg = res['error_msg']
-                    groups[msg] = groups.get(msg, 0) + 1
+                    groups[res['error_msg']] = groups.get(res['error_msg'], 0) + 1
             except Exception:
                 pass
 
     dead_items.sort(key=lambda x: (x['error_msg'].lower(), x['name'].lower()))
     grouped_list = [{'error_msg': k, 'count': v} for k, v in sorted(groups.items(), key=lambda x: -x[1])]
-
     return {'success': True, 'total_scanned': len(live), 'dead_count': len(dead_items), 'groups': grouped_list, 'items': dead_items}
 
 
@@ -241,19 +227,39 @@ def remove_torrent_tags(qb_ip, qb_port, hash_val, tags):
 
 
 def delete_torrents(qb_ip, qb_port, hashes, delete_files=False):
-    if not hashes:
-        return False
-    return _post_qb_api(qb_ip, qb_port, 'torrents/delete', {'hashes': hashes, 'deleteFiles': 'true' if delete_files else 'false'})
+    return bool(hashes and _post_qb_api(qb_ip, qb_port, 'torrents/delete', {'hashes': hashes, 'deleteFiles': 'true' if delete_files else 'false'}))
 
 
 def recheck_torrents(qb_ip, qb_port, hashes):
     return bool(hashes and _post_qb_api(qb_ip, qb_port, 'torrents/recheck', {'hashes': hashes}))
 
 
+def edit_torrent_tracker(qb_ip, qb_port, t_hash, orig_url, new_url):
+    return bool(t_hash and orig_url and new_url and _post_qb_api(qb_ip, qb_port, 'torrents/editTracker', {'hash': t_hash, 'origUrl': orig_url, 'newUrl': new_url}))
+
+
+def set_torrent_location(qb_ip, qb_port, hashes, location):
+    return bool(hashes and location and _post_qb_api(qb_ip, qb_port, 'torrents/setLocation', {'hashes': hashes, 'location': location}))
+
+
+def set_torrent_file_prio(qb_ip, qb_port, t_hash, file_ids, priority):
+    return bool(t_hash and _post_qb_api(qb_ip, qb_port, 'torrents/filePrio', {'hash': t_hash, 'id': str(file_ids), 'priority': str(int(priority))}))
+
+
+def add_torrent_url(qb_ip, qb_port, urls, savepath='', tags='', paused=False):
+    payload = {'urls': urls}
+    if savepath:
+        payload['savepath'] = savepath
+    if tags:
+        payload['tags'] = tags
+    if paused:
+        payload['paused'] = 'true'
+    return _post_qb_api(qb_ip, qb_port, 'torrents/add', payload)
+
+
 def set_global_speed_limits(qb_ip, qb_port, dl_limit_bps, up_limit_bps):
-    ok1 = _post_qb_api(qb_ip, qb_port, 'transfer/setDownloadLimit', {'limit': str(max(0, int(dl_limit_bps)))})
-    ok2 = _post_qb_api(qb_ip, qb_port, 'transfer/setUploadLimit', {'limit': str(max(0, int(up_limit_bps)))})
-    return ok1 and ok2
+    return _post_qb_api(qb_ip, qb_port, 'transfer/setDownloadLimit', {'limit': str(max(0, int(dl_limit_bps)))}) and \
+           _post_qb_api(qb_ip, qb_port, 'transfer/setUploadLimit', {'limit': str(max(0, int(up_limit_bps)))})
 
 
 def shutdown_qb_webui(qb_ip, qb_port):

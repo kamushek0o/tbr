@@ -15,7 +15,8 @@
                         <input type="number" id="auto-interval" class="form-control" style="width:70px;" min="1" max="1440" value="5">
                     </div>
                 </div>
-                <div class="row-gap" style="justify-content: flex-end;">
+                <div class="row-gap" style="justify-content: flex-end; flex-wrap:wrap;">
+                    <button class="btn btn-secondary" onclick="runAutopilotDryRun()">🧪 Прогнать вхолостую</button>
                     <button class="btn btn-secondary" onclick="testNotifications()" data-i18n="btn_test">🔔 Тест</button>
                     <button class="btn btn-secondary" onclick="runAutomationNow()" data-i18n="btn_run_now">⚡ Проверить сейчас</button>
                     <button class="btn" onclick="saveAutomationSettings()" data-i18n="btn_save">💾 Сохранить</button>
@@ -54,7 +55,6 @@
                 </div>
             </div>
 
-            <!-- Тихий час (DND) и Дайджест (Задачи 15 и 16) -->
             <div class="card" style="background:var(--bg-input); border:1px solid var(--border); padding:10px 12px;">
                 <div class="row-between mb-8">
                     <span class="lbl-sm" style="margin:0; color:var(--info); font-weight:700;">🌙 «ТИХИЙ ЧАС» (DND) И ДАЙДЖЕСТ В БОТОВ</span>
@@ -83,9 +83,7 @@
                         <label class="lbl-sm">Авто-дайджест статистики:</label>
                         <div class="row-wrap" style="gap:6px;">
                             <select id="digest-mode" class="form-control" style="width:140px;">
-                                <option value="off">Выключен</option>
-                                <option value="daily">Ежедневно</option>
-                                <option value="weekly">Еженедельно</option>
+                                <option value="off">Выключен</option><option value="daily">Ежедневно</option><option value="weekly">Еженедельно</option>
                             </select>
                             <input type="number" id="digest-hour" class="form-control" style="width:65px;" min="0" max="23" value="21" title="Час отправки">
                             <select id="digest-weekday" class="form-control" style="width:95px;">
@@ -99,14 +97,13 @@
             </div>
         </div>
 
+        {% include 'partials/tab_auto_extras.html' %}
+
         <div id="rule-form-card" class="card">
             <div id="rule-form-title" class="card-title" data-i18n="card_add_rule">➕ ДОБАВИТЬ ПРАВИЛО</div>
             <div class="row-wrap mb-8">
                 <div class="grow-1"><label class="lbl-sm" data-i18n="lbl_rule_name">Название:</label><input type="text" id="rule-name" class="form-control" placeholder="Напр: Стоп после 2.0x и 14 дней" data-i18n-ph="rule_name_ph"></div>
-                <div style="width:140px;">
-                    <label class="lbl-sm">Метрика времени:</label>
-                    <select id="rule-time-mode" class="form-control"><option value="seeding_time">Время сида</option><option value="time_active">Время актива</option></select>
-                </div>
+                <div style="width:140px;"><label class="lbl-sm">Метрика времени:</label><select id="rule-time-mode" class="form-control"><option value="seeding_time">Время сида</option><option value="time_active">Время актива</option></select></div>
                 <div style="width:95px;"><label class="lbl-sm" data-i18n="lbl_rule_ratio">Мин. Ratio:</label><input type="number" step="0.1" min="0" id="rule-ratio" class="form-control" placeholder="2.0"></div>
                 <div style="width:95px;"><label class="lbl-sm" data-i18n="lbl_rule_days">Мин. дней:</label><input type="number" step="0.5" min="0" id="rule-days" class="form-control" placeholder="14"></div>
                 <div style="width:170px;">
@@ -117,7 +114,6 @@
                     </div>
                 </div>
             </div>
-
             <div class="row-wrap mb-10">
                 <div style="width:320px;">
                     <label class="lbl-sm">Средняя скорость (окно W мин):</label>
@@ -137,8 +133,6 @@
                     <button id="btn-rule-cancel" class="btn btn-secondary hidden" onclick="cancelEditRule()" data-i18n="btn_cancel">Отмена</button>
                 </div>
             </div>
-            <div class="lbl-xs muted-text mb-10">💡 Совет: чтобы правила <code>+тег / -тег</code> не дёргались на границе скорости («качели»), оставляйте зазор (гистерезис).</div>
-
             <div class="scroll-box" style="max-height: 260px;">
                 <table>
                     <thead><tr><th data-i18n="th_rule_name">Название</th><th data-i18n="th_rule_cond">Условие</th><th data-i18n="th_rule_act">Действия</th><th data-i18n="th_rule_status">Статус</th><th data-i18n="th_rule_ctrl">Управление</th></tr></thead>
@@ -147,15 +141,11 @@
             </div>
         </div>
 
-        <!-- Авто-тегирование по правилам (Задача 14) -->
         <div class="card" id="tagging-rules-card">
             <div class="card-title">🏷️ ПРАВИЛА АВТО-ТЕГИРОВАНИЯ (ПО ТРЕКЕРУ ИЛИ ПУТИ)</div>
             <div class="row-wrap mb-10" style="gap:8px;">
                 <input type="text" id="tag-rule-name" class="form-control" style="width:160px;" placeholder="Название (опц.)">
-                <select id="tag-rule-field" class="form-control" style="width:155px;">
-                    <option value="tracker">URL трекера содержит</option>
-                    <option value="save_path">Путь содержит</option>
-                </select>
+                <select id="tag-rule-field" class="form-control" style="width:155px;"><option value="tracker">URL трекера содержит</option><option value="save_path">Путь содержит</option></select>
                 <input type="text" id="tag-rule-pattern" class="form-control grow-1" placeholder="Напр: rutracker или D:\Games">
                 <input type="text" id="tag-rule-target" class="form-control" style="width:130px;" placeholder="Целевой тег">
                 <button class="btn" onclick="addTaggingRule()">➕ Добавить</button>

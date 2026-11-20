@@ -38,10 +38,11 @@ def api_orphans_delete():
     data = request.get_json(silent=True) or {}
     paths = data.get('paths')
     confirmed = bool(data.get('confirmed', False))
+    use_trash = bool(data.get('use_trash', True))
     if not confirmed or not isinstance(paths, list) or not paths:
         return jsonify({'success': False, 'error': 'Требуется явное подтверждение и непустой список путей'}), 400
-    ok, deleted, errors = delete_orphan_entries(paths, actor=_actor_name())
-    return jsonify({'success': ok, 'deleted': deleted, 'errors': errors}), (200 if deleted or ok else 400)
+    ok, deleted, errors = delete_orphan_entries(paths, actor=_actor_name(), use_trash=use_trash)
+    return jsonify({'success': ok, 'deleted': deleted, 'errors': errors, 'use_trash': use_trash}), (200 if deleted or ok else 400)
 
 
 @tools_bp.route('/api/vault/settings', methods=['GET', 'POST'])

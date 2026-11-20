@@ -1,0 +1,85 @@
+<!-- Панель Фазы 3 + Фазы 5: Сеть, Реаниматор, Вебхуки, Радар, Undo, SMART и RSS + Pre-Flight модал -->
+<div class="card admin-only" style="grid-column: 1 / -1;">
+    <div class="row-between mb-8">
+        <div class="card-title" style="margin:0;">🌐 СЕТЬ, ДИАГНОСТИКА И РЕАНИМАТОР qB (#9, #46, #17)</div>
+        <div class="row-gap" style="flex-wrap:wrap;">
+            <button class="btn btn-secondary btn-xs" onclick="runBottleneckCheck()">🐢 Почему тормозит?</button>
+            <button class="btn btn-secondary btn-xs" onclick="runTrackerPing()">📡 Пинг трекеров</button>
+            <button class="btn btn-secondary btn-xs" onclick="loadQbLog()">📄 Лог qB</button>
+            <button class="btn btn-secondary btn-xs" onclick="reanimateQb(false)">🔄 Мягкий рестарт qB</button>
+            <button class="btn btn-danger btn-xs" onclick="reanimateQb(true)">⚡ Принуд. рестарт</button>
+        </div>
+    </div>
+    <pre id="net-diag-out" class="terminal" style="height:130px;">Выберите инструмент диагностики...</pre>
+</div>
+
+<div class="card admin-only">
+    <div class="card-title">🛡️ СТРАЖ ИНТЕРФЕЙСА (#23) И РАДАР (#48)</div>
+    <label class="row-gap pointer lbl-xs mb-8"><input type="checkbox" id="iface-guard-en"> Следить за интерфейсом qB</label>
+    <div class="row-gap mb-8">
+        <input id="iface-guard-name" class="form-control grow-1" placeholder="Эталонный интерфейс (напр. tun0)">
+        <button class="btn btn-secondary btn-xs" onclick="saveIfaceGuard()">💾</button>
+    </div>
+    <label class="row-gap pointer lbl-xs mb-10"><input type="checkbox" id="iface-guard-panic"> Panic Killswitch при смене интерфейса</label>
+    <div class="row-between" style="border-top:1px dashed var(--border); padding-top:8px;">
+        <button class="btn btn-secondary btn-xs" onclick="checkUpdateRadar()">📡 Проверить релизы</button>
+        <button class="btn btn-xs" onclick="prepareQbUpdate()">🧰 Сейф перед апдейтом qB</button>
+    </div>
+    <div id="radar-out" class="lbl-xs muted-text mt-10"></div>
+</div>
+
+<div class="card admin-only">
+    <div class="card-title">🔗 ВЕБХУКИ (#41) И АНТИ-СПАМ (#49)</div>
+    <label class="row-gap pointer lbl-xs mb-8"><input type="checkbox" id="webhooks-bundler" checked> Группировать алерты (окно 45с)</label>
+    <textarea id="webhooks-urls" class="form-control mb-8" rows="2" placeholder="URL вебхуков (по одному на строку)"></textarea>
+    <div class="row-gap">
+        <button class="btn btn-secondary btn-xs" onclick="saveWebhooks(true)">🔔 Тест</button>
+        <button class="btn btn-xs" onclick="saveWebhooks(false)">💾 Сохранить</button>
+    </div>
+</div>
+
+<div class="card admin-only">
+    <div class="row-between mb-8">
+        <div class="card-title" style="margin:0;">💽 ОХРАНА HDD: SMART И РЕЧЕКИ (#30)</div>
+        <button class="btn btn-secondary btn-xs" onclick="loadSmartStatus()">🔎 Проверить</button>
+    </div>
+    <div id="smart-hdd-box" style="font-size:12px;"><span class="muted-text">Нажмите «Проверить»</span></div>
+</div>
+
+<div class="card admin-only">
+    <div class="row-between mb-8">
+        <div class="card-title" style="margin:0;">📰 УМНЫЙ RSS-ФИЛЬТР ДУБЛЕЙ (#34)</div>
+        <button class="btn btn-secondary btn-xs" onclick="checkRssDuplicates()">🔎 Проверить RSS</button>
+    </div>
+    <div id="rss-dedup-box" class="scroll-box" style="max-height:150px; font-size:12px;"><span class="muted-text">Чтение лент через API qB</span></div>
+</div>
+
+<div class="card admin-only" style="grid-column: 1 / -1;">
+    <div class="row-between mb-8">
+        <div class="card-title" style="margin:0;">↩️ МАШИНА ОТКАТА МАССОВЫХ ОПЕРАЦИЙ (UNDO STACK #54)</div>
+        <button class="btn btn-secondary btn-xs" onclick="loadUndoStack()">🔄</button>
+    </div>
+    <div id="undo-stack-list" class="col-gap" style="font-size:12px;"><span class="muted-text">Загрузка...</span></div>
+</div>
+
+<!-- Модальное окно Pre-Flight Инбокса (#5) -->
+<div id="preflight-modal" class="modal-backdrop">
+    <div class="modal" style="max-width:520px;">
+        <div class="card-title">📥 PRE-FLIGHT ИНБОКС (ДОБАВЛЕНИЕ РАЗДАЧИ)</div>
+        <div class="form-group"><label>Magnet-ссылка / URL:</label><input id="pf-url" class="form-control" placeholder="magnet:?xt=urn:btih:..."></div>
+        <div class="form-group"><label>Или локальный .torrent файл:</label><input id="pf-file" type="file" accept=".torrent" class="form-control"></div>
+        <div class="grid-2 mb-8">
+            <input id="pf-save-path" class="form-control" placeholder="Папка сохранения (опц.)">
+            <input id="pf-tags" class="form-control" placeholder="Теги через запятую">
+        </div>
+        <label class="row-gap pointer lbl-xs mb-10"><input type="checkbox" id="pf-paused"> Добавить на паузе</label>
+        <div id="pf-result-box" class="card mb-10" style="background:var(--bg-input); font-size:12px;">—</div>
+        <div class="row-between">
+            <button class="btn btn-secondary" onclick="document.getElementById('preflight-modal').style.display='none'">Закрыть</button>
+            <div class="row-gap">
+                <button class="btn btn-secondary" onclick="runPreflightCheck()">🔎 Проверить</button>
+                <button class="btn" onclick="submitPreflightAdd()">➕ Добавить</button>
+            </div>
+        </div>
+    </div>
+</div>

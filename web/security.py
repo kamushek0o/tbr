@@ -2,39 +2,31 @@
 import os
 import re
 import hmac
-import time
 import secrets
-import threading
 import ipaddress
 import urllib.parse
 from flask import request, jsonify, redirect, session, g
 from utils.helpers import LOG_FOLDER
 from core.summary_tracker import AUTO_FOLDER, MANUAL_FOLDER
 from core.profiles_db import profiles_db
+from core.sessions import sessions_mgr
 
 HASH_RE = re.compile(r'^[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?$')
 
-_VIEWER_BLOCKED_GET_PREFIXES = ('/api/settings', '/api/automation', '/api/logs', '/api/profiles', '/api/network')
+_VIEWER_BLOCKED_GET_PREFIXES = ('/api/settings', '/api/automation', '/api/logs', '/api/profiles', '/api/network', '/api/doctor', '/api/vault')
 _PUBLIC_ASSET_PATHS = ('/favicon.ico', '/manifest.json', '/icon-192.png', '/icon-512.png', '/apple-touch-icon.png')
 
-_RATE_LOCK = threading.Lock()
-_FAILED_LOGINS = {}  # { ip: [timestamps] }
+
+def check_rate_limit(ip, bucket='login'):
+    return sessions_mgr.check_rate_limit(ip, bucket=bucket)
 
 
-def check_rate_limit(ip, max_attempts=10, window_sec=300):
-    now = time.time()
-    with _RATE_LOCK:
-        hist = [t for t in _FAILED_LOGINS.get(ip, []) if now - t < window_sec]
-        _FAILED_LOGINS[ip] = hist
-        return len(hist) < max_attempts
+def record_failed_login(ip, bucket='login'):
+    sessions_mgr.record_failure(ip, bucket=bucket)
 
 
-def record_failed_login(ip):
-    now = time.time()
-    with _RATE_LOCK:
-        hist = [t for t in _FAILED_LOGINS.get(ip, []) if now - t < 300]
-        hist.append(now)
-        _FAILED_LOGINS[ip] = hist
+def get_client_ip():
+    return (request.headers.get('X-Forwarded-For') or request.remote_addr or '127.0.0.1').split(',')[0].strip()
 
 
 def get_csrf_token():
@@ -58,8 +50,7 @@ def resolve_log_path(filename):
     if not filename or not isinstance(filename, str):
         return None
     clean = os.path.basename(filename.replace('\\', '/'))
-    allowed_dirs = [LOG_FOLDER, AUTO_FOLDER, MANUAL_FOLDER]
-    for directory in allowed_dirs:
+    for directory in (LOG_FOLDER, AUTO_FOLDER, MANUAL_FOLDER):
         try:
             norm_dir = os.path.abspath(directory)
             full_path = os.path.abspath(os.path.join(norm_dir, clean))
@@ -71,20 +62,33 @@ def resolve_log_path(filename):
 
 
 def _resolve_request_profile(is_exposed):
+    ip = get_client_ip()
     auth_hdr = request.headers.get('Authorization', '').strip()
     token = auth_hdr[7:].strip() if auth_hdr.lower().startswith('bearer ') else request.headers.get('X-Auth-Token', '').strip()
     if token:
+        if not sessions_mgr.check_rate_limit(ip, bucket='api_token'):
+            return None, True
         prof = profiles_db.authenticate_api_token(token)
         if prof:
+            sessions_mgr.clear_failures(ip, bucket='api_token')
             return prof, True
+        sessions_mgr.record_failure(ip, bucket='api_token')
+        return None, True
 
     pid = session.get('profile_id')
-    if pid:
+    if pid and session.get('authenticated'):
+        sid = session.get('sid')
+        if sid:
+            if not sessions_mgr.validate_and_touch(sid):
+                session.clear()
+                return None, False
+        else:
+            session['sid'] = sessions_mgr.create_session(pid, ip, request.headers.get('User-Agent', ''))
         prof = profiles_db.get_by_id(pid)
         if prof:
             return prof, False
 
-    if session.get('authenticated') or not is_exposed:
+    if not is_exposed:
         return profiles_db.get_default_admin(), False
 
     return None, False

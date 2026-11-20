@@ -103,6 +103,17 @@ def api_automation_run_now():
     return jsonify({'success': True, 'triggered': cnt, 'message': f'Проверка завершена. Сработало раздач: {cnt}'})
 
 
+@automation_bp.route('/api/automation/dry_run', methods=['POST'])
+def api_automation_dry_run():
+    data = request.get_json(silent=True) or {}
+    rule_id = data.get('rule_id')
+    try:
+        rid = int(rule_id) if rule_id is not None else None
+    except (ValueError, TypeError):
+        return jsonify({'success': False, 'error': 'Некорректный rule_id'}), 400
+    return jsonify(automation_engine.dry_run(rule_id=rid))
+
+
 @automation_bp.route('/api/automation/rules', methods=['POST'])
 def api_automation_add_rule():
     data = request.get_json(silent=True) or {}

@@ -11,14 +11,22 @@ from core.autostart import is_autostart_enabled
 from core.summary_tracker import summary_tracker
 from core.scheduler import ALLOWED_INTERVALS, normalize_interval
 from core.profiles_db import profiles_db
+from core.sessions import sessions_mgr
 from core.backup_manager import create_backup_zip, stage_restore_zip
 from core.keep_awake import keep_awake
 from core.app_state_db import app_state_db
 from core.disk_monitor import list_active_disks
 from core.analytics_insights import invalidate_insights_cache
-from web.security import get_csrf_token, is_allowed_qb_ip, check_rate_limit, record_failed_login
+from web.security import get_csrf_token, is_allowed_qb_ip, get_client_ip
 
 settings_bp = Blueprint('settings_bp', __name__)
+
+
+def _start_user_session(prof, ip):
+    session['authenticated'] = True
+    session['profile_id'] = prof['id']
+    session['sid'] = sessions_mgr.create_session(prof['id'], ip, request.headers.get('User-Agent', ''))
+    sessions_mgr.clear_failures(ip, bucket='login')
 
 
 @settings_bp.route('/invite/<token>', methods=['GET', 'POST'])
@@ -34,8 +42,7 @@ def invite_accept(token):
     prof, err = profiles_db.consume_invite(token, request.form.get('login', '').strip(), request.form.get('password', '').strip())
     if err or not prof:
         return render_template('invite.html', csrf_token=get_csrf_token(), error=err or 'Ошибка активации', invite=inv), 400
-    session['authenticated'] = True
-    session['profile_id'] = prof['id']
+    _start_user_session(prof, get_client_ip())
     app_state_db.add_audit_event('auth', 'Активация инвайта', f"Профиль {prof['login']}", actor=prof['login'])
     return redirect('/')
 
@@ -44,36 +51,38 @@ def invite_accept(token):
 def login():
     if request.method == 'GET':
         return render_template('login.html', csrf_token=get_csrf_token(), error=None)
-    ip = (request.headers.get('X-Forwarded-For') or request.remote_addr or '0.0.0.0').split(',')[0].strip()
-    if not check_rate_limit(ip):
-        return render_template('login.html', csrf_token=get_csrf_token(), error='Слишком много попыток входа. Подождите 5 минут.'), 429
+    ip = get_client_ip()
+    if not sessions_mgr.check_rate_limit(ip, bucket='login'):
+        return render_template('login.html', csrf_token=get_csrf_token(), error='Слишком много попыток входа. Подождите 10 минут.'), 429
 
     login_val, pwd = request.form.get('login', '').strip(), request.form.get('password', '').strip()
     real_pwd = cfg.get('Web_Password', '')
     if real_pwd and hmac.compare_digest(pwd, real_pwd) and (not login_val or login_val.lower() == 'admin'):
-        session['authenticated'] = True
         adm = profiles_db.get_default_admin()
         if adm:
-            session['profile_id'] = adm['id']
+            _start_user_session(adm, ip)
         app_state_db.add_audit_event('auth', 'Успешный вход', f'IP: {ip}', actor='admin')
         return redirect('/')
 
     prof = profiles_db.authenticate_login(login_val, pwd) if login_val else profiles_db.authenticate_api_token(pwd)
     if prof:
-        session['authenticated'] = True
-        session['profile_id'] = prof['id']
+        _start_user_session(prof, ip)
         app_state_db.add_audit_event('auth', 'Успешный вход', f'IP: {ip}', actor=prof.get('login') or prof['name'])
         return redirect('/')
 
-    record_failed_login(ip)
+    sessions_mgr.record_failure(ip, bucket='login')
     app_state_db.add_audit_event('auth', 'Неудачный вход', f"IP: {ip}, login={login_val or '-'}", actor=login_val or 'guest')
     return render_template('login.html', csrf_token=get_csrf_token(), error='Неверный логин или пароль!'), 401
 
 
 @settings_bp.route('/logout', methods=['POST', 'GET'])
 def logout():
+    sid = session.get('sid')
+    if sid:
+        sessions_mgr.revoke_session(sid)
     session.pop('authenticated', None)
     session.pop('profile_id', None)
+    session.pop('sid', None)
     return redirect('/login')
 
 

@@ -1,6 +1,7 @@
 // web/static/palette_targets.js
 let _cmdItems = [];
 let _cmdIdx = 0;
+let _ftsDebounce = null;
 
 function renderTargetBarHtml(target) {
     if (!target) return '';
@@ -42,6 +43,7 @@ function _buildCommandActions() {
         { label: '📊 Вкладка: Сводка', run: () => switchTab('summary') },
         { label: '📈 Вкладка: Аналитика', run: () => switchTab('analytics') },
         { label: '🛠️ Вкладка: Инструменты', run: () => switchTab('tools') },
+        { label: '🖥️ Режим Киоск (/kiosk)', run: () => window.open('/kiosk', '_blank') },
         { label: '🎨 Тема: Dark (Тёмная)', run: () => _quickSetTheme('dark') },
         { label: '☀️ Тема: Light (Светлая)', run: () => _quickSetTheme('light') },
         { label: '🖤 Тема: OLED (Чёрная)', run: () => _quickSetTheme('oled') },
@@ -52,6 +54,7 @@ function _buildCommandActions() {
             { label: '🤖 Вкладка: Автопилот', run: () => switchTab('automation') },
             { label: '❄️ Умная заморозка / Разморозка', run: () => toggleSmartFreeze() },
             { label: '😴 Таймер сна (Snooze)', run: () => openSnoozeModal() },
+            { label: '🔄 Переиндексировать файлы FTS5', run: () => api('/api/search/reindex', 'POST', { force: false }).then(() => alert('✅ Индекс файлов обновлён')) },
             { label: '⚙️ Настройки системы', run: () => openSettingsModal() }
         );
     }
@@ -66,46 +69,44 @@ function _quickSetTheme(theme) {
     }
 }
 
-function renderCommandPalette() {
-    const q = (document.getElementById('cmd-palette-input')?.value || '').trim().toLowerCase();
+function renderCommandPalette(extraFiles = []) {
+    const rawQ = (document.getElementById('cmd-palette-input')?.value || '').trim();
+    const q = rawQ.toLowerCase();
     const listEl = document.getElementById('cmd-palette-list');
     if (!listEl) return;
 
     const actions = _buildCommandActions().filter(a => !q || a.label.toLowerCase().includes(q));
     const source = (typeof torrentsData !== 'undefined' && torrentsData.length)
-        ? torrentsData
-        : (typeof rawSummaryItems !== 'undefined' ? rawSummaryItems : []);
+        ? torrentsData : (typeof rawSummaryItems !== 'undefined' ? rawSummaryItems : []);
 
     const matchedTorrents = [];
     for (const item of source) {
-        const nm = String(item.name || '');
-        const hs = String(item.hash || item.hash_id || '');
+        const nm = String(item.name || ''), hs = String(item.hash || item.hash_id || '');
         if (!q || nm.toLowerCase().includes(q) || hs.toLowerCase().includes(q)) {
             matchedTorrents.push({
                 label: `📦 ${nm}`,
                 sub: `${hs.slice(0, 10)} • ${item.uploaded_fmt || formatBytesJS(item.uploaded)}`,
                 run: () => {
-                    switchTab('torrents');
-                    selectedHash = hs;
+                    switchTab('torrents'); selectedHash = hs;
                     const t = torrentsData.find(x => x.hash === hs);
-                    if (t) {
-                        document.getElementById('selected-title').textContent = `${t.name} (${t.size_fmt})`;
-                        renderTorrents(visibleTorrents);
-                    }
+                    if (t) { document.getElementById('selected-title').textContent = `${t.name} (${t.size_fmt})`; renderTorrents(visibleTorrents); }
                 }
             });
         }
-        if (matchedTorrents.length >= 20) break;
+        if (matchedTorrents.length >= 15) break;
     }
 
-    _cmdItems = [...actions, ...matchedTorrents].slice(0, 25);
+    const fileItems = extraFiles.map(f => ({
+        label: `📄 ${f.file_path}`,
+        sub: `${f.torrent_name} (${f.size_fmt})`,
+        run: () => { switchTab('torrents'); selectedHash = f.hash; }
+    }));
+
+    _cmdItems = [...actions, ...matchedTorrents, ...fileItems].slice(0, 28);
     if (_cmdIdx >= _cmdItems.length) _cmdIdx = 0;
 
     listEl.innerHTML = '';
-    if (!_cmdItems.length) {
-        listEl.innerHTML = '<div class="center-msg muted-text">Ничего не найдено</div>';
-        return;
-    }
+    if (!_cmdItems.length) { listEl.innerHTML = '<div class="center-msg muted-text">Ничего не найдено</div>'; return; }
     _cmdItems.forEach((it, idx) => {
         const row = document.createElement('div');
         row.className = 'row-between pointer';
@@ -115,24 +116,28 @@ function renderCommandPalette() {
         row.onclick = () => { closeCommandPalette(); it.run(); };
         listEl.appendChild(row);
     });
+
+    if (!extraFiles.length && rawQ.length >= 3) {
+        clearTimeout(_ftsDebounce);
+        _ftsDebounce = setTimeout(async () => {
+            try {
+                const clean = rawQ.replace(/^file:/i, '').trim();
+                if (clean.length < 2) return;
+                const res = await api(`/api/search/files?q=${encodeURIComponent(clean)}`);
+                if (res.ok && document.getElementById('cmd-palette-modal').style.display === 'flex') {
+                    const files = (await res.json()).items || [];
+                    if (files.length) renderCommandPalette(files);
+                }
+            } catch (e) {}
+        }, 300);
+    }
 }
 
 function onCmdPaletteKey(e) {
     if (e.key === 'Escape') { closeCommandPalette(); return; }
-    if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        if (_cmdItems.length) _cmdIdx = (_cmdIdx + 1) % _cmdItems.length;
-        renderCommandPalette();
-    } else if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        if (_cmdItems.length) _cmdIdx = (_cmdIdx - 1 + _cmdItems.length) % _cmdItems.length;
-        renderCommandPalette();
-    } else if (e.key === 'Enter' && _cmdItems[_cmdIdx]) {
-        e.preventDefault();
-        const chosen = _cmdItems[_cmdIdx];
-        closeCommandPalette();
-        chosen.run();
-    }
+    if (e.key === 'ArrowDown') { e.preventDefault(); if (_cmdItems.length) _cmdIdx = (_cmdIdx + 1) % _cmdItems.length; renderCommandPalette(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); if (_cmdItems.length) _cmdIdx = (_cmdIdx - 1 + _cmdItems.length) % _cmdItems.length; renderCommandPalette(); }
+    else if (e.key === 'Enter' && _cmdItems[_cmdIdx]) { e.preventDefault(); const c = _cmdItems[_cmdIdx]; closeCommandPalette(); c.run(); }
 }
 
 function openTargetModal() {
@@ -148,15 +153,11 @@ function openTargetModal() {
 function closeTargetModal() { document.getElementById('target-modal').style.display = 'none'; }
 
 async function saveTargetForSelected() {
-    const tr = parseFloat(document.getElementById('tgt-ratio').value) || 0;
-    const gib = parseFloat(document.getElementById('tgt-gib').value) || 0;
-    const res = await api('/api/targets/set', 'POST', {
-        hash: selectedHash, target_ratio: tr, target_bytes: gib > 0 ? Math.round(gib * (1024 ** 3)) : 0
-    });
+    const tr = parseFloat(document.getElementById('tgt-ratio').value) || 0, gib = parseFloat(document.getElementById('tgt-gib').value) || 0;
+    const res = await api('/api/targets/set', 'POST', { hash: selectedHash, target_ratio: tr, target_bytes: gib > 0 ? Math.round(gib * (1024 ** 3)) : 0 });
     const d = await res.json();
     if (!res.ok || !d.success) return alert(d.error || 'Ошибка');
-    closeTargetModal();
-    loadTorrents(false);
+    closeTargetModal(); loadTorrents(false);
 }
 
 async function removeTargetForSelected() {

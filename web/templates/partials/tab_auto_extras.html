@@ -1,0 +1,36 @@
+<!-- Панель Фазы 3 в Автопилоте: #26, #27, #52, #56, #29 -->
+<div class="card">
+    <div class="row-between mb-8">
+        <div class="card-title" style="margin:0;">🎼 СУТОЧНЫЙ ДИРИЖЁР (#26), ОЧЕРЕДИ (#52, #56) И ПРЕСЕТЫ (#29)</div>
+        <div class="row-gap">
+            <button class="btn btn-secondary btn-xs" onclick="overrideConductor()">⚡ Переопределить на 1ч</button>
+            <button class="btn btn-xs" onclick="saveConductorAndExtras()">💾 Сохранить</button>
+        </div>
+    </div>
+    <div class="row-wrap mb-8" style="gap:12px;">
+        <label class="row-gap pointer lbl-xs"><input type="checkbox" id="cond-enabled"> Включить 24ч дирижёр</label>
+        <label class="row-gap pointer lbl-xs"><input type="checkbox" id="smart-queue-en"> Умная очередь (мелким приоритет)</label>
+        <label class="row-gap pointer lbl-xs"><input type="checkbox" id="smart-reannounce-en"> Smart Re-Announce (кулдаун 30м)</label>
+    </div>
+    <div class="form-group"><label>Зоны суток JSON ([{start_h, end_h, pct_limit}]):</label><input id="cond-blocks" class="form-control"></div>
+    <div class="row-between" style="border-top:1px dashed var(--border); padding-top:8px;">
+        <span class="lbl-xs muted-text">Биржа пресетов правил и видов (импорт загружается выключенным):</span>
+        <div class="row-gap">
+            <button class="btn btn-secondary btn-xs" onclick="exportPresets()">📤 Экспорт JSON</button>
+            <input type="file" id="preset-import-file" accept=".json" style="display:none;" onchange="importPresetsFile(this.files[0])">
+            <button class="btn btn-secondary btn-xs" onclick="document.getElementById('preset-import-file').click()">📥 Импорт JSON</button>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-title">🧭 АВТО-РОУТЕР ВХОДЯЩИХ (1 РАЗ НА НОВЫЙ ХЭШ #27)</div>
+    <div class="row-wrap mb-8" style="gap:6px;">
+        <select id="router-field" class="form-control" style="width:130px;"><option value="tracker">Трекер</option><option value="ext">Имя/расш.</option><option value="min_gib">Размер &gt;= GiB</option></select>
+        <input id="router-pattern" class="form-control grow-1" placeholder="Паттерн (напр. rutracker или .mkv)">
+        <input id="router-cat" class="form-control" style="width:120px;" placeholder="Категория">
+        <input id="router-path" class="form-control" style="width:160px;" placeholder="Путь (опц.)">
+        <button class="btn btn-xs" onclick="addRouterRule()">➕</button>
+    </div>
+    <div id="router-rules-list" class="col-gap" style="font-size:12px;"></div>
+</div>
