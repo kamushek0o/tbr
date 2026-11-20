@@ -10,6 +10,7 @@ from core.history_db import HistoryDB, AUTO_FOLDER, MANUAL_FOLDER
 from core.forecaster import fmt_ratio_h, fmt_speed, calculate_smart_forecast, export_forecast_csv
 from core.scheduler import SnapshotScheduler, MIN_DELTA_SEC
 from core.widget_service import build_detailed_speed_series, build_hourly_aggregated_speed_series, compute_top_n_torrents
+from core.app_state_db import app_state_db
 
 
 class SummaryTracker:
@@ -151,48 +152,82 @@ class SummaryTracker:
             'daily': {'labels': [f"{d[8:10]}.{d[5:7]}" for d in sorted_days], 'values': [round(daily_map[d] / (1024 ** 3), 3) for d in sorted_days]},
             'hourly': {'hours': win_hours, 'labels': [p['label'] for p in speed_series], 'values': [p['speed_mbs'] for p in speed_series], 'meta': speed_series},
             'detailed': speed_series,
-            'top5': {
-                'n': top_limit,
-                'period': per,
-                'labels': [x['short_name'] for x in top_items],
-                'full_labels': [x['full_name'] for x in top_items],
-                'values': [x['gb'] for x in top_items],
-                'others': others
-            }
+            'top5': {'n': top_limit, 'period': per, 'labels': [x['short_name'] for x in top_items], 'full_labels': [x['full_name'] for x in top_items], 'values': [x['gb'] for x in top_items], 'others': others}
         }
 
     def get_torrent_chart_series(self, t_hash, period='24h'):
         hours = {'24h': 24, '7d': 168, '30d': 720}.get(period, 24)
         since_ts = time.time() - (hours * 3600)
-        hl = (t_hash or '').lower()
-        points = []
+        hashes = app_state_db.get_lineage_hashes(t_hash)
+        if not hashes:
+            return []
+
+        merges_by_target = {}
+        for m in app_state_db.get_merges_for_targets(hashes):
+            merges_by_target.setdefault(m['target_hash'], []).append(m)
+
+        placeholders = ",".join("?" for _ in hashes)
         with self.db._lock:
             try:
                 with self.db._get_connection() as conn:
-                    rows = conn.execute("""
-                        SELECT s.timestamp, s.datetime, ts.uploaded
+                    rows = conn.execute(f"""
+                        SELECT ts.hash_id, s.timestamp, s.datetime, ts.uploaded
                         FROM snapshots s
                         JOIN torrent_snapshots ts ON s.id = ts.snapshot_id
-                        WHERE ts.hash_id = ? AND s.timestamp >= ?
-                        ORDER BY s.timestamp ASC
-                    """, (hl, since_ts)).fetchall()
+                        WHERE ts.hash_id IN ({placeholders}) AND s.timestamp >= ?
+                        ORDER BY ts.hash_id ASC, s.timestamp ASC
+                    """, (*hashes, since_ts)).fetchall()
             except Exception:
                 rows = []
 
-        prev = None
+        max_bps = (max(10, cfg.getint('Max_Channel_Mbps', 1000)) * 1024 * 1024) / 8.0
+        buckets = {}  # { bucket_ts: {'delta': int, 'bps': float, 'dt_str': str, 'is_merge': bool} }
+        consumed_merges = set()
+
+        by_hash = {}
         for r in rows:
-            if prev is not None:
-                dt = float(r['timestamp']) - float(prev['timestamp'])
-                delta = max(0, int(r['uploaded']) - int(prev['uploaded']))
-                if dt >= MIN_DELTA_SEC:
-                    bps = delta / dt
-                    lbl = str(r['datetime'] or '')[11:16] if hours <= 24 else str(r['datetime'] or '')[5:16]
-                    points.append({
-                        'label': lbl,
-                        'speed_mbs': round(bps / (1024 * 1024), 3),
-                        'delta_fmt': format_file_size(delta)
-                    })
-            prev = r
+            by_hash.setdefault(r['hash_id'], []).append(r)
+
+        for hl, h_rows in by_hash.items():
+            t_merges = merges_by_target.get(hl, [])
+            prev = None
+            for r in h_rows:
+                if prev is not None:
+                    t1, t2 = float(prev['timestamp']), float(r['timestamp'])
+                    dt = t2 - t1
+                    if dt >= MIN_DELTA_SEC:
+                        delta = max(0, int(r['uploaded']) - int(prev['uploaded']))
+                        is_merge = False
+                        for m in t_merges:
+                            if m['id'] not in consumed_merges and (t1 - 5.0) <= float(m['created_at']) <= (t2 + 5.0):
+                                injected = max(0, int(m['final_uploaded']) - int(m['target_uploaded']))
+                                delta = max(0, delta - injected)
+                                is_merge = True
+                                consumed_merges.add(m['id'])
+
+                        bps = delta / dt
+                        if bps > max_bps:
+                            delta, bps = 0, 0.0
+
+                        b_key = int(round(t2 / 60.0) * 60)
+                        b = buckets.setdefault(b_key, {'delta': 0, 'bps': 0.0, 'dt_str': str(r['datetime'] or ''), 'is_merge': False})
+                        b['delta'] += delta
+                        b['bps'] += bps
+                        if is_merge:
+                            b['is_merge'] = True
+                prev = r
+
+        points = []
+        for b_key in sorted(buckets.keys()):
+            b = buckets[b_key]
+            dt_raw = b['dt_str']
+            lbl = dt_raw[11:16] if hours <= 24 else dt_raw[5:16]
+            points.append({
+                'label': lbl,
+                'speed_mbs': round(b['bps'] / (1024 * 1024), 3),
+                'delta_fmt': format_file_size(b['delta']),
+                'is_merge': b['is_merge']
+            })
         return points
 
     def calculate_smart_forecast(self, target_type, target_hash, target_str, speed_str, summaries):

@@ -6,7 +6,7 @@ from flask import Blueprint, request, jsonify, render_template, redirect, sessio
 
 from utils.config import cfg
 from core.version import APP_VERSION, GITHUB_RELEASES_URL
-from core.qb_api import reset_qb_session, get_qb_executable_path
+from core.qb_api import reset_qb_session, get_qb_executable_path, detect_qbittorrent_port, get_live_torrent_info
 from core.autostart import is_autostart_enabled
 from core.summary_tracker import summary_tracker
 from core.scheduler import ALLOWED_INTERVALS, normalize_interval
@@ -14,6 +14,8 @@ from core.profiles_db import profiles_db
 from core.backup_manager import create_backup_zip, stage_restore_zip
 from core.keep_awake import keep_awake
 from core.app_state_db import app_state_db
+from core.disk_monitor import list_active_disks
+from core.analytics_insights import invalidate_insights_cache
 from web.security import get_csrf_token, is_allowed_qb_ip, check_rate_limit, record_failed_login
 
 settings_bp = Blueprint('settings_bp', __name__)
@@ -114,6 +116,8 @@ def api_backup_restore():
 @settings_bp.route('/api/settings', methods=['GET', 'POST'])
 def api_settings():
     if request.method == 'GET':
+        ip, port = detect_qbittorrent_port(cfg.config)
+        live = get_live_torrent_info(ip, port) if port else {}
         return jsonify({
             'web_port': cfg.getint('Web_Port', 5000), 'web_host': cfg.get('Web_Host', '127.0.0.1'),
             'has_password': bool(cfg.get('Web_Password', '').strip()),
@@ -121,8 +125,7 @@ def api_settings():
             'qb_user': cfg.get('WebUI_User', 'admin'), 'has_qb_password': bool(cfg.get('WebUI_Password', '').strip()),
             'w1': cfg.getint('Weight_W1', 70), 'w2': cfg.getint('Weight_W2', 30), 'w3': cfg.getint('Weight_W3', 0),
             'snapshot_interval': normalize_interval(cfg.getint('Snapshot_Interval_Min', 60)),
-            'autostart': is_autostart_enabled(),
-            'is_windows': (os.name == 'nt'),
+            'autostart': is_autostart_enabled(), 'is_windows': (os.name == 'nt'),
             'keep_awake_enabled': cfg.getboolean('KeepAwake_Enabled', False),
             'keep_awake_min_kb': cfg.getint('KeepAwake_Min_KB', 500),
             'keep_awake_display': cfg.getboolean('KeepAwake_Display', False),
@@ -132,7 +135,9 @@ def api_settings():
             'watchdog_exe_path': cfg.get('Watchdog_Exe_Path', ''),
             'watchdog_exe_detected': get_qb_executable_path() if os.name == 'nt' else '',
             'manifest_weekly': cfg.getboolean('Manifest_Weekly', False),
-            'max_channel_mbps': cfg.getint('Max_Channel_Mbps', 1000)
+            'max_channel_mbps': cfg.getint('Max_Channel_Mbps', 1000),
+            'monitored_disk': cfg.get('Monitored_Disk_Path', ''),
+            'disks': list_active_disks(live)
         })
 
     data = request.get_json(silent=True)
@@ -144,27 +149,15 @@ def api_settings():
         new_p = int(data.get('web_port', old_p))
         if not (1 <= new_p <= 65535):
             raise ValueError
-    except (ValueError, TypeError):
-        return jsonify({'success': False, 'error': 'Порт должен быть числом от 1 до 65535'}), 400
-
-    qb_ip = str(data.get('qb_ip', '')).strip()
-    if not is_allowed_qb_ip(qb_ip):
-        return jsonify({'success': False, 'error': 'Недопустимый IP qBittorrent (разрешены только локальные сети и NetBird)'}), 400
-
-    qb_port_raw = str(data.get('qb_port', '')).strip()
-    if qb_port_raw:
-        try:
-            if not (1 <= int(qb_port_raw) <= 65535):
-                raise ValueError
-        except ValueError:
-            return jsonify({'success': False, 'error': 'Порт qBittorrent должен быть от 1 до 65535'}), 400
-
-    try:
-        w1, w2, w3 = int(data.get('w1', 70)), int(data.get('w2', 30)), int(data.get('w3', 0))
-        if w1 < 0 or w2 < 0 or w3 < 0 or (w1 + w2 + w3) <= 0:
+        qb_ip = str(data.get('qb_ip', '')).strip()
+        if not is_allowed_qb_ip(qb_ip):
+            return jsonify({'success': False, 'error': 'Недопустимый IP qBittorrent'}), 400
+        qb_port_raw = str(data.get('qb_port', '')).strip()
+        if qb_port_raw and not (1 <= int(qb_port_raw) <= 65535):
             raise ValueError
+        w1, w2, w3 = int(data.get('w1', 70)), int(data.get('w2', 30)), int(data.get('w3', 0))
         snap_iv = int(data.get('snapshot_interval', 60))
-        if snap_iv not in ALLOWED_INTERVALS:
+        if w1 < 0 or w2 < 0 or w3 < 0 or (w1 + w2 + w3) <= 0 or snap_iv not in ALLOWED_INTERVALS:
             raise ValueError
         ka_min_kb = max(0, min(1000000, int(data.get('keep_awake_min_kb', 500))))
         wd_timeout = max(2, min(10, int(data.get('watchdog_timeout_min', 3))))
@@ -178,9 +171,11 @@ def api_settings():
 
     wd_exe = str(data.get('watchdog_exe_path', '')).strip()
     if wd_exe and ('..' in wd_exe or (os.name == 'nt' and not wd_exe.lower().endswith('.exe'))):
-        return jsonify({'success': False, 'error': 'Некорректный путь к исполняемому файлу qBittorrent'}), 400
+        return jsonify({'success': False, 'error': 'Некорректный путь к исполняемому файлу'}), 400
 
     old_snap_iv = normalize_interval(cfg.getint('Snapshot_Interval_Min', 60))
+    old_mbps = cfg.getint('Max_Channel_Mbps', 1000)
+
     cfg.set('Web_Port', new_p); cfg.set('Web_Host', new_host)
     if new_pass:
         cfg.set('Web_Password', new_pass)
@@ -190,9 +185,7 @@ def api_settings():
         cfg.set('WebUI_Password', str(data.get('qb_password', '')))
     cfg.set('Weight_W1', w1); cfg.set('Weight_W2', w2); cfg.set('Weight_W3', w3)
     cfg.set('Snapshot_Interval_Min', snap_iv)
-
-    ka_en = bool(data.get('keep_awake_enabled', False))
-    cfg.set('KeepAwake_Enabled', str(ka_en))
+    cfg.set('KeepAwake_Enabled', str(bool(data.get('keep_awake_enabled', False))))
     cfg.set('KeepAwake_Min_KB', str(ka_min_kb))
     cfg.set('KeepAwake_Display', str(bool(data.get('keep_awake_display', False))))
     cfg.set('Watchdog_Enabled', str(bool(data.get('watchdog_enabled', False))))
@@ -204,13 +197,17 @@ def api_settings():
         cfg.set('Manifest_Weekly', str(bool(data.get('manifest_weekly'))))
     if 'max_channel_mbps' in data:
         cfg.set('Max_Channel_Mbps', str(max(10, min(100000, int(data.get('max_channel_mbps', 1000))))))
+    if 'monitored_disk' in data:
+        cfg.set('Monitored_Disk_Path', str(data.get('monitored_disk', '')).strip())
     cfg.save()
 
-    if not ka_en:
+    if not cfg.getboolean('KeepAwake_Enabled', False):
         keep_awake.release()
     reset_qb_session()
     if old_snap_iv != snap_iv:
         summary_tracker.notify_interval_changed()
+    if cfg.getint('Max_Channel_Mbps', 1000) != old_mbps:
+        invalidate_insights_cache()
 
     app_state_db.add_audit_event('system', 'Изменение настроек', f'host={new_host}:{new_p}', actor='admin')
     net_changed = (old_p != new_p) or (old_h != new_host)

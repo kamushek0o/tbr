@@ -1,10 +1,9 @@
 # core/system_alerts.py
-import os
 import time
-import shutil
 from utils.config import cfg
-from utils.helpers import BT_BACKUP_PATH, APP_DATA_DIR, format_file_size, write_log
+from utils.helpers import format_file_size, write_log
 from core.notifiers import notify_all
+from core.disk_monitor import get_monitored_disk_info
 
 
 class SystemAlertsMonitor:
@@ -12,23 +11,6 @@ class SystemAlertsMonitor:
         self.disk_state = 'OK'  # OK | ALERT
         self.qb_state = 'OK'    # OK | ALERT
         self._qb_down_since = None
-
-    def _get_free_gib(self, live):
-        paths = []
-        if live:
-            for info in live.values():
-                sp = info.get('save_path')
-                if sp and os.path.exists(sp):
-                    paths.append(sp)
-                    break
-        paths.extend([BT_BACKUP_PATH, APP_DATA_DIR])
-        for p in paths:
-            try:
-                if p and os.path.exists(p):
-                    return shutil.disk_usage(p).free / (1024 ** 3)
-            except Exception:
-                continue
-        return None
 
     def check(self, qb_available, live=None):
         now = time.time()
@@ -50,18 +32,18 @@ class SystemAlertsMonitor:
 
         min_gib = float(cfg.getint('Alert_Disk_Min_GiB', 0) or 0)
         if min_gib > 0:
-            free_gib = self._get_free_gib(live)
-            if free_gib is not None:
+            disk = get_monitored_disk_info(live)
+            if disk.get('total_bytes', 0) > 0:
+                free_gib = float(disk['free_bytes']) / (1024 ** 3)
+                free_fmt = format_file_size(disk['free_bytes'])
                 if free_gib < min_gib and self.disk_state == 'OK':
                     self.disk_state = 'ALERT'
-                    free_fmt = format_file_size(int(free_gib * (1024 ** 3)))
-                    write_log('automation', f"ALERT: мало места на диске ({free_fmt} < {min_gib:.0f} GiB)")
-                    notify_all("⚠️ tbr PRO — Мало места на диске!", [f"Свободно: {free_fmt} (порог: {min_gib:.0f} GiB)"], critical=True)
+                    write_log('automation', f"ALERT: мало места на {disk['path']} ({free_fmt} < {min_gib:.0f} GiB)")
+                    notify_all("⚠️ tbr PRO — Мало места на диске!", [f"Диск: {disk['path']}", f"Свободно: {free_fmt} (порог: {min_gib:.0f} GiB)"], critical=True)
                 elif free_gib >= (min_gib + 5.0) and self.disk_state == 'ALERT':
                     self.disk_state = 'OK'
-                    free_fmt = format_file_size(int(free_gib * (1024 ** 3)))
-                    write_log('automation', f"RECOVERED: место на диске в норме ({free_fmt})")
-                    notify_all("✅ tbr PRO — Место на диске в норме", [f"Свободно: {free_fmt}"], critical=True)
+                    write_log('automation', f"RECOVERED: место на {disk['path']} в норме ({free_fmt})")
+                    notify_all("✅ tbr PRO — Место на диске в норме", [f"Диск: {disk['path']}", f"Свободно: {free_fmt}"], critical=True)
 
 
 system_alerts = SystemAlertsMonitor()

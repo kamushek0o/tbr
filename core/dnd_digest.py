@@ -1,14 +1,15 @@
 # core/dnd_digest.py
 import json
 import time
-import shutil
 import datetime
 from utils.config import cfg
-from utils.helpers import BT_BACKUP_PATH, APP_DATA_DIR, format_file_size, write_error_log
+from utils.helpers import format_file_size, write_error_log
 from core.app_state_db import app_state_db
 from core.summary_tracker import summary_tracker
 from core.torrent_parser import get_all_torrents
 from core.scheduler import MIN_DELTA_SEC
+from core.disk_monitor import get_monitored_disk_info
+from core.qb_api import detect_qbittorrent_port, get_live_torrent_info
 
 
 def _parse_hhmm(val, default_min):
@@ -48,12 +49,10 @@ def is_dnd_active_now(now_dt=None):
         return False
     if start_min < end_min:
         return (wd in st["days"]) and (start_min <= cur_min < end_min)
-    # Ночной переход через полночь (например 23:00 -> 08:00)
     if cur_min >= start_min:
         return wd in st["days"]
     if cur_min < end_min:
-        prev_wd = (wd - 1) % 7
-        return prev_wd in st["days"]
+        return ((wd - 1) % 7) in st["days"]
     return False
 
 
@@ -102,8 +101,7 @@ def flush_dnd_if_ready(send_fn):
 
 def _sum_positive_delta(since_ts, until_ts):
     rows = summary_tracker.db.get_snapshots_since(since_ts)
-    total = 0
-    prev = None
+    total, prev = 0, None
     for r in rows:
         ts = float(r["timestamp"])
         if ts > until_ts:
@@ -117,16 +115,6 @@ def _sum_positive_delta(since_ts, until_ts):
     return total
 
 
-def _free_disk_fmt():
-    for p in (BT_BACKUP_PATH, APP_DATA_DIR):
-        try:
-            if p and shutil.disk_usage(p).free >= 0:
-                return format_file_size(shutil.disk_usage(p).free)
-        except Exception:
-            continue
-    return "—"
-
-
 def get_digest_settings():
     return {
         "mode": cfg.get("Digest_Mode", "off"),
@@ -138,10 +126,7 @@ def get_digest_settings():
 def _last_scheduled_ts(now_dt, mode, target_hour, target_wd):
     cand = now_dt.replace(hour=target_hour, minute=0, second=0, microsecond=0)
     if mode == "daily":
-        if cand > now_dt:
-            cand -= datetime.timedelta(days=1)
-        return cand.timestamp()
-    # weekly
+        return (cand - datetime.timedelta(days=1)).timestamp() if cand > now_dt else cand.timestamp()
     days_back = (now_dt.weekday() - target_wd) % 7
     cand = (now_dt - datetime.timedelta(days=days_back)).replace(hour=target_hour, minute=0, second=0, microsecond=0)
     if cand > now_dt:
@@ -164,7 +149,6 @@ def maybe_send_digest(send_fn):
         cfg.set("Digest_Last_Sent_Ts", str(int(now_ts)))
         cfg.save()
         return False
-
     if last_sent >= sched_ts:
         return False
 
@@ -181,6 +165,10 @@ def maybe_send_digest(send_fn):
     else:
         pct_str = ""
 
+    ip, port = detect_qbittorrent_port(cfg.config)
+    live = get_live_torrent_info(ip, port) if port else {}
+    disk_info = get_monitored_disk_info(live)
+
     torrents = get_all_torrents(use_cache=True)
     deltas = summary_tracker.db.get_torrents_positive_deltas(since_ts)
     top3 = sorted(deltas.items(), key=lambda x: x[1], reverse=True)[:3]
@@ -190,13 +178,13 @@ def maybe_send_digest(send_fn):
     lines = [
         f"⏱️ Интервал: {span_hours} ч" + (" (дослан после простоя)" if delayed_sec > 3600 else ""),
         f"📤 Отдано: {format_file_size(cur_vol)}{pct_str}",
-        f"💾 Свободно на диске: {_free_disk_fmt()}",
+        f"💾 Свободно ({disk_info['path']}): {disk_info['free_fmt']}",
     ]
     if top3:
         lines.append("🏆 Топ-3 раздачи:")
         for idx, (h, val) in enumerate(top3, 1):
             nm = (torrents.get(h) or {}).get("name") or h[:10]
-            lines.append(f"  {idx}. {nm[:36]} — {format_file_size(val)}")
+            lines.append(f"{idx}. {nm[:36]} — {format_file_size(val)}")
 
     cfg.set("Digest_Last_Sent_Ts", str(int(now_ts)))
     cfg.save()

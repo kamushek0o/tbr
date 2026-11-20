@@ -1,15 +1,14 @@
 # core/widget_service.py
 import io
-import os
 import time
-import shutil
 import datetime
 from PIL import Image, ImageDraw, ImageFont
 from utils.config import cfg
-from utils.helpers import BT_BACKUP_PATH, APP_DATA_DIR, format_file_size
+from utils.helpers import format_file_size
 from core.qb_api import detect_qbittorrent_port, get_live_torrent_info, is_qb_running
 from core.torrent_parser import get_all_torrents
 from core.scheduler import MIN_DELTA_SEC
+from core.disk_monitor import get_monitored_disk_info
 
 _ICON_CACHE = {}
 PERIOD_DAYS = {'1d': 1, '7d': 7, '30d': 30}
@@ -129,12 +128,7 @@ def compute_top_n_torrents(db, summaries, live=None, top_n=5, period='1d', with_
     scored.sort(key=lambda x: x[2], reverse=True)
     prec = 3 if per != 'all' else 2
     top_items = [
-        {
-            'hash': h,
-            'full_name': nm,
-            'short_name': (nm[:26] + '…') if len(nm) > 27 else nm,
-            'gb': round(val / (1024 ** 3), prec)
-        }
+        {'hash': h, 'full_name': nm, 'short_name': (nm[:26] + '…') if len(nm) > 27 else nm, 'gb': round(val / (1024 ** 3), prec)}
         for h, nm, val in scored[:n]
     ]
     if not with_others:
@@ -144,24 +138,6 @@ def compute_top_n_torrents(db, summaries, live=None, top_n=5, period='1d', with_
     rest_bytes = max(0, sum(x[2] for x in rest))
     others = {'gb': round(rest_bytes / (1024 ** 3), prec), 'count': len(rest)}
     return top_items, others
-
-
-def _get_disk_free_bytes(live_info):
-    candidates = []
-    if live_info:
-        for info in live_info.values():
-            sp = info.get('save_path')
-            if sp and os.path.exists(sp):
-                candidates.append(sp)
-                break
-    candidates.extend([BT_BACKUP_PATH, APP_DATA_DIR])
-    for path in candidates:
-        try:
-            if path and os.path.exists(path):
-                return shutil.disk_usage(path).free
-        except Exception:
-            continue
-    return 0
 
 
 def get_widget_summary(db, ui_settings=None, top_period=None, top_scale=None):
@@ -212,7 +188,7 @@ def get_widget_summary(db, ui_settings=None, top_period=None, top_scale=None):
         prev_r = r
 
     top_items = compute_top_n_torrents(db, torrents, live=live, top_n=5, period=per)
-    free_b = _get_disk_free_bytes(live)
+    disk = get_monitored_disk_info(live)
 
     return {
         'qb_running': qb_up, 'total_torrents': total_cnt, 'active_torrents': active_cnt,
@@ -220,11 +196,10 @@ def get_widget_summary(db, ui_settings=None, top_period=None, top_scale=None):
         'uploaded_24h_bytes': up_24h, 'uploaded_24h_fmt': format_file_size(up_24h),
         'uploaded_today_bytes': up_today, 'uploaded_today_fmt': format_file_size(up_today),
         'total_uploaded_bytes': total_uploaded, 'total_uploaded_fmt': format_file_size(total_uploaded),
-        'disk_free_bytes': free_b, 'disk_free_fmt': format_file_size(free_b),
+        'disk_free_bytes': disk.get('free_bytes', 0), 'disk_free_fmt': disk.get('free_fmt', '0 B'),
         'timestamp': int(now_ts),
         'charts': {
-            'top_period': per,
-            'top_scale': scale,
+            'top_period': per, 'top_scale': scale,
             'speed_24h': [{'label': p['label'], 'speed_mbs': p['speed_mbs']} for p in speed_pts],
             'daily_7d': [{'label': k, 'gb': round(v, 2)} for k, v in list(daily_map.items())[-7:]],
             'top_5': [{'name': x['full_name'][:40], 'gb': x['gb']} for x in top_items]

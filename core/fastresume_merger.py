@@ -216,6 +216,9 @@ def run_fastresume_merge(old_hash, new_hash, delete_mode='none', merge_mode='add
 
         force_clear_cache()
         app_state_db.add_merger_record(old_hash, new_hash, m_mode, old_up, new_up, final_up)
+        uid = app_state_db.link_torrent_lineage(old_hash, new_hash)
+        if uid:
+            log.append(f"🔗 Личная история поколений связана (UID: {uid[:8]}...)")
         if handle_targets_on_merge(old_hash, new_hash, final_uploaded=final_up):
             log.append("🎯 Целевая планка (Goal) синхронизирована с новым объёмом.")
 

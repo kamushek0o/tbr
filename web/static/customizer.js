@@ -31,9 +31,7 @@ function getUiSettings() {
     return {
         theme: 'dark',
         custom_colors: { bg_main: '#121214', bg_panel: '#1a1a20', text: '#ffffff', accent: '#2ecc71' },
-        font: 'Segoe UI',
-        allow_google_fonts: false,
-        mobile_mode: true,
+        font: 'Segoe UI', allow_google_fonts: false, mobile_mode: true,
         charts: {
             daily:  { color: '#2ecc71', color2: '#10b981', gradient: true, opacity: 0.75 },
             top5:   { color: '#ff9f1c', color2: '#ff4d6d', gradient: true, opacity: 0.8 },
@@ -71,9 +69,7 @@ function applyUiSettings(ui) {
         };
     }
 
-    for (const [k, v] of Object.entries(palette)) {
-        root.style.setProperty(`--${k.replace('_', '-')}`, v);
-    }
+    for (const [k, v] of Object.entries(palette)) root.style.setProperty(`--${k.replace('_', '-')}`, v);
     document.body.dataset.theme = theme;
     document.body.classList.toggle('mobile-cards-on', ui.mobile_mode !== false);
     if (typeof updateMobileCardsBtn === 'function') updateMobileCardsBtn();
@@ -85,9 +81,8 @@ function applyUiSettings(ui) {
     if (typeof applySummarySortAndRender === 'function' && typeof rawSummaryItems !== 'undefined' && rawSummaryItems.length) {
         applySummarySortAndRender();
     }
-    if (typeof loadAnalyticsCharts === 'function' && document.getElementById('tab-analytics')?.classList.contains('active')) {
-        loadAnalyticsCharts();
-        if (typeof loadAnalyticsInsights === 'function') loadAnalyticsInsights(false);
+    if (typeof applyAnalyticsVisualSettingsLocally === 'function' && document.getElementById('tab-analytics')?.classList.contains('active')) {
+        applyAnalyticsVisualSettingsLocally(ui);
     }
 }
 
@@ -127,9 +122,7 @@ function openCustomizeModal() {
 }
 
 function closeCustomizeModal() { document.getElementById('customize-modal').style.display = 'none'; }
-function onCustThemeChange() {
-    document.getElementById('cust-custom-colors').classList.toggle('hidden', document.getElementById('cust-theme').value !== 'custom');
-}
+function onCustThemeChange() { document.getElementById('cust-custom-colors').classList.toggle('hidden', document.getElementById('cust-theme').value !== 'custom'); }
 
 function renderChartEditors(chartsCfg) {
     const box = document.getElementById('cust-charts-editors');
@@ -141,8 +134,7 @@ function renderChartEditors(chartsCfg) {
     ];
     defs.forEach(d => {
         const cfg = chartsCfg[d.key] || { color: d.def1, color2: d.def2, gradient: true, opacity: 0.7 };
-        const c1 = cfg.color || d.def1;
-        const c2 = cfg.color2 || cfg.color || d.def2;
+        const c1 = cfg.color || d.def1, c2 = cfg.color2 || cfg.color || d.def2;
         const div = document.createElement('div');
         div.style.cssText = 'background:var(--bg-input); padding:8px; border-radius:6px; margin-bottom:8px;';
         div.innerHTML = `
@@ -151,27 +143,13 @@ function renderChartEditors(chartsCfg) {
                 <label class="row-gap lbl-xs pointer"><input type="checkbox" id="cc-${d.key}-grad" ${cfg.gradient !== false ? 'checked' : ''}> Градиент</label>
             </div>
             <div class="row-wrap" style="gap:8px;">
-                <div class="row-gap">
-                    <span class="lbl-xs">Цвет 1:</span>
-                    <input type="color" id="cc-${d.key}-c1" value="${c1}">
-                </div>
-                <div class="row-gap">
-                    <span class="lbl-xs">Цвет 2:</span>
-                    <input type="color" id="cc-${d.key}-c2" value="${c2}">
-                </div>
-                <div class="row-gap">
-                    <span class="lbl-xs">Прозрачность:</span>
-                    <input type="range" id="cc-${d.key}-op" min="0.1" max="1" step="0.05" value="${cfg.opacity ?? 0.7}" style="width:75px;">
-                </div>
+                <div class="row-gap"><span class="lbl-xs">Цвет 1:</span><input type="color" id="cc-${d.key}-c1" value="${c1}"></div>
+                <div class="row-gap"><span class="lbl-xs">Цвет 2:</span><input type="color" id="cc-${d.key}-c2" value="${c2}"></div>
+                <div class="row-gap"><span class="lbl-xs">Прозрачность:</span><input type="range" id="cc-${d.key}-op" min="0.1" max="1" step="0.05" value="${cfg.opacity ?? 0.7}" style="width:75px;"></div>
             </div>
             <div class="row-wrap mt-10" style="gap:4px;">
                 <span class="lbl-xs muted-text" style="width:100%;">Неоновые пары:</span>
-                ${NEON_PRESETS.map(p => `
-                    <button type="button" class="btn btn-secondary btn-xs" style="font-size:10px; padding:2px 6px;" onclick="applyNeonPreset('${d.key}','${p.c1}','${p.c2}')">
-                        <span style="display:inline-block;width:8px;height:8px;background:${p.c1};border-radius:2px;"></span>
-                        <span style="display:inline-block;width:8px;height:8px;background:${p.c2};border-radius:2px;"></span> ${p.label}
-                    </button>
-                `).join('')}
+                ${NEON_PRESETS.map(p => `<button type="button" class="btn btn-secondary btn-xs" style="font-size:10px; padding:2px 6px;" onclick="applyNeonPreset('${d.key}','${p.c1}','${p.c2}')"><span style="display:inline-block;width:8px;height:8px;background:${p.c1};border-radius:2px;"></span><span style="display:inline-block;width:8px;height:8px;background:${p.c2};border-radius:2px;"></span> ${p.label}</button>`).join('')}
             </div>
         `;
         box.appendChild(div);
@@ -179,10 +157,8 @@ function renderChartEditors(chartsCfg) {
 }
 
 function applyNeonPreset(key, c1, c2) {
-    const el1 = document.getElementById(`cc-${key}-c1`);
-    const el2 = document.getElementById(`cc-${key}-c2`);
-    if (el1) el1.value = c1;
-    if (el2) el2.value = c2;
+    const el1 = document.getElementById(`cc-${key}-c1`), el2 = document.getElementById(`cc-${key}-c2`);
+    if (el1) el1.value = c1; if (el2) el2.value = c2;
 }
 
 function renderClientColorEditors(clientColors) {
@@ -195,17 +171,12 @@ function renderClientColorEditors(clientColors) {
     }
     const grid = document.getElementById('cust-clients-grid');
     grid.innerHTML = '';
-    const defs = {
-        "qBittorrent": "#2ecc71", "Transmission": "#e74c3c", "uTorrent": "#27ae60",
-        "Deluge": "#3498db", "BiglyBT": "#9b59b6", "Aria2": "#1abc9c",
-        "Tixati": "#f39c12", "Vuze": "#00bcd4", "libtorrent": "#95a5a6", "Прочие": "#64748b"
-    };
+    const defs = { "qBittorrent": "#2ecc71", "Transmission": "#e74c3c", "uTorrent": "#27ae60", "Deluge": "#3498db", "BiglyBT": "#9b59b6", "Aria2": "#1abc9c", "Tixati": "#f39c12", "Vuze": "#00bcd4", "libtorrent": "#95a5a6", "Прочие": "#64748b" };
     for (const [name, defCol] of Object.entries(defs)) {
-        const curCol = clientColors[name] || defCol;
         const row = document.createElement('div');
         row.className = 'row-between';
         row.style.cssText = 'background:var(--bg-input); padding:4px 8px; border-radius:5px; font-size:11px;';
-        row.innerHTML = `<span>${name}</span><input type="color" class="client-col-inp" data-client="${name}" value="${curCol}">`;
+        row.innerHTML = `<span>${name}</span><input type="color" class="client-col-inp" data-client="${name}" value="${clientColors[name] || defCol}">`;
         grid.appendChild(row);
     }
 }
@@ -214,30 +185,21 @@ async function saveCustomization() {
     const ui = getUiSettings();
     ui.theme = document.getElementById('cust-theme').value;
     ui.custom_colors = {
-        bg_main: document.getElementById('cust-bg-main').value,
-        bg_panel: document.getElementById('cust-bg-panel').value,
-        text: document.getElementById('cust-text').value,
-        accent: document.getElementById('cust-accent').value
+        bg_main: document.getElementById('cust-bg-main').value, bg_panel: document.getElementById('cust-bg-panel').value,
+        text: document.getElementById('cust-text').value, accent: document.getElementById('cust-accent').value
     };
     ui.font = document.getElementById('cust-font').value;
     ui.allow_google_fonts = document.getElementById('cust-allow-gf').checked;
     ui.mobile_mode = document.getElementById('cust-mobile-mode').checked;
-
     ui.charts = ui.charts || {};
     ['daily', 'top5', 'hourly'].forEach(k => {
         ui.charts[k] = {
-            color: document.getElementById(`cc-${k}-c1`)?.value || '#2ecc71',
-            color2: document.getElementById(`cc-${k}-c2`)?.value || '#10b981',
-            gradient: document.getElementById(`cc-${k}-grad`)?.checked !== false,
-            opacity: parseFloat(document.getElementById(`cc-${k}-op`)?.value) || 0.7
+            color: document.getElementById(`cc-${k}-c1`)?.value || '#2ecc71', color2: document.getElementById(`cc-${k}-c2`)?.value || '#10b981',
+            gradient: document.getElementById(`cc-${k}-grad`)?.checked !== false, opacity: parseFloat(document.getElementById(`cc-${k}-op`)?.value) || 0.7
         };
     });
-
     ui.peer_client_colors = ui.peer_client_colors || {};
-    document.querySelectorAll('.client-col-inp').forEach(inp => {
-        ui.peer_client_colors[inp.dataset.client] = inp.value;
-    });
-
+    document.querySelectorAll('.client-col-inp').forEach(inp => { ui.peer_client_colors[inp.dataset.client] = inp.value; });
     await persistUiSettings(ui);
     closeCustomizeModal();
 }

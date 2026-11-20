@@ -2,6 +2,7 @@
 import os
 import io
 import csv
+import time
 import datetime
 import urllib.parse
 from flask import Blueprint, request, jsonify, Response, g
@@ -14,6 +15,9 @@ from core.qb_api import detect_qbittorrent_port, get_live_torrent_info
 from core.private_vault import get_hidden_hashes, filter_summary_stats_for_role
 from core.torrent_targets import list_targets
 from core.health_score import enrich_live_metrics
+from core.scheduler import MIN_DELTA_SEC
+from core.widget_service import build_detailed_speed_series, build_hourly_aggregated_speed_series, compute_top_n_torrents
+from core.analytics_insights import invalidate_insights_cache, get_heatmap_365, get_records_and_comparisons
 from web.security import HASH_RE
 
 analytics_bp = Blueprint('analytics_bp', __name__)
@@ -56,8 +60,7 @@ def api_summary():
 
     role = g.get('role') or 'viewer'
     if role != 'admin':
-        hidden = get_hidden_hashes(live)
-        stats = filter_summary_stats_for_role(stats, role, hidden)
+        stats = filter_summary_stats_for_role(stats, role, get_hidden_hashes(live))
     return jsonify(stats)
 
 
@@ -75,14 +78,48 @@ def api_analytics_history():
 
 @analytics_bp.route('/api/analytics/charts')
 def api_analytics_charts():
+    chart = request.args.get('chart', 'all')
     hours = request.args.get('hours', 24, type=int)
-    top_n = request.args.get('top_n', 5, type=int)
+    top_n = max(1, min(25, request.args.get('top_n', 5, type=int)))
     top_period = request.args.get('top_period', '1d')
+    win_hours = hours if hours in (6, 12, 24, 72, 168) else 24
+
+    if chart == 'hourly':
+        series = build_detailed_speed_series(summary_tracker.db, hours=win_hours) if win_hours <= 24 else build_hourly_aggregated_speed_series(summary_tracker.db, hours=win_hours)
+        return jsonify({'hourly': {'hours': win_hours, 'labels': [p['label'] for p in series], 'values': [p['speed_mbs'] for p in series], 'meta': series}})
+
+    if chart == 'daily':
+        rows = summary_tracker.db.get_snapshots_since(time.time() - (14 * 86400))
+        daily_map, prev_row = {}, None
+        for r in rows:
+            if prev_row is not None:
+                t1, t2 = prev_row['timestamp'], r['timestamp']
+                dt_sec, delta = t2 - t1, max(0, r['total_uploaded'] - prev_row['total_uploaded'])
+                if dt_sec >= MIN_DELTA_SEC and delta > 0:
+                    cur_ts = datetime.datetime.fromtimestamp(t1).replace(minute=0, second=0, microsecond=0).timestamp()
+                    while cur_ts < t2:
+                        b_end = cur_ts + 3600.0
+                        overlap = min(t2, b_end) - max(t1, cur_ts)
+                        if overlap > 0:
+                            dk = datetime.datetime.fromtimestamp(cur_ts).strftime('%Y-%m-%d')
+                            daily_map[dk] = daily_map.get(dk, 0.0) + delta * (overlap / dt_sec)
+                        cur_ts = b_end
+            prev_row = r
+        s_days = sorted(daily_map.keys())[-14:]
+        return jsonify({'daily': {'labels': [f"{d[8:10]}.{d[5:7]}" for d in s_days], 'values': [round(daily_map[d] / (1024 ** 3), 3) for d in s_days]}})
+
     summaries = get_global_torrent_summaries()
+    live = _get_live_dict()
     if g.get('role') != 'admin':
-        hidden = get_hidden_hashes(_get_live_dict())
+        hidden = get_hidden_hashes(live)
         if hidden:
             summaries = [s for s in summaries if (s.get('hash_id') or s.get('hash') or '').lower() not in hidden]
+
+    if chart == 'top5':
+        per = top_period if top_period in ('1d', '7d', '30d', 'all') else '1d'
+        top_items, others = compute_top_n_torrents(summary_tracker.db, summaries, live=live, top_n=top_n, period=per, with_others=True)
+        return jsonify({'top5': {'n': top_n, 'period': per, 'labels': [x['short_name'] for x in top_items], 'full_labels': [x['full_name'] for x in top_items], 'values': [x['gb'] for x in top_items], 'others': others}})
+
     return jsonify(summary_tracker.get_charts_data(summaries, hours=hours, top_n=top_n, top_period=top_period))
 
 
@@ -91,22 +128,17 @@ def api_smart_calc():
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         return jsonify({'success': False, 'error': 'Неверный формат JSON'}), 400
-    summaries = get_global_torrent_summaries()
     return jsonify(summary_tracker.calculate_smart_forecast(
         str(data.get('target_type', 'torrent')), str(data.get('hash', '')),
-        str(data.get('target', ''))[:64], str(data.get('speed', ''))[:64], summaries
+        str(data.get('target', ''))[:64], str(data.get('speed', ''))[:64], get_global_torrent_summaries()
     ))
 
 
 @analytics_bp.route('/api/smart_calc/export', methods=['POST'])
 def api_smart_calc_export():
-    data = request.get_json(silent=True)
-    if not isinstance(data, dict):
-        return jsonify({'success': False, 'error': 'Ожидался JSON объект'}), 400
+    data = request.get_json(silent=True) or {}
     forecast_data = data.get('forecast_data')
-    if not isinstance(forecast_data, dict):
-        return jsonify({'success': False, 'error': 'Отсутствует forecast_data'}), 400
-    rows = forecast_data.get('forecast_rows')
+    rows = forecast_data.get('forecast_rows') if isinstance(forecast_data, dict) else None
     if not isinstance(rows, list) or len(rows) > 100 or not all(isinstance(r, dict) for r in rows):
         return jsonify({'success': False, 'error': 'Некорректные строки прогноза'}), 400
     filepath, filename = summary_tracker.export_forecast_csv(forecast_data)
@@ -121,9 +153,7 @@ def api_smart_calc_export():
 def api_export_csv():
     if request.method == 'POST':
         req_data = request.get_json(silent=True)
-        if not isinstance(req_data, dict):
-            return jsonify({'error': 'Некорректный JSON'}), 400
-        items = req_data.get('items')
+        items = req_data.get('items') if isinstance(req_data, dict) else None
         if not isinstance(items, list) or len(items) > 5000 or not all(isinstance(x, dict) for x in items):
             return jsonify({'error': 'Некорректный список или превышен лимит 5000 строк'}), 400
     else:
@@ -160,7 +190,7 @@ def api_logs_can_open_folder():
 @analytics_bp.route('/api/logs/open_folder', methods=['POST'])
 def api_logs_open_folder():
     if g.get('role') != 'admin' or not _is_strict_localhost() or os.name != 'nt':
-        return jsonify({'success': False, 'error': 'Доступно только локально с localhost (не в Docker)'}), 403
+        return jsonify({'success': False, 'error': 'Доступно только локально с localhost'}), 403
     try:
         os.startfile(LOG_FOLDER)
         return jsonify({'success': True})
@@ -180,14 +210,30 @@ def api_logs_by_day():
     if g.get('role') != 'admin':
         return jsonify({'error': 'Только для Admin'}), 403
     date_str, start_ts, end_ts = _parse_day_bounds(request.args.get('date', ''))
-    page = request.args.get('page', 1, type=int)
-    per_page = request.args.get('per_page', 15, type=int)
-    res = summary_tracker.db.get_snapshots_by_day_paginated(start_ts, end_ts, page=page, per_page=per_page)
+    res = summary_tracker.db.get_snapshots_by_day_paginated(start_ts, end_ts, page=request.args.get('page', 1, type=int), per_page=request.args.get('per_page', 15, type=int))
     for it in res['items']:
         it['uploaded_fmt'] = format_file_size(it.get('total_uploaded', 0))
         it['size_fmt'] = format_file_size(it.get('total_size', 0))
     res['date'] = date_str
     return jsonify(res)
+
+
+@analytics_bp.route('/api/logs/snapshot/ignore', methods=['POST'])
+def api_logs_snapshot_ignore():
+    if g.get('role') != 'admin':
+        return jsonify({'success': False, 'error': 'Только для Admin'}), 403
+    data = request.get_json(silent=True) or {}
+    snap_id = data.get('id')
+    if not snap_id:
+        return jsonify({'success': False, 'error': 'Не указан id снимка'}), 400
+    ignored = bool(data.get('ignored', True))
+    ok = summary_tracker.db.set_snapshot_ignored(int(snap_id), ignored=ignored)
+    if not ok:
+        return jsonify({'success': False, 'error': 'Снимок не найден'}), 404
+    invalidate_insights_cache()
+    hm = get_heatmap_365(summary_tracker.db)
+    records = get_records_and_comparisons(summary_tracker.db, heatmap_cells=hm, force_recalc=True)
+    return jsonify({'success': True, 'records': records})
 
 
 @analytics_bp.route('/api/logs/day/download')

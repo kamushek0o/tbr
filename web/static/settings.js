@@ -61,6 +61,21 @@ async function openSettingsModal() {
     document.getElementById('setting-w2').value = d.w2;
     document.getElementById('setting-w3').value = d.w3;
 
+    const chMbps = document.getElementById('setting-max-channel-mbps');
+    if (chMbps) chMbps.value = d.max_channel_mbps ?? 1000;
+
+    const diskSel = document.getElementById('setting-monitored-disk');
+    if (diskSel) {
+        diskSel.innerHTML = '<option value="">Авто (диск с макс. числом раздач)</option>';
+        (d.disks || []).forEach(dk => {
+            const opt = document.createElement('option');
+            opt.value = dk.path;
+            opt.textContent = `${dk.path} — ${dk.free_fmt} своб. (${dk.torrents_count} раздач)`;
+            diskSel.appendChild(opt);
+        });
+        diskSel.value = d.monitored_disk || '';
+    }
+
     const kaBlock = document.getElementById('settings-keepawake-block');
     if (kaBlock) kaBlock.classList.toggle('hidden', !d.is_windows);
     const kaChk = document.getElementById('setting-keepawake-enabled');
@@ -83,9 +98,7 @@ async function openSettingsModal() {
     document.getElementById('settings-modal').style.display = 'flex';
 }
 
-function closeSettingsModal() {
-    document.getElementById('settings-modal').style.display = 'none';
-}
+function closeSettingsModal() { document.getElementById('settings-modal').style.display = 'none'; }
 
 async function saveSettings() {
     const payload = {
@@ -100,6 +113,8 @@ async function saveSettings() {
         w1: parseInt(document.getElementById('setting-w1').value) || 0,
         w2: parseInt(document.getElementById('setting-w2').value) || 0,
         w3: parseInt(document.getElementById('setting-w3').value) || 0,
+        max_channel_mbps: parseInt(document.getElementById('setting-max-channel-mbps')?.value) || 1000,
+        monitored_disk: document.getElementById('setting-monitored-disk')?.value || '',
         keep_awake_enabled: document.getElementById('setting-keepawake-enabled')?.checked || false,
         keep_awake_min_kb: parseInt(document.getElementById('setting-keepawake-kb')?.value) || 0,
         keep_awake_display: document.getElementById('setting-keepawake-display')?.checked || false,
@@ -131,11 +146,7 @@ async function uploadRestoreZip(file) {
     const fd = new FormData();
     fd.append('file', file);
     try {
-        const res = await fetch('/api/backup/restore', {
-            method: 'POST',
-            headers: { 'X-CSRF-Token': CSRF_TOKEN },
-            body: fd
-        });
+        const res = await fetch('/api/backup/restore', { method: 'POST', headers: { 'X-CSRF-Token': CSRF_TOKEN }, body: fd });
         const d = await res.json();
         alert(d.message || d.error);
         if (d.success) closeSettingsModal();

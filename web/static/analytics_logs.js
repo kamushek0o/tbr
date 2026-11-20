@@ -82,16 +82,41 @@ async function loadDayLogs(page = 1) {
     const tbody = document.getElementById('day-logs-tbody');
     tbody.innerHTML = '';
     if (!d.items || !d.items.length) {
-        tbody.innerHTML = `<tr><td colspan="4" class="center-msg">${t('no_snaps_day')}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="5" class="center-msg">${t('no_snaps_day')}</td></tr>`;
         return;
     }
     const frag = document.createDocumentFragment();
     d.items.forEach(r => {
+        const isIgn = Boolean(r.ignore_in_stats);
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${escapeHtml(r.datetime)}</td><td class="accent-txt"><b>${escapeHtml(r.uploaded_fmt)}</b></td><td>${escapeHtml(r.size_fmt)}</td><td>${r.count}</td>`;
+        if (isIgn) tr.style.cssText = 'opacity:0.45; text-decoration:line-through;';
+        tr.innerHTML = `
+            <td>${escapeHtml(r.datetime)}</td>
+            <td class="accent-txt"><b>${escapeHtml(r.uploaded_fmt)}</b></td>
+            <td>${escapeHtml(r.size_fmt)}</td>
+            <td>${r.count}</td>
+            <td>
+                <button class="btn ${isIgn ? 'btn-secondary' : 'btn-danger'} btn-xs"
+                        title="${isIgn ? 'Вернуть снимок в расчёты' : 'Исключить аномальный снимок из статистики'}"
+                        onclick="toggleSnapshotIgnore(${r.id}, ${!isIgn})">${isIgn ? '♻️' : '🗑️'}</button>
+            </td>
+        `;
         frag.appendChild(tr);
     });
     tbody.appendChild(frag);
+}
+
+async function toggleSnapshotIgnore(snapId, ignored) {
+    const msg = ignored
+        ? 'Исключить этот снимок из статистики (графиков, рекордов и тепловой карты)?'
+        : 'Вернуть этот снимок обратно в статистику?';
+    if (!confirm(msg)) return;
+    const res = await api('/api/logs/snapshot/ignore', 'POST', { id: snapId, ignored });
+    const d = await res.json();
+    if (!res.ok || !d.success) return alert(d.error || 'Ошибка');
+    if (d.records && typeof _renderRecords === 'function') _renderRecords(d.records);
+    loadDayLogs(dayLogsPage);
+    if (typeof loadAnalyticsCharts === 'function') loadAnalyticsCharts();
 }
 
 async function openLogsFolderHost() {

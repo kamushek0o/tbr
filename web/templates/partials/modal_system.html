@@ -1,3 +1,15 @@
+<!-- МОДАЛЬНОЕ ОКНО ПОДТВЕРЖДЕНИЯ УМНОЙ ЗАМОРОЗКИ -->
+<div id="freeze-confirm-modal" class="modal-backdrop">
+    <div class="modal" style="max-width: 420px;">
+        <div class="card-title">❄️ УМНАЯ ЗАМОРОЗКА РАЗДАЧ</div>
+        <p id="freeze-confirm-desc" style="font-size:13px; line-height:1.5; margin-bottom:14px;">Подготовка...</p>
+        <div class="row-end">
+            <button class="btn btn-secondary" onclick="closeFreezeConfirmModal()">Отмена</button>
+            <button id="btn-freeze-confirm-go" class="btn" onclick="executeSmartFreezeToggle()">Подтвердить</button>
+        </div>
+    </div>
+</div>
+
 <!-- МОДАЛЬНОЕ ОКНО ОБНОВЛЕНИЙ -->
 <div id="update-modal" class="modal-backdrop">
     <div class="modal" style="max-width: 560px; max-height: 85vh; display: flex; flex-direction: column;">
@@ -170,7 +182,7 @@
     </div>
 </div>
 
-<!-- ГЕНЕРАТОР SHARE CARD PNG (ЗАДАЧА 34) -->
+<!-- ГЕНЕРАТОР SHARE CARD PNG -->
 <div id="share-card-modal" class="modal-backdrop">
     <div class="modal" style="max-width: 720px;">
         <div class="row-between mb-10">

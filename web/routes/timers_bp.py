@@ -1,10 +1,11 @@
 # web/routes/timers_bp.py
 from flask import Blueprint, request, jsonify, g
 from utils.config import cfg
+from core.qb_api import detect_qbittorrent_port, get_live_torrent_info
 from core.smart_timers import (
     get_freeze_status, freeze_active_torrents, unfreeze_torrents,
     get_snooze_status, start_snooze, cancel_snooze,
-    list_expirations, set_expiration, remove_expiration
+    list_expirations, set_expiration, remove_expiration, _INACTIVE_STATES
 )
 from core.smart_tagging import (
     list_tagging_rules, add_tagging_rule, toggle_tagging_rule, delete_tagging_rule
@@ -25,8 +26,15 @@ def _actor():
 @timers_bp.route('/api/freeze/status')
 def api_freeze_status():
     if g.get('role') != 'admin':
-        return jsonify({'frozen': False, 'count': 0}), 403
-    return jsonify(get_freeze_status())
+        return jsonify({'frozen': False, 'count': 0, 'active_count': 0}), 403
+    st = get_freeze_status()
+    active_cnt = 0
+    if not st.get('frozen'):
+        ip, port = detect_qbittorrent_port(cfg.config)
+        live = get_live_torrent_info(ip, port) if port else {}
+        active_cnt = sum(1 for info in live.values() if str(info.get('state', '')).lower() not in _INACTIVE_STATES)
+    st['active_count'] = active_cnt
+    return jsonify(st)
 
 
 @timers_bp.route('/api/freeze/toggle', methods=['POST'])
@@ -184,8 +192,7 @@ def api_notifications_schedule():
         return jsonify({'dnd': get_dnd_settings(), 'digest': get_digest_settings()})
 
     data = request.get_json(silent=True) or {}
-    dnd = data.get('dnd') or {}
-    dig = data.get('digest') or {}
+    dnd, dig = data.get('dnd') or {}, data.get('digest') or {}
 
     cfg.set('DND_Enabled', str(bool(dnd.get('enabled', False))))
     cfg.set('DND_Start', str(dnd.get('start', '23:00'))[:5] or '23:00')

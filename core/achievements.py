@@ -16,10 +16,11 @@ ACHIEVEMENTS_CATALOG = [
     {'code': 'fifty_tb', 'icon': '🥇', 'title': 'Властелин сидбокса', 'title_en': 'Seedbox Overlord', 'desc': 'Отдать суммарно 50 TiB данных', 'desc_en': 'Upload 50 TiB in total'},
     {'code': 'veteran_100d', 'icon': '🎖️', 'title': 'Ветеран раздачи', 'title_en': '100-Day Veteran', 'desc': 'Держать раздачу в активе 100+ дней', 'desc_en': 'Keep a torrent active for 100+ days'},
     {'code': 'keeper_5', 'icon': '🛡️', 'title': 'Хранитель', 'title_en': 'The Keeper', 'desc': 'Быть единственным сидом на 5+ раздачах', 'desc_en': 'Be the only seeder on 5+ torrents'},
-    {'code': 'night_shift_500g', 'icon': '🌙', 'title': 'Ночная смена', 'title_en': 'Night Shift', 'desc': 'Отдать 500+ GiB за одну ночь (00:00–08:00)', 'desc_en': 'Upload 500+ GiB in one night (00:00–08:00)'},
+    {'code': 'night_shift_500g', 'icon': '🌙', 'title': 'Ночная смена', 'title_en': 'Night Shift', 'desc': 'Отдать 150+ GiB за одну ночь (00:00–08:00)', 'desc_en': 'Upload 150+ GiB in one night (00:00–08:00)'},
     {'code': 'ratio_god', 'icon': '🔥', 'title': 'Бог Ratio', 'title_en': 'Ratio God', 'desc': 'Раздача >= 100 GiB с Ratio >= 10.0x', 'desc_en': 'Torrent >= 100 GiB with Ratio >= 10.0x'},
     {'code': 'collector_100', 'icon': '📦', 'title': 'Коллекционер', 'title_en': 'Hoarder', 'desc': 'Держать в клиенте 100+ раздач одновременно', 'desc_en': 'Seed 100+ torrents simultaneously'},
-    {'code': 'marathon_1tb', 'icon': '⚡', 'title': 'Суточный марафон', 'title_en': 'Daily Marathon', 'desc': 'Отдать 1+ TiB за одни сутки', 'desc_en': 'Upload 1+ TiB in a single day'},
+    {'code': 'marathon_1tb', 'icon': '⚡', 'title': 'Суточный марафон', 'title_en': 'Daily Marathon', 'desc': 'Отдать 500+ GiB за одни сутки', 'desc_en': 'Upload 500+ GiB in a single day'},
+    {'code': 'gigabit_marathon_1tb', 'icon': '🚀', 'title': 'Гигабитный марафон', 'title_en': 'Gigabit Marathon', 'desc': 'Бонус: отдать 1+ TiB за одни сутки', 'desc_en': 'Bonus: upload 1+ TiB in a single day', 'hidden': True},
     {'code': 'surgeon', 'icon': '🩺', 'title': 'Главный хирург', 'title_en': 'Chief Surgeon', 'desc': 'Провести хотя бы один мердж .fastresume', 'desc_en': 'Complete at least one .fastresume merge'},
 ]
 
@@ -52,9 +53,7 @@ def _unlock(code, meta=None):
 
 def _check_night_and_day_records():
     rows = summary_tracker.db.get_snapshots_since(time.time() - 60 * 86400)
-    night_by_date = {}
-    day_by_date = {}
-    prev = None
+    night_by_date, day_by_date, prev = {}, {}, None
     for r in rows:
         if prev is not None:
             d = max(0, int(r['total_uploaded']) - int(prev['total_uploaded']))
@@ -68,7 +67,7 @@ def _check_night_and_day_records():
         prev = r
     max_night = max(night_by_date.values(), default=0)
     max_day = max(day_by_date.values(), default=0)
-    return max_night >= (500 * 1024 ** 3), max_day >= (1024 ** 4)
+    return max_night >= (150 * 1024 ** 3), max_day >= (500 * 1024 ** 3), max_day >= (1024 ** 4)
 
 
 def evaluate_achievements(force=False):
@@ -87,11 +86,7 @@ def evaluate_achievements(force=False):
     live = get_live_torrent_info(ip, port) if port else {}
     live_lower = {k.lower(): v for k, v in live.items()}
 
-    tot_up = 0
-    max_act = 0
-    last_seed_cnt = 0
-    has_ratio_god = False
-
+    tot_up, max_act, last_seed_cnt, has_ratio_god = 0, 0, 0, False
     for s in summaries:
         hl = (s.get('hash_id') or '').lower()
         lv = live_lower.get(hl, {})
@@ -116,10 +111,11 @@ def evaluate_achievements(force=False):
         'collector_100': len(summaries) >= 100,
     }
 
-    if 'night_shift_500g' not in unlocked or 'marathon_1tb' not in unlocked:
-        hit_night, hit_day = _check_night_and_day_records()
+    if any(k not in unlocked for k in ('night_shift_500g', 'marathon_1tb', 'gigabit_marathon_1tb')):
+        hit_night, hit_500g, hit_1tb = _check_night_and_day_records()
         checks['night_shift_500g'] = hit_night
-        checks['marathon_1tb'] = hit_day
+        checks['marathon_1tb'] = hit_500g
+        checks['gigabit_marathon_1tb'] = hit_1tb
 
     if 'surgeon' not in unlocked:
         checks['surgeon'] = len(app_state_db.get_audit_events(category='merger', limit=1)) > 0
@@ -135,12 +131,18 @@ def get_achievements_view():
     out = []
     for item in ACHIEVEMENTS_CATALOG:
         u = unlocked.get(item['code'])
+        is_hidden_locked = bool(item.get('hidden')) and not u
         dt_str = datetime.datetime.fromtimestamp(u['unlocked_at']).strftime('%Y-%m-%d %H:%M') if u else None
-        out.append({
-            **item,
-            'unlocked': bool(u),
-            'unlocked_at': dt_str,
-        })
+        entry = dict(item)
+        if is_hidden_locked:
+            entry['icon'] = '🎁'
+            entry['title'] = 'Секретная бонусная ачивка'
+            entry['title_en'] = 'Hidden Bonus Achievement'
+            entry['desc'] = 'Для обладателей гигабитных каналов'
+            entry['desc_en'] = 'For gigabit seedbox owners'
+        entry['unlocked'] = bool(u)
+        entry['unlocked_at'] = dt_str
+        out.append(entry)
     return {
         'unlocked_count': sum(1 for x in out if x['unlocked']),
         'total_count': len(out),

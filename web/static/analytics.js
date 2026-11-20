@@ -1,8 +1,26 @@
 // web/static/analytics.js
-let lastForecastData = null;
 let chartDaily = null;
 let chartTop5 = null;
 let chartHourly = null;
+let _lastTopData = null;
+let _lastHourlyMeta = [];
+const _chartAborts = { daily: null, hourly: null, top5: null };
+const _debounceTimers = {};
+
+function _debounce(key, fn, ms = 500) {
+    clearTimeout(_debounceTimers[key]);
+    _debounceTimers[key] = setTimeout(fn, ms);
+}
+
+function _persistUiBg(ui) {
+    if (typeof CURRENT_UI_SETTINGS !== 'undefined') CURRENT_UI_SETTINGS = ui;
+    localStorage.setItem('tbr_ui_settings', JSON.stringify(ui));
+    _debounce('ui_save', async () => {
+        if (typeof CURRENT_ROLE === 'undefined' || CURRENT_ROLE === 'admin') {
+            try { await api('/api/profile/ui', 'POST', ui); } catch (e) {}
+        }
+    }, 500);
+}
 
 async function loadAnalyticsTab() {
     syncAnalyticsControlsFromUi();
@@ -10,12 +28,11 @@ async function loadAnalyticsTab() {
     if (typeof loadAnalyticsInsights === 'function') loadAnalyticsInsights(false);
     initDayLogs();
     if (!rawSummaryItems.length) await loadSummary();
-    else populateAnalyticsSelectors();
+    else if (typeof populateAnalyticsSelectors === 'function') populateAnalyticsSelectors();
 }
 
 function syncAnalyticsControlsFromUi() {
-    const ui = typeof getUiSettings === 'function' ? getUiSettings() : {};
-    const ch = ui.charts || {};
+    const ch = (typeof getUiSettings === 'function' ? getUiSettings().charts : {}) || {};
     const hSel = document.getElementById('chart-hourly-hours');
     if (hSel) hSel.value = String(ch.hourly_hours || 24);
 
@@ -27,7 +44,6 @@ function syncAnalyticsControlsFromUi() {
         yInp.disabled = !hasYMin;
         yInp.value = hasYMin ? ch.hourly_y_min : '';
     }
-
     const topInp = document.getElementById('chart-topn-val');
     if (topInp) topInp.value = Math.max(1, Math.min(25, parseInt(ch.top_n) || 5));
     const perSel = document.getElementById('chart-top-period');
@@ -39,7 +55,16 @@ function syncAnalyticsControlsFromUi() {
 function onHourlyWindowChange() {
     const ui = getUiSettings(); ui.charts = ui.charts || {};
     ui.charts.hourly_hours = parseInt(document.getElementById('chart-hourly-hours').value) || 24;
-    persistUiSettings(ui);
+    _persistUiBg(ui);
+    _debounce('fetch_hourly', () => loadSingleChart('hourly'), 300);
+}
+
+function _applyHourlyYMinLocally(yMinVal) {
+    if (!chartHourly) return;
+    const yScale = chartHourly.options.scales.y;
+    if (yMinVal !== null && Number.isFinite(yMinVal)) { delete yScale.beginAtZero; yScale.min = yMinVal; }
+    else { delete yScale.min; yScale.beginAtZero = true; }
+    chartHourly.update('none');
 }
 
 function onHourlyYMinToggle() {
@@ -47,36 +72,44 @@ function onHourlyYMinToggle() {
     const inp = document.getElementById('chart-hourly-ymin');
     inp.disabled = isAuto;
     const ui = getUiSettings(); ui.charts = ui.charts || {};
-    ui.charts.hourly_y_min = isAuto ? null : Math.max(0, parseFloat(inp.value) || 0);
-    persistUiSettings(ui);
+    const val = isAuto ? null : Math.max(0, parseFloat(inp.value) || 0);
+    ui.charts.hourly_y_min = val;
+    _applyHourlyYMinLocally(val);
+    _persistUiBg(ui);
 }
 
 function onHourlyYMinInput() {
-    const val = parseFloat(document.getElementById('chart-hourly-ymin').value);
+    const raw = parseFloat(document.getElementById('chart-hourly-ymin').value);
+    const val = Number.isFinite(raw) && raw >= 0 ? raw : 0;
     const ui = getUiSettings(); ui.charts = ui.charts || {};
-    ui.charts.hourly_y_min = Number.isFinite(val) && val >= 0 ? val : 0;
-    persistUiSettings(ui);
+    ui.charts.hourly_y_min = val;
+    _applyHourlyYMinLocally(val);
+    _persistUiBg(ui);
 }
 
 function setTopN(n) {
     const clamped = Math.max(1, Math.min(25, parseInt(n) || 5));
     const inp = document.getElementById('chart-topn-val');
-    if (inp) inp.value = clamped;
+    if (inp && document.activeElement !== inp) inp.value = clamped;
     const ui = getUiSettings(); ui.charts = ui.charts || {};
     ui.charts.top_n = clamped;
-    persistUiSettings(ui);
+    _persistUiBg(ui);
+    _debounce('fetch_top5', () => loadSingleChart('top5'), 500);
 }
 
 function onTopPeriodChange() {
     const ui = getUiSettings(); ui.charts = ui.charts || {};
     ui.charts.top_period = document.getElementById('chart-top-period').value || '1d';
-    persistUiSettings(ui);
+    _persistUiBg(ui);
+    _debounce('fetch_top5', () => loadSingleChart('top5'), 300);
 }
 
 function onTopScaleChange() {
+    const scale = document.getElementById('chart-top-scale').value || 'lin';
     const ui = getUiSettings(); ui.charts = ui.charts || {};
-    ui.charts.top_scale = document.getElementById('chart-top-scale').value || 'lin';
-    persistUiSettings(ui);
+    ui.charts.top_scale = scale;
+    _persistUiBg(ui);
+    if (chartTop5 && _lastTopData) _renderTop5Chart(_lastTopData, scale, true);
 }
 
 function _computeHourMarkerFlags(meta) {
@@ -86,9 +119,9 @@ function _computeHourMarkerFlags(meta) {
         if (!m || !m.ts) return;
         const dt = new Date(m.ts * 1000);
         const hKey = `${dt.getFullYear()}-${dt.getMonth()}-${dt.getDate()}-${dt.getHours()}`;
-        const distSec = dt.getMinutes() * 60 + dt.getSeconds();
+        const dist = dt.getMinutes() * 60 + dt.getSeconds();
         const prev = bestByHour.get(hKey);
-        if (!prev || distSec < prev.dist) bestByHour.set(hKey, { idx, dist: distSec });
+        if (!prev || dist < prev.dist) bestByHour.set(hKey, { idx, dist });
     });
     const flags = new Array(meta.length).fill(false);
     bestByHour.forEach(v => { flags[v.idx] = true; });
@@ -102,265 +135,172 @@ function _buildTwoColorGradient(canvasId, c1Hex, c2Hex, opacity, isHorizontal = 
     const rgb1 = typeof hexToRgb === 'function' ? hexToRgb(c1Hex) : { r: 46, g: 204, b: 113 };
     const rgb2 = typeof hexToRgb === 'function' ? hexToRgb(c2Hex || c1Hex) : rgb1;
     const op = opacity ?? 0.75;
-    const grad = isHorizontal
-        ? ctx.createLinearGradient(0, 0, canvas.clientWidth || 600, 0)
-        : ctx.createLinearGradient(0, 0, 0, canvas.clientHeight || 220);
+    const grad = isHorizontal ? ctx.createLinearGradient(0, 0, canvas.clientWidth || 600, 0) : ctx.createLinearGradient(0, 0, 0, canvas.clientHeight || 220);
     grad.addColorStop(0, `rgba(${rgb1.r},${rgb1.g},${rgb1.b},${op})`);
     grad.addColorStop(1, `rgba(${rgb2.r},${rgb2.g},${rgb2.b},${Math.max(0.08, op * 0.45)})`);
     return grad;
 }
 
+function applyAnalyticsVisualSettingsLocally(ui) {
+    const chCfg = (ui && ui.charts) || {};
+    if (chartDaily) {
+        const cD = chCfg.daily || { color: '#2ecc71', color2: '#10b981', opacity: 0.75 };
+        chartDaily.data.datasets[0].backgroundColor = cD.gradient !== false ? _buildTwoColorGradient('chart-daily', cD.color, cD.color2, cD.opacity, false) : cD.color;
+        chartDaily.data.datasets[0].borderColor = cD.color;
+        chartDaily.update('none');
+    }
+    if (chartHourly) {
+        const cH = chCfg.hourly || { color: '#00f5d4', color2: '#9b5de5', opacity: 0.35 };
+        chartHourly.data.datasets[0].backgroundColor = cH.gradient !== false ? _buildTwoColorGradient('chart-hourly', cH.color, cH.color2, cH.opacity, false) : cH.color;
+        chartHourly.data.datasets[0].borderColor = cH.color;
+        chartHourly.update('none');
+    }
+    if (chartTop5 && _lastTopData) _renderTop5Chart(_lastTopData, chCfg.top_scale || 'lin', true);
+}
+
+function _chartThemeColors() {
+    const cs = getComputedStyle(document.documentElement);
+    return {
+        tick: cs.getPropertyValue('--text-muted').trim() || '#95a5a6',
+        grid: cs.getPropertyValue('--border').trim() || 'rgba(255,255,255,0.08)'
+    };
+}
+
+function _renderDailyChart(dailyData) {
+    const cD = ((typeof getUiSettings === 'function' ? getUiSettings().charts : {}) || {}).daily || { color: '#2ecc71', color2: '#10b981', opacity: 0.75 };
+    const bg = cD.gradient !== false ? _buildTwoColorGradient('chart-daily', cD.color, cD.color2, cD.opacity, false) : cD.color;
+    const { tick, grid } = _chartThemeColors();
+    if (chartDaily) {
+        chartDaily.data.labels = dailyData.labels || [];
+        chartDaily.data.datasets[0].data = dailyData.values || [];
+        chartDaily.data.datasets[0].backgroundColor = bg;
+        chartDaily.data.datasets[0].borderColor = cD.color;
+        chartDaily.update('none');
+        return;
+    }
+    chartDaily = new Chart(document.getElementById('chart-daily'), {
+        type: 'bar',
+        data: { labels: dailyData.labels || [], datasets: [{ data: dailyData.values || [], backgroundColor: bg, borderColor: cD.color, borderWidth: 1, borderRadius: 4, minBarLength: 2, barPercentage: 0.65 }] },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            scales: { x: { ticks: { color: tick, font: { size: 10 } }, grid: { color: grid } }, y: { beginAtZero: true, ticks: { color: tick, font: { size: 10 } }, grid: { color: grid } } },
+            plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => `${currentLang === 'en' ? 'Daily Upload' : 'Отдано за день'}: ${ctx.parsed.y} GiB` } } }
+        }
+    });
+}
+
+function _renderTop5Chart(topData, topScale = 'lin', updateOnly = false) {
+    _lastTopData = topData;
+    const chCfg = (typeof getUiSettings === 'function' ? getUiSettings().charts : {}) || {};
+    const rawVals = [...(topData?.values || [])], labels = [...(topData?.labels || [])], fullLabels = [...(topData?.full_labels || topData?.labels || [])];
+    const others = topData?.others, hasOthers = Boolean(others && (others.gb > 0 || others.count > 0));
+    const isEn = (typeof currentLang !== 'undefined' && currentLang === 'en');
+    if (hasOthers) {
+        labels.push(isEn ? `Others (${others.count})` : `Все остальные (${others.count})`);
+        fullLabels.push(isEn ? `All other torrents (${others.count} pcs)` : `Все остальные раздачи (${others.count} шт.)`);
+        rawVals.push(others.gb);
+    }
+    const topWrap = document.getElementById('chart-top5-wrap');
+    if (topWrap) topWrap.style.height = `${Math.max(210, (labels.length || 5) * 32 + 48)}px`;
+
+    const isLog = (topScale === 'log10'), plotVals = isLog ? rawVals.map(v => Math.log10(1 + Math.max(0, v))) : rawVals;
+    const { tick, grid } = _chartThemeColors();
+    const xScale = { beginAtZero: true, ticks: { color: tick, font: { size: 10 } }, grid: { color: grid } };
+    if (isLog) {
+        const maxR = Math.max(1, ...rawVals), pwr = [0, 1, 10, 100, 1000, 10000, 100000].filter(p => p === 0 || p <= maxR * 2.5);
+        if (pwr.length < 2) pwr.push(1, 10);
+        xScale.afterBuildTicks = ax => { ax.ticks = pwr.map(p => ({ value: Math.log10(1 + p) })); };
+        xScale.ticks.callback = v => { const o = Math.round(Math.pow(10, v) - 1); return o <= 0 ? '0' : String(o); };
+    }
+    const cTop = chCfg.top5 || { color: '#ff9f1c', color2: '#ff4d6d', opacity: 0.8 };
+    const grad = cTop.gradient !== false ? _buildTwoColorGradient('chart-top5', cTop.color, cTop.color2, cTop.opacity, true) : cTop.color;
+    const bg = plotVals.map((_, i) => (hasOthers && i === plotVals.length - 1) ? 'rgba(100, 116, 139, 0.55)' : grad);
+    const tooltips = {
+        title: items => (items.length ? (fullLabels[items[0].dataIndex] || items[0].label) : ''),
+        label: ctx => (hasOthers && ctx.dataIndex === rawVals.length - 1)
+            ? `${isEn ? 'All other torrents' : 'Все остальные раздачи'} (${others.count} шт.): ${rawVals[ctx.dataIndex] ?? 0} GiB`
+            : `${isEn ? 'Uploaded' : 'Отдано'}: ${rawVals[ctx.dataIndex] ?? 0} GiB`
+    };
+    if (chartTop5 && updateOnly) {
+        chartTop5.data.labels = labels;
+        chartTop5.data.datasets[0].data = plotVals;
+        chartTop5.data.datasets[0].backgroundColor = bg;
+        chartTop5.data.datasets[0].borderColor = cTop.color;
+        chartTop5.options.scales.x = xScale;
+        chartTop5.options.plugins.tooltip.callbacks = tooltips;
+        chartTop5.resize();
+        chartTop5.update('none');
+        return;
+    }
+    if (chartTop5) chartTop5.destroy();
+    chartTop5 = new Chart(document.getElementById('chart-top5'), {
+        type: 'bar',
+        data: { labels, datasets: [{ data: plotVals, backgroundColor: bg, borderColor: cTop.color, borderWidth: 1, borderRadius: 4, minBarLength: 2, barPercentage: 0.72 }] },
+        options: { responsive: true, maintainAspectRatio: false, indexAxis: 'y', scales: { x: xScale, y: { ticks: { color: tick, font: { size: 10 } }, grid: { color: grid } } }, plugins: { legend: { display: false }, tooltip: { callbacks: tooltips } } }
+    });
+}
+
+function _renderHourlyChart(hourlyData) {
+    const chCfg = (typeof getUiSettings === 'function' ? getUiSettings().charts : {}) || {};
+    const cH = chCfg.hourly || { color: '#00f5d4', color2: '#9b5de5', opacity: 0.35 };
+    const bg = cH.gradient !== false ? _buildTwoColorGradient('chart-hourly', cH.color, cH.color2, cH.opacity, false) : cH.color;
+    const winHours = parseInt(hourlyData?.hours || chCfg.hourly_hours || 24);
+    _lastHourlyMeta = hourlyData?.meta || [];
+    const flags = _computeHourMarkerFlags(_lastHourlyMeta);
+    const yMin = (chCfg.hourly_y_min !== null && chCfg.hourly_y_min !== undefined && chCfg.hourly_y_min !== '') ? parseFloat(chCfg.hourly_y_min) : null;
+    const { tick, grid } = _chartThemeColors();
+    const yOpts = { ticks: { color: tick, font: { size: 10 } }, grid: { color: grid } };
+    if (yMin !== null && Number.isFinite(yMin)) yOpts.min = yMin; else yOpts.beginAtZero = true;
+
+    if (chartHourly) {
+        chartHourly.data.labels = hourlyData?.labels || [];
+        chartHourly.data.datasets[0].data = hourlyData?.values || [];
+        chartHourly.data.datasets[0].borderColor = cH.color;
+        chartHourly.data.datasets[0].backgroundColor = bg;
+        chartHourly.data.datasets[0].pointRadius = ctx => (flags[ctx.dataIndex] ? (winHours <= 24 ? 3.5 : 1.5) : 0);
+        chartHourly.options.scales.y = yOpts;
+        chartHourly.update('none');
+        return;
+    }
+    chartHourly = new Chart(document.getElementById('chart-hourly'), {
+        type: 'line',
+        data: { labels: hourlyData?.labels || [], datasets: [{ data: hourlyData?.values || [], borderColor: cH.color, backgroundColor: bg, fill: true, tension: 0.35, cubicInterpolationMode: 'monotone', clip: true, pointRadius: ctx => (flags[ctx.dataIndex] ? (winHours <= 24 ? 3.5 : 1.5) : 0), pointHoverRadius: 5, pointHitRadius: 10 }] },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            scales: { x: { ticks: { color: tick, font: { size: 10 } }, grid: { color: grid } }, y: yOpts },
+            plugins: {
+                legend: { display: false },
+                tooltip: { callbacks: { label: ctx => { const m = _lastHourlyMeta[ctx.dataIndex], l = `⚡ ${currentLang === 'en' ? 'Speed' : 'Скорость'}: ${(ctx.parsed.y ?? m?.speed_mbs ?? 0).toFixed(2)} MiB/s`; return (!m || !m.delta_fmt) ? l : [l, `📦 ${currentLang === 'en' ? 'Uploaded' : 'Отдано'}: +${m.delta_fmt}${m.interval_min > 0 ? ` (${m.interval_min}м)` : ''}`]; } } }
+            }
+        }
+    });
+}
+
+async function loadSingleChart(chartType) {
+    if (typeof Chart === 'undefined') return;
+    if (_chartAborts[chartType]) _chartAborts[chartType].abort();
+    const ctrl = new AbortController();
+    _chartAborts[chartType] = ctrl;
+    const chCfg = (typeof getUiSettings === 'function' ? getUiSettings().charts : {}) || {};
+    try {
+        const res = await fetch(`/api/analytics/charts?chart=${encodeURIComponent(chartType)}&hours=${parseInt(chCfg.hourly_hours) || 24}&top_n=${Math.max(1, Math.min(25, parseInt(chCfg.top_n) || 5))}&top_period=${encodeURIComponent(chCfg.top_period || '1d')}`, { signal: ctrl.signal });
+        if (res.status === 401) { window.location.href = '/login'; return; }
+        if (!res.ok) return;
+        const d = await res.json();
+        if (chartType === 'daily' && d.daily) _renderDailyChart(d.daily);
+        if (chartType === 'hourly' && d.hourly) _renderHourlyChart(d.hourly);
+        if (chartType === 'top5' && d.top5) _renderTop5Chart(d.top5, chCfg.top_scale || 'lin', Boolean(chartTop5));
+    } catch (e) { if (e.name !== 'AbortError') console.error(e); }
+}
+
 async function loadAnalyticsCharts() {
     if (typeof Chart === 'undefined') return;
     try {
-        const ui = typeof getUiSettings === 'function' ? getUiSettings() : {};
-        const chCfg = ui.charts || {};
-        const winHours = parseInt(chCfg.hourly_hours) || 24;
-        const topN = Math.max(1, Math.min(25, parseInt(chCfg.top_n) || 5));
-        const topPeriod = chCfg.top_period || '1d';
-        const topScale = chCfg.top_scale || 'lin';
-        const yMin = (chCfg.hourly_y_min !== null && chCfg.hourly_y_min !== undefined && chCfg.hourly_y_min !== '')
-            ? parseFloat(chCfg.hourly_y_min) : null;
-
-        const res = await api(`/api/analytics/charts?hours=${winHours}&top_n=${topN}&top_period=${encodeURIComponent(topPeriod)}`);
+        const chCfg = (typeof getUiSettings === 'function' ? getUiSettings().charts : {}) || {};
+        const res = await api(`/api/analytics/charts?chart=all&hours=${parseInt(chCfg.hourly_hours) || 24}&top_n=${Math.max(1, Math.min(25, parseInt(chCfg.top_n) || 5))}&top_period=${encodeURIComponent(chCfg.top_period || '1d')}`);
         const d = await res.json();
-
-        const cs = getComputedStyle(document.documentElement);
-        const tickColor = cs.getPropertyValue('--text-muted').trim() || '#95a5a6';
-        const gridColor = cs.getPropertyValue('--border').trim() || 'rgba(255,255,255,0.08)';
-
-        // 1. График по дням (Двухцветный вертикальный градиент)
-        const cDaily = chCfg.daily || { color: '#2ecc71', color2: '#10b981', opacity: 0.75 };
-        const dailyBg = cDaily.gradient !== false
-            ? _buildTwoColorGradient('chart-daily', cDaily.color, cDaily.color2, cDaily.opacity, false)
-            : cDaily.color;
-
-        if (chartDaily) chartDaily.destroy();
-        chartDaily = new Chart(document.getElementById('chart-daily'), {
-            type: 'bar',
-            data: {
-                labels: d.daily?.labels || [],
-                datasets: [{
-                    data: d.daily?.values || [],
-                    backgroundColor: dailyBg,
-                    borderColor: cDaily.color,
-                    borderWidth: 1, borderRadius: 4, minBarLength: 2, barPercentage: 0.65
-                }]
-            },
-            options: {
-                responsive: true, maintainAspectRatio: false,
-                scales: {
-                    x: { ticks: { color: tickColor, font: { size: 10 } }, grid: { color: gridColor } },
-                    y: { beginAtZero: true, ticks: { color: tickColor, font: { size: 10 } }, grid: { color: gridColor } }
-                },
-                plugins: {
-                    legend: { display: false },
-                    tooltip: { callbacks: { label: ctx => `${currentLang === 'en' ? 'Daily Upload' : 'Отдано за день'}: ${ctx.parsed.y} GiB` } }
-                }
-            }
-        });
-
-        // 2. Топ-N раздач + Столбик «Все остальные»
-        const rawTopVals = [...(d.top5?.values || [])];
-        const topLabels = [...(d.top5?.labels || [])];
-        const topFullLabels = [...(d.top5?.full_labels || d.top5?.labels || [])];
-        const others = d.top5?.others;
-        const hasOthers = Boolean(others && (others.gb > 0 || others.count > 0));
-
-        if (hasOthers) {
-            const isEn = (typeof currentLang !== 'undefined' && currentLang === 'en');
-            topLabels.push(isEn ? `Others (${others.count})` : `Все остальные (${others.count})`);
-            topFullLabels.push(isEn ? `All other torrents (${others.count} pcs)` : `Все остальные раздачи (${others.count} шт.)`);
-            rawTopVals.push(others.gb);
-        }
-
-        const topWrap = document.getElementById('chart-top5-wrap');
-        const actualCount = topLabels.length || topN;
-        if (topWrap) topWrap.style.height = `${Math.max(210, actualCount * 32 + 48)}px`;
-
-        const isLog = (topScale === 'log10');
-        const plotTopVals = isLog ? rawTopVals.map(v => Math.log10(1 + Math.max(0, v))) : rawTopVals;
-        const maxReal = Math.max(1, ...rawTopVals);
-
-        const topXScale = { beginAtZero: true, ticks: { color: tickColor, font: { size: 10 } }, grid: { color: gridColor } };
-        if (isLog) {
-            const pwrTicks = [0, 1, 10, 100, 1000, 10000, 100000].filter(p => p === 0 || p <= maxReal * 2.5);
-            if (pwrTicks.length < 2) pwrTicks.push(1, 10);
-            topXScale.afterBuildTicks = axis => { axis.ticks = pwrTicks.map(p => ({ value: Math.log10(1 + p) })); };
-            topXScale.ticks.callback = val => { const orig = Math.round(Math.pow(10, val) - 1); return orig <= 0 ? '0' : String(orig); };
-        }
-
-        const cTop = chCfg.top5 || { color: '#ff9f1c', color2: '#ff4d6d', opacity: 0.8 };
-        const topGrad = _buildTwoColorGradient('chart-top5', cTop.color, cTop.color2, cTop.opacity, true);
-        const topBgColors = plotTopVals.map((_, idx) => (hasOthers && idx === plotTopVals.length - 1) ? 'rgba(100, 116, 139, 0.55)' : topGrad);
-
-        if (chartTop5) chartTop5.destroy();
-        chartTop5 = new Chart(document.getElementById('chart-top5'), {
-            type: 'bar',
-            data: {
-                labels: topLabels,
-                datasets: [{
-                    data: plotTopVals,
-                    backgroundColor: topBgColors,
-                    borderColor: cTop.color,
-                    borderWidth: 1, borderRadius: 4, minBarLength: 2, barPercentage: 0.72
-                }]
-            },
-            options: {
-                responsive: true, maintainAspectRatio: false, indexAxis: 'y',
-                scales: { x: topXScale, y: { ticks: { color: tickColor, font: { size: 10 } }, grid: { color: gridColor } } },
-                plugins: {
-                    legend: { display: false },
-                    tooltip: {
-                        callbacks: {
-                            title: items => (items.length ? (topFullLabels[items[0].dataIndex] || items[0].label) : ''),
-                            label: ctx => {
-                                const val = rawTopVals[ctx.dataIndex] ?? 0;
-                                if (hasOthers && ctx.dataIndex === rawTopVals.length - 1) {
-                                    const isEn = (typeof currentLang !== 'undefined' && currentLang === 'en');
-                                    return `${isEn ? 'All other torrents' : 'Все остальные раздачи'} (${others.count} шт.): ${val} GiB`;
-                                }
-                                return `${currentLang === 'en' ? 'Uploaded' : 'Отдано'}: ${val} GiB`;
-                            }
-                        }
-                    }
-                }
-            }
-        });
-
-        // 3. График скорости нагрузки (Двухцветный вертикальный градиент)
-        const cHour = chCfg.hourly || { color: '#00f5d4', color2: '#9b5de5', opacity: 0.35 };
-        const hourlyBg = _buildTwoColorGradient('chart-hourly', cHour.color, cHour.color2, cHour.opacity, false);
-        const hourlyMeta = d.hourly?.meta || d.detailed || [];
-        const hourFlags = _computeHourMarkerFlags(hourlyMeta);
-        const yScaleOpts = { ticks: { color: tickColor, font: { size: 10 } }, grid: { color: gridColor } };
-        if (yMin !== null && Number.isFinite(yMin)) yScaleOpts.min = yMin;
-        else yScaleOpts.beginAtZero = true;
-
-        if (chartHourly) chartHourly.destroy();
-        chartHourly = new Chart(document.getElementById('chart-hourly'), {
-            type: 'line',
-            data: {
-                labels: d.hourly?.labels || [],
-                datasets: [{
-                    data: d.hourly?.values || [],
-                    borderColor: cHour.color,
-                    backgroundColor: hourlyBg,
-                    fill: true, tension: 0.35, cubicInterpolationMode: 'monotone', clip: true,
-                    pointRadius: ctx => (hourFlags[ctx.dataIndex] ? (winHours <= 24 ? 3.5 : 1.5) : 0),
-                    pointHoverRadius: 5, pointHitRadius: 10
-                }]
-            },
-            options: {
-                responsive: true, maintainAspectRatio: false,
-                scales: { x: { ticks: { color: tickColor, font: { size: 10 } }, grid: { color: gridColor } }, y: yScaleOpts },
-                plugins: {
-                    legend: { display: false },
-                    tooltip: {
-                        callbacks: {
-                            label: function(ctx) {
-                                const m = hourlyMeta[ctx.dataIndex];
-                                const isEn = (typeof currentLang !== 'undefined' && currentLang === 'en');
-                                const spd = (ctx.parsed.y !== undefined ? ctx.parsed.y : (m?.speed_mbs || 0)).toFixed(2);
-                                const speedLine = `⚡ ${isEn ? 'Speed' : 'Скорость'}: ${spd} MiB/s`;
-                                if (!m || !m.delta_fmt) return speedLine;
-                                const intTxt = m.interval_min > 0 ? (isEn ? ` (${m.interval_min}m)` : ` (${m.interval_min}м)`) : '';
-                                return [speedLine, `📦 ${isEn ? 'Uploaded' : 'Отдано'}: +${m.delta_fmt}${intTxt}`];
-                            }
-                        }
-                    }
-                }
-            }
-        });
+        if (d.daily) _renderDailyChart(d.daily);
+        if (d.hourly) _renderHourlyChart(d.hourly);
+        if (d.top5) _renderTop5Chart(d.top5, chCfg.top_scale || 'lin', Boolean(chartTop5));
     } catch (e) { console.error(e); }
-}
-
-function populateAnalyticsSelectors() {
-    const fill = (selId) => {
-        const sel = document.getElementById(selId);
-        if (!sel) return;
-        const cur = sel.value;
-        sel.innerHTML = '';
-        const frag = document.createDocumentFragment();
-        const def = document.createElement('option');
-        def.value = 'all'; def.textContent = t('whole_seedbox');
-        frag.appendChild(def);
-        rawSummaryItems.forEach(item => {
-            const opt = document.createElement('option');
-            opt.value = item.hash_id; opt.textContent = `📦 ${item.name}`;
-            frag.appendChild(opt);
-        });
-        sel.appendChild(frag);
-        if (cur) sel.value = cur;
-    };
-    fill('smart-calc-target-type');
-    fill('history-torrent-select');
-}
-
-function onSmartCalcTargetChange() {
-    const val = document.getElementById('smart-calc-target-type').value;
-    document.getElementById('smart-calc-goal-label').textContent = val === 'all' ? t('goal_lbl_all') : t('goal_lbl_one');
-    document.getElementById('smart-calc-goal').placeholder = val === 'all' ? t('goal_ph_all') : t('goal_ph_one');
-}
-
-async function runSmartCalc() {
-    const term = document.getElementById('smart-calc-terminal');
-    const targetVal = document.getElementById('smart-calc-target-type').value;
-    const isAll = (targetVal === 'all');
-    const goal = document.getElementById('smart-calc-goal').value.trim();
-    const speed = document.getElementById('smart-calc-speed').value.trim();
-    if (!goal) { term.textContent = t('err_no_goal'); return; }
-    term.textContent = t('calc_running');
-    let d;
-    try {
-        const res = await api('/api/smart_calc', 'POST', { target_type: isAll ? 'all' : 'torrent', hash: isAll ? '' : targetVal, target: goal, speed });
-        if (!res.ok) { term.textContent = t('http_err', { status: res.status }); return; }
-        d = await res.json();
-    } catch (err) { term.textContent = t('net_err', { msg: err.message }); return; }
-
-    const btnTable = document.getElementById('btn-toggle-forecast-table');
-    const btnCsv = document.getElementById('btn-export-forecast-csv');
-    const wrapTable = document.getElementById('smart-res-table-wrap');
-    if (!d.success) {
-        btnTable.classList.add('hidden'); btnCsv.classList.add('hidden'); wrapTable.classList.add('hidden');
-        term.textContent = d.need_manual ? `=================================================================\n${t('need_manual_msg', { avail: d.days_available, req: d.req_days })}\n=================================================================` : t('err_prefix', { msg: d.error });
-        return;
-    }
-
-    lastForecastData = d;
-    btnCsv.classList.remove('hidden');
-    if (d.achieved) { btnTable.classList.add('hidden'); term.textContent = t('goal_achieved', { name: d.name, cur: d.current_up_fmt, tgt: d.target_fmt }); return; }
-
-    btnTable.classList.remove('hidden');
-    const modeTxt = d.is_manual ? t('mode_manual') : t('mode_smart', { w: d.weights_desc });
-    let out = `=================================================================\n${t('res_header')}\n${t('obj_lbl')}        ${d.name}\n${t('up_now_lbl')} ${d.current_up_fmt}  -->  ${t('goal_lbl')} ${d.target_fmt}\n${t('rem_lbl')}      ${d.remaining_fmt}\n`;
-    if (!d.is_seedbox) out += `${t('ratio_lbl', { cur: d.ratio_current, nxt: d.ratio_after_24h })}\n`;
-    out += `-----------------------------------------------------------------\n${t('mode_lbl')} ${modeTxt}\n${t('f24_lbl')} +${d.forecast_24h_vol_fmt}\n${t('eta_lbl')}   ${d.eta_str}\n=================================================================`;
-    term.textContent = out;
-
-    const tbody = document.getElementById('smart-res-tbody');
-    tbody.innerHTML = '';
-    const frag = document.createDocumentFragment();
-    (d.forecast_rows || []).forEach(r => {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${escapeHtml(r.date)}</td><td><strong>${escapeHtml(r.hour)}</strong></td><td class="purple-txt" style="font-weight:700;">+${escapeHtml(trBackend(r.volume_mb))}</td><td class="blue-txt" style="font-weight:600;">${escapeHtml(r.speed_fmt)}</td><td class="muted-text" style="font-size:11px;">${escapeHtml(r.basis)}</td>`;
-        frag.appendChild(tr);
-    });
-    tbody.appendChild(frag);
-}
-
-function toggleForecastTable() {
-    const isHidden = document.getElementById('smart-res-table-wrap').classList.toggle('hidden');
-    document.getElementById('btn-toggle-forecast-table').textContent = isHidden ? t('btn_hourly_show') : t('btn_hourly_hide');
-}
-
-async function exportForecastCSV() {
-    if (!lastForecastData) return;
-    const res = await api('/api/smart_calc/export', 'POST', { forecast_data: lastForecastData });
-    if (!res.ok) return alert(t('export_err'));
-    const blob = await res.blob();
-    const a = document.createElement('a');
-    a.href = window.URL.createObjectURL(blob);
-    a.download = `forecast_24h_${new Date().toLocaleString('sv-SE').replace(/[- :]/g, '_')}.csv`;
-    a.click();
 }

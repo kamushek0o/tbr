@@ -26,6 +26,37 @@ async function refreshFreezeBadge() {
 }
 
 async function toggleSmartFreeze() {
+    const modal = document.getElementById('freeze-confirm-modal');
+    const desc = document.getElementById('freeze-confirm-desc');
+    const confirmBtn = document.getElementById('btn-freeze-confirm-go');
+    try {
+        const res = await api('/api/freeze/status');
+        if (!res.ok) return;
+        const d = await res.json();
+        if (modal && desc && confirmBtn) {
+            if (d.frozen) {
+                desc.innerHTML = `Возобновить замороженные раздачи: <b class="accent-txt">${d.count} шт.</b>?<br><span class="lbl-xs muted-text">Старые паузы, которые были до заморозки, останутся на месте.</span>`;
+                confirmBtn.textContent = `▶️ Разморозить (${d.count})`;
+                confirmBtn.className = 'btn';
+            } else {
+                const act = d.active_count ?? 0;
+                desc.innerHTML = `Поставить на паузу активные раздачи: <b class="orange-txt">${act} шт.</b>?<br><span class="lbl-xs muted-text">Список активных сохранится в БД для точного возврата.</span>`;
+                confirmBtn.textContent = `❄️ Заморозить (${act})`;
+                confirmBtn.className = 'btn';
+            }
+            modal.style.display = 'flex';
+            return;
+        }
+    } catch (e) {}
+}
+
+function closeFreezeConfirmModal() {
+    const modal = document.getElementById('freeze-confirm-modal');
+    if (modal) modal.style.display = 'none';
+}
+
+async function executeSmartFreezeToggle() {
+    closeFreezeConfirmModal();
     const res = await api('/api/freeze/toggle', 'POST');
     const d = await res.json();
     if (!res.ok || !d.success) return alert(d.error || d.message || 'Ошибка');
@@ -136,9 +167,7 @@ async function openExpirationModal() {
                     document.getElementById('exp-time-val').value = leftH;
                     document.getElementById('exp-time-unit').value = 'hours';
                 }
-                if (ex.target_uploaded) {
-                    document.getElementById('exp-target-gib').value = Math.round(ex.target_uploaded / (1024 ** 3));
-                }
+                if (ex.target_uploaded) document.getElementById('exp-target-gib').value = Math.round(ex.target_uploaded / (1024 ** 3));
                 document.getElementById('exp-delete-files').checked = Boolean(ex.delete_files);
             }
         }
@@ -180,9 +209,7 @@ async function loadDndDigestAndTagging() {
             if (en) en.checked = Boolean(dnd.enabled);
             if (document.getElementById('dnd-start')) document.getElementById('dnd-start').value = dnd.start || '23:00';
             if (document.getElementById('dnd-end')) document.getElementById('dnd-end').value = dnd.end || '08:00';
-            document.querySelectorAll('.dnd-day-chk').forEach(chk => {
-                chk.checked = (dnd.days || []).includes(parseInt(chk.value));
-            });
+            document.querySelectorAll('.dnd-day-chk').forEach(chk => { chk.checked = (dnd.days || []).includes(parseInt(chk.value)); });
             if (document.getElementById('digest-mode')) document.getElementById('digest-mode').value = dig.mode || 'off';
             if (document.getElementById('digest-hour')) document.getElementById('digest-hour').value = dig.hour ?? 21;
             if (document.getElementById('digest-weekday')) document.getElementById('digest-weekday').value = dig.weekday ?? 6;
@@ -215,17 +242,8 @@ function renderTaggingRules(rules) {
 async function saveDndDigestSchedule() {
     const days = [...document.querySelectorAll('.dnd-day-chk:checked')].map(c => parseInt(c.value));
     const payload = {
-        dnd: {
-            enabled: document.getElementById('dnd-enabled')?.checked || false,
-            start: document.getElementById('dnd-start')?.value || '23:00',
-            end: document.getElementById('dnd-end')?.value || '08:00',
-            days
-        },
-        digest: {
-            mode: document.getElementById('digest-mode')?.value || 'off',
-            hour: parseInt(document.getElementById('digest-hour')?.value) || 21,
-            weekday: parseInt(document.getElementById('digest-weekday')?.value) ?? 6
-        }
+        dnd: { enabled: document.getElementById('dnd-enabled')?.checked || false, start: document.getElementById('dnd-start')?.value || '23:00', end: document.getElementById('dnd-end')?.value || '08:00', days },
+        digest: { mode: document.getElementById('digest-mode')?.value || 'off', hour: parseInt(document.getElementById('digest-hour')?.value) || 21, weekday: parseInt(document.getElementById('digest-weekday')?.value) ?? 6 }
     };
     const res = await api('/api/notifications/schedule', 'POST', payload);
     const d = await res.json();
@@ -249,12 +267,5 @@ async function addTaggingRule() {
     loadDndDigestAndTagging();
 }
 
-async function toggleTaggingRule(id) {
-    await api('/api/tagging/rules/toggle', 'POST', { id });
-    loadDndDigestAndTagging();
-}
-async function deleteTaggingRule(id) {
-    if (!confirm('Удалить правило тегирования?')) return;
-    await api('/api/tagging/rules/delete', 'POST', { id });
-    loadDndDigestAndTagging();
-}
+async function toggleTaggingRule(id) { await api('/api/tagging/rules/toggle', 'POST', { id }); loadDndDigestAndTagging(); }
+async function deleteTaggingRule(id) { if (confirm('Удалить правило тегирования?')) { await api('/api/tagging/rules/delete', 'POST', { id }); loadDndDigestAndTagging(); } }

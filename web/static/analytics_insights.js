@@ -3,6 +3,7 @@ let chartPeerClients = null;
 let chartTrackers = null;
 let chartTorrentPersonal = null;
 let _inspHash = null;
+let _currentPeakSnapId = null;
 
 async function loadAnalyticsInsights(forceClients = false) {
     try {
@@ -31,16 +32,35 @@ function _renderRecords(r) {
     document.getElementById('rec-peak-date').textContent = cleanDate || '—';
     document.getElementById('rec-best-val').textContent = r.best_day_fmt || '—';
     document.getElementById('rec-best-date').textContent = r.best_day_date || '—';
+
+    _currentPeakSnapId = r.peak_snapshot_id || null;
+    const delBtn = document.getElementById('btn-ignore-peak');
+    if (delBtn) delBtn.classList.toggle('hidden', !_currentPeakSnapId);
 }
 
 async function recalculateRecords() {
-    if (!confirm('Пересчитать рекорды? Любые аномальные скачки скорости будут отброшены по порогу канала.')) return;
+    if (!confirm('Пересчитать рекорды? Любые аномальные скачки скорости будут отброшены по порогу канала и перезаписаны в БД.')) return;
     try {
         const res = await api('/api/analytics/recalculate_records', 'POST');
         if (!res.ok) return alert('Ошибка пересчёта');
         const d = await res.json();
         if (d.records) _renderRecords(d.records);
-        alert('✅ Рекорды успешно пересчитаны без аномалий!');
+        alert('✅ Рекорды успешно пересчитаны!');
+    } catch (e) {
+        alert(e.message);
+    }
+}
+
+async function ignorePeakRecord() {
+    if (!_currentPeakSnapId) return;
+    if (!confirm('Пометить снимок с текущим пиком как аномальный (ignore_in_stats) и пересчитать рекорд?')) return;
+    try {
+        const res = await api('/api/analytics/ignore_peak', 'POST', { snapshot_id: _currentPeakSnapId });
+        const d = await res.json();
+        if (!res.ok || !d.success) return alert(d.error || 'Ошибка удаления');
+        if (d.records) _renderRecords(d.records);
+        if (typeof loadAnalyticsCharts === 'function') loadAnalyticsCharts();
+        if (typeof loadDayLogs === 'function' && document.getElementById('logs-day-picker')?.value) loadDayLogs(dayLogsPage);
     } catch (e) {
         alert(e.message);
     }
@@ -61,7 +81,6 @@ function _renderHeatmap365(cells) {
     if (!grid || !cells.length) return;
     grid.innerHTML = '';
     const frag = document.createDocumentFragment();
-
     const firstWd = cells[0].weekday || 0;
     for (let i = 0; i < firstWd; i++) {
         const emp = document.createElement('span');
@@ -103,14 +122,7 @@ function _renderPeerClientsChart(c) {
 
     chartPeerClients = new Chart(ctx, {
         type: 'doughnut',
-        data: {
-            labels: labels,
-            datasets: [{
-                data: values,
-                backgroundColor: c.values?.length ? bgColors : ['rgba(149,165,166,0.2)'],
-                borderWidth: 0
-            }]
-        },
+        data: { labels, datasets: [{ data: values, backgroundColor: c.values?.length ? bgColors : ['rgba(149,165,166,0.2)'], borderWidth: 0 }] },
         options: {
             responsive: true, maintainAspectRatio: false,
             plugins: {
@@ -124,11 +136,7 @@ function _renderPeerClientsChart(c) {
                             return data.labels.map((label, i) => {
                                 const val = data.datasets[0].data[i] || 0;
                                 const pct = totalCount > 0 ? ((val / totalCount) * 100).toFixed(1) : '0';
-                                return {
-                                    text: `${label}: ${val} (${pct}%)`,
-                                    fillStyle: data.datasets[0].backgroundColor[i],
-                                    hidden: false, index: i
-                                };
+                                return { text: `${label}: ${val} (${pct}%)`, fillStyle: data.datasets[0].backgroundColor[i], hidden: false, index: i };
                             });
                         }
                     }
@@ -158,21 +166,10 @@ function _renderTrackersChart(tr) {
 
     chartTrackers = new Chart(ctx, {
         type: 'bar',
-        data: {
-            labels: tr.labels || [],
-            datasets: [{
-                data: tr.values || [],
-                backgroundColor: 'rgba(155, 89, 182, 0.72)',
-                borderColor: '#9b59b6',
-                borderWidth: 1, borderRadius: 4
-            }]
-        },
+        data: { labels: tr.labels || [], datasets: [{ data: tr.values || [], backgroundColor: 'rgba(155, 89, 182, 0.72)', borderColor: '#9b59b6', borderWidth: 1, borderRadius: 4 }] },
         options: {
             responsive: true, maintainAspectRatio: false, indexAxis: 'y',
-            scales: {
-                x: { beginAtZero: true, ticks: { color: tickColor, font: { size: 10 } }, grid: { color: gridColor } },
-                y: { ticks: { color: tickColor, font: { size: 10 } }, grid: { color: gridColor } }
-            },
+            scales: { x: { beginAtZero: true, ticks: { color: tickColor, font: { size: 10 } }, grid: { color: gridColor } }, y: { ticks: { color: tickColor, font: { size: 10 } }, grid: { color: gridColor } } },
             plugins: { legend: { display: false } }
         }
     });
@@ -188,9 +185,7 @@ function openTorrentInspectorModal() {
     loadInspectorPeers();
 }
 
-function closeInspectorModal() {
-    document.getElementById('inspector-modal').style.display = 'none';
-}
+function closeInspectorModal() { document.getElementById('inspector-modal').style.display = 'none'; }
 
 async function loadInspectorChart(period = '24h') {
     if (!_inspHash || typeof Chart === 'undefined') return;
@@ -211,25 +206,18 @@ async function loadInspectorChart(period = '24h') {
         data: {
             labels: pts.map(p => p.label),
             datasets: [{
-                data: pts.map(p => p.speed_mbs),
-                borderColor: '#2ecc71',
-                backgroundColor: 'rgba(46, 204, 113, 0.2)',
-                fill: true, tension: 0.3, pointRadius: pts.length <= 40 ? 2.5 : 0
+                data: pts.map(p => p.speed_mbs), borderColor: '#2ecc71', backgroundColor: 'rgba(46, 204, 113, 0.2)',
+                fill: true, tension: 0.3,
+                pointRadius: ctxItem => (pts[ctxItem.dataIndex]?.is_merge ? 5 : (pts.length <= 40 ? 2.5 : 0)),
+                pointBackgroundColor: ctxItem => (pts[ctxItem.dataIndex]?.is_merge ? '#f39c12' : '#2ecc71')
             }]
         },
         options: {
             responsive: true, maintainAspectRatio: false,
-            scales: {
-                x: { ticks: { color: tickColor, font: { size: 10 } }, grid: { color: gridColor } },
-                y: { beginAtZero: true, ticks: { color: tickColor, font: { size: 10 } }, grid: { color: gridColor } }
-            },
+            scales: { x: { ticks: { color: tickColor, font: { size: 10 } }, grid: { color: gridColor } }, y: { beginAtZero: true, ticks: { color: tickColor, font: { size: 10 } }, grid: { color: gridColor } } },
             plugins: {
                 legend: { display: false },
-                tooltip: {
-                    callbacks: {
-                        label: ctxItem => `⚡ ${ctxItem.parsed.y} MiB/s (+${pts[ctxItem.dataIndex]?.delta_fmt || '0 B'})`
-                    }
-                }
+                tooltip: { callbacks: { label: ctxItem => `⚡ ${ctxItem.parsed.y} MiB/s (+${pts[ctxItem.dataIndex]?.delta_fmt || '0 B'})${pts[ctxItem.dataIndex]?.is_merge ? ' [🔀 Мердж]' : ''}` } }
             }
         }
     });
@@ -255,13 +243,7 @@ async function loadInspectorPeers() {
     peers.forEach(p => {
         const tr = document.createElement('tr');
         const ctry = p.country_code ? `[${escapeHtml(p.country_code)}] ` : '';
-        tr.innerHTML = `
-            <td>${ctry}<b>${escapeHtml(p.client)}</b></td>
-            <td>${p.progress}%</td>
-            <td class="accent-txt">${escapeHtml(p.up_speed_fmt)}</td>
-            <td class="blue-txt">${escapeHtml(p.dl_speed_fmt)}</td>
-            <td class="muted-text">${escapeHtml(p.flags || '—')}</td>
-        `;
+        tr.innerHTML = `<td>${ctry}<b>${escapeHtml(p.client)}</b></td><td>${p.progress}%</td><td class="accent-txt">${escapeHtml(p.up_speed_fmt)}</td><td class="blue-txt">${escapeHtml(p.dl_speed_fmt)}</td><td class="muted-text">${escapeHtml(p.flags || '—')}</td>`;
         frag.appendChild(tr);
     });
     tbody.appendChild(frag);
