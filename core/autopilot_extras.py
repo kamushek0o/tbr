@@ -1,5 +1,4 @@
 # core/autopilot_extras.py
-import os
 import json
 import time
 import datetime
@@ -131,19 +130,55 @@ def get_conductor_config():
     }
 
 
+def _hour_in_block(hr, start_h, end_h):
+    if start_h == end_h:
+        return True
+    if start_h < end_h:
+        return start_h <= hr < end_h
+    return hr >= start_h or hr < end_h
+
+
 def _tick_conductor(ip, port):
     c = get_conductor_config()
     now = time.time()
+    last_applied = cfg.getint('Conductor_Last_Applied_Up', -1)
+
     if not c['enabled'] or not c['blocks'] or now < c['override_until']:
+        if last_applied > 0:
+            set_global_speed_limits(ip, port, 0, 0)
+            cfg.set('Conductor_Last_Applied_Up', '0')
+            cfg.save()
         return
+
     hr = datetime.datetime.now().hour
-    matched = next((b for b in c['blocks'] if int(b.get('start_h', 0)) <= hr < int(b.get('end_h', 24))), None)
+    matched = None
+    for b in c['blocks']:
+        if not isinstance(b, dict):
+            continue
+        try:
+            sh = int(b.get('start_h', 0)) % 24
+            eh = int(b.get('end_h', 24))
+            eh = 24 if eh == 24 else (eh % 24)
+        except (ValueError, TypeError):
+            continue
+        if _hour_in_block(hr, sh, eh):
+            matched = b
+            break
+
     if not matched:
+        if last_applied > 0:
+            set_global_speed_limits(ip, port, 0, 0)
+            cfg.set('Conductor_Last_Applied_Up', '0')
+            cfg.save()
         return
-    pct = max(0, min(100, int(matched.get('pct_limit', 100))))
+
+    try:
+        pct = max(0, min(100, int(matched.get('pct_limit', 100))))
+    except (ValueError, TypeError):
+        pct = 100
     max_mbps = max(10, cfg.getint('Max_Channel_Mbps', 1000))
     up_bps = 0 if pct >= 100 else max(1024, int(((max_mbps * 1_000_000) / 8.0) * (pct / 100.0)))
-    if cfg.getint('Conductor_Last_Applied_Up', -1) != up_bps:
+    if last_applied != up_bps:
         set_global_speed_limits(ip, port, 0, up_bps)
         cfg.set('Conductor_Last_Applied_Up', str(up_bps))
         cfg.save()
@@ -169,8 +204,20 @@ def _tick_auto_router(ip, port, live):
         nm = str(info.get('name') or '').lower()
 
         for r in rules:
-            fld, pat = r['match_field'], str(r['pattern'] or '').lower().strip()
-            hit = (fld == 'tracker' and pat in tr) or (fld == 'ext' and pat in nm) or (fld == 'min_gib' and sz_gib >= float(pat or 0))
+            fld = r['match_field']
+            pat = str(r['pattern'] or '').lower().strip()
+            if not pat:
+                continue
+            hit = False
+            if fld == 'tracker':
+                hit = pat in tr
+            elif fld == 'ext':
+                hit = pat in nm
+            elif fld == 'min_gib':
+                try:
+                    hit = sz_gib >= float(pat)
+                except (ValueError, TypeError):
+                    hit = False
             if hit:
                 if r['target_category']:
                     _post_qb_api(ip, port, 'torrents/setCategory', {'hashes': raw_h, 'category': r['target_category']})

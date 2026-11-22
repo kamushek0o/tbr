@@ -12,7 +12,7 @@
     </div>
     <div class="scroll-box" style="max-height:220px; border:1px solid var(--border); border-radius:6px;">
         <table>
-            <thead><tr><th style="width:28px;"></th><th>Раздача / Инфо</th><th>Размер</th><th>Статус</th></tr></thead>
+            <thead><tr><th style="width:28px;"><input type="checkbox" id="hyg-tor-chk-all" onchange="toggleAllHygTor(this)" title="Выбрать все"></th><th>Раздача / Инфо</th><th>Размер</th><th>Статус</th></tr></thead>
             <tbody id="hyg-tor-tbody"><tr><td colspan="4" class="center-msg">Выберите режим сканирования выше</td></tr></tbody>
         </table>
     </div>
@@ -30,7 +30,7 @@
     </div>
     <div class="scroll-box" style="max-height:220px; border:1px solid var(--border); border-radius:6px;">
         <table>
-            <thead><tr><th style="width:28px;"></th><th>Файл / Путь</th><th>Категория</th><th>Размер</th></tr></thead>
+            <thead><tr><th style="width:28px;"><input type="checkbox" id="hyg-path-chk-all" onchange="toggleAllHygPath(this)" title="Выбрать все"></th><th>Файл / Путь</th><th>Категория</th><th>Размер</th></tr></thead>
             <tbody id="hyg-path-tbody"><tr><td colspan="4" class="center-msg">Нажмите кнопку сканирования</td></tr></tbody>
         </table>
     </div>

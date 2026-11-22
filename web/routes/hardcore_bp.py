@@ -11,6 +11,11 @@ from web.security import HASH_RE
 hardcore_bp = Blueprint('hardcore_bp', __name__)
 
 
+def _find_live_ci(live, t_hash):
+    hl = str(t_hash or '').lower()
+    return next((v for k, v in (live or {}).items() if k.lower() == hl), {})
+
+
 @hardcore_bp.route('/api/hdd/smart')
 def api_hdd_smart():
     if g.get('role') != 'admin':
@@ -28,7 +33,7 @@ def api_recheck_queue():
         h = str((request.get_json(silent=True) or {}).get('hash', '')).strip()
         if not HASH_RE.fullmatch(h):
             return jsonify({'success': False, 'error': 'Некорректный хэш'}), 400
-        info = live.get(h) or {}
+        info = _find_live_ci(live, h)
         enqueue_recheck(h, save_path=info.get('save_path', ''), name=info.get('name', h))
         tick_recheck_queue(ip, port, live)
     return jsonify({'queue': list_recheck_queue()})
@@ -50,5 +55,5 @@ def api_torrents_mediainfo():
     live = get_live_torrent_info(ip, port) if port else {}
     if g.get('role') != 'admin' and h.lower() in get_hidden_hashes(live):
         return jsonify({'success': False, 'error': 'Доступ запрещён'}), 403
-    info = live.get(h) or {}
+    info = _find_live_ci(live, h)
     return jsonify(inspect_torrent_media(info.get('content_path') or info.get('save_path') or ''))

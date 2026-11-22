@@ -51,11 +51,12 @@ def scan_bt_backup_garbage():
             elif h not in live_hashes:
                 reason = 'Призрак (нет в qBittorrent)'
             elif len(pair) == 1:
-                reason = f"Без пары (нет .{ 'torrent' if kind == 'fastresume' else 'fastresume' })"
+                reason = f"Без пары (нет .{'torrent' if kind == 'fastresume' else 'fastresume'})"
             if reason:
                 items.append({
                     'path': info['path'], 'name': info['name'], 'hash': h,
                     'reason': reason, 'size': info['size'], 'size_fmt': format_file_size(info['size']),
+                    'mtime': info['mtime'],
                     'date': datetime.datetime.fromtimestamp(info['mtime']).strftime('%Y-%m-%d %H:%M')
                 })
 
@@ -67,6 +68,8 @@ def _classify_inner_file(fname, progress):
     low = fname.lower()
     if low.endswith('.!qb'):
         return 'junk' if progress >= 0.9999 else 'active_part'
+    if low.endswith('.parts'):
+        return 'active_part'
     _, ext = os.path.splitext(low)
     if ext in _JUNK_EXTS:
         return 'junk'
@@ -103,7 +106,6 @@ def scan_inner_content_junk(limit_torrents=80):
         expected = set()
         for f in files:
             rel = str(f.get('name', '')).replace('\\', '/').strip('/')
-            # Убираем общую корневую папку, если content_path уже указывает на неё
             parts = rel.split('/', 1)
             rel_inner = parts[1] if len(parts) > 1 else parts[0]
             expected.add(os.path.normcase(rel_inner.replace('/', os.sep)))
@@ -111,7 +113,9 @@ def scan_inner_content_junk(limit_torrents=80):
         prog = float(info.get('progress', 0.0) or 0.0)
         cp_abs = os.path.abspath(cp)
         try:
-            for root, _, fnames in os.walk(cp_abs):
+            for root, dirs, fnames in os.walk(cp_abs):
+                # Не трогаем служебную папку .unwanted (частично снятые файлы qBittorrent)
+                dirs[:] = [d for d in dirs if d.lower() != '.unwanted']
                 for fn in fnames:
                     full_p = os.path.join(root, fn)
                     rel_disk = os.path.relpath(full_p, cp_abs)

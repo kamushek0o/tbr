@@ -12,6 +12,7 @@ from core.file_fts_index import reindex_torrent_files, search_files_fts, build_t
 from web.security import HASH_RE
 
 ux_bp = Blueprint('ux_bp', __name__)
+_VALID_FILE_PRIOS = {0, 1, 6, 7}
 
 
 def _hidden_for_role():
@@ -19,6 +20,11 @@ def _hidden_for_role():
     live = get_live_torrent_info(ip, port) if port else {}
     hidden = get_hidden_hashes(live)
     return ip, port, live, (hidden if g.get('role') != 'admin' else set())
+
+
+def _find_live_ci(live, t_hash):
+    hl = str(t_hash or '').lower()
+    return next((v for k, v in (live or {}).items() if k.lower() == hl), {})
 
 
 @ux_bp.route('/api/torrent/timeline')
@@ -45,7 +51,7 @@ def api_torrent_notes():
     if g.get('role') != 'admin':
         return jsonify({'success': False, 'error': 'Только для Admin'}), 403
     d = request.get_json(silent=True) or {}
-    nm = (live.get(h) or {}).get('name', '')
+    nm = _find_live_ci(live, h).get('name', '')
     ok = set_torrent_note(h, d.get('note', ''), last_name=nm)
     return jsonify({'success': ok})
 
@@ -104,7 +110,14 @@ def api_torrents_file_prio():
     d = request.get_json(silent=True) or {}
     h = str(d.get('hash', '')).strip()
     if not HASH_RE.fullmatch(h):
-        return jsonify({'success': False}), 400
+        return jsonify({'success': False, 'error': 'Некорректный хэш'}), 400
+    try:
+        fid = int(d.get('id', 0))
+        prio = int(d.get('priority', 1))
+        if fid < 0 or prio not in _VALID_FILE_PRIOS:
+            raise ValueError
+    except (ValueError, TypeError):
+        return jsonify({'success': False, 'error': 'Некорректные id или priority'}), 400
     ip, port = detect_qbittorrent_port(cfg.config)
-    ok = set_torrent_file_prio(ip, port, h, d.get('id', 0), d.get('priority', 1))
+    ok = set_torrent_file_prio(ip, port, h, fid, prio)
     return jsonify({'success': ok})

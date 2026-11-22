@@ -62,9 +62,3 @@ async function loadInspectorMediaInfo(tHash) {
         </div>
     `).join('');
 }
-
-document.addEventListener('DOMContentLoaded', () => {
-    document.querySelector('button[onclick*="openTorrentInspectorModal"]')?.addEventListener('click', () => {
-        setTimeout(() => { if (typeof selectedHash !== 'undefined' && selectedHash) loadInspectorMediaInfo(selectedHash); }, 120);
-    });
-});

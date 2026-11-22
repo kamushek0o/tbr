@@ -2,6 +2,7 @@
 from flask import Blueprint, request, jsonify, g
 from utils.config import cfg
 from core.qb_api import detect_qbittorrent_port, get_live_torrent_info
+from core.private_vault import get_hidden_hashes
 from core.smart_timers import (
     get_freeze_status, freeze_active_torrents, unfreeze_torrents,
     get_snooze_status, start_snooze, cancel_snooze,
@@ -117,7 +118,14 @@ def api_expirations_delete():
 
 @timers_bp.route('/api/targets')
 def api_targets_list():
-    return jsonify({'targets': list_targets()})
+    targets = list_targets()
+    if g.get('role') != 'admin':
+        ip, port = detect_qbittorrent_port(cfg.config)
+        live = get_live_torrent_info(ip, port) if port else {}
+        hidden = get_hidden_hashes(live)
+        if hidden:
+            targets = {k: v for k, v in targets.items() if k.lower() not in hidden}
+    return jsonify({'targets': targets})
 
 
 @timers_bp.route('/api/targets/set', methods=['POST'])

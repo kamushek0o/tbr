@@ -258,12 +258,15 @@ async function overrideConductor() {
 }
 
 async function addRouterRule() {
-    await api('/api/router/rules', 'POST', {
+    const res = await api('/api/router/rules', 'POST', {
         match_field: document.getElementById('router-field').value,
         pattern: document.getElementById('router-pattern').value,
         category: document.getElementById('router-cat').value,
         path: document.getElementById('router-path').value
     });
+    const d = await res.json();
+    if (!res.ok || !d.success) return alert(d.error || 'Ошибка добавления правила');
+    document.getElementById('router-pattern').value = '';
     loadAutoExtrasTab();
 }
 
@@ -287,6 +290,4 @@ async function importPresetsFile(file) {
 
 document.addEventListener('DOMContentLoaded', () => {
     setTimeout(loadSavedViews, 600);
-    document.querySelector('[data-tab="tools"]')?.addEventListener('click', () => setTimeout(loadNetOpsTab, 60));
-    document.querySelector('[data-tab="automation"]')?.addEventListener('click', () => setTimeout(loadAutoExtrasTab, 60));
 });

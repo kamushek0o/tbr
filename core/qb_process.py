@@ -91,7 +91,8 @@ def _is_qb_running_windows():
         try:
             if kernel32.Process32FirstW(h_snap, ctypes.byref(entry)):
                 while True:
-                    if entry.szExeFile.lower() == 'qbittorrent.exe':
+                    exe_low = entry.szExeFile.lower()
+                    if exe_low in ('qbittorrent.exe', 'qbittorrent-nox.exe'):
                         return True
                     if not kernel32.Process32NextW(h_snap, ctypes.byref(entry)):
                         break
@@ -106,17 +107,23 @@ def _is_qb_running_windows():
             return False
 
 
+def _is_qb_port_reachable():
+    try:
+        from core.qb_api import detect_qbittorrent_port
+        ip, port = detect_qbittorrent_port(cfg.config)
+        check_ip = '127.0.0.1' if ip in ('*', '0.0.0.0', '') else ip
+        with socket.create_connection((check_ip, int(port)), timeout=0.6):
+            return True
+    except Exception:
+        return False
+
+
 def is_qb_running():
     if os.name != 'nt':
-        try:
-            from core.qb_api import detect_qbittorrent_port
-            ip, port = detect_qbittorrent_port(cfg.config)
-            check_ip = '127.0.0.1' if ip in ('*', '0.0.0.0') else ip
-            with socket.create_connection((check_ip, int(port)), timeout=0.6):
-                return True
-        except Exception:
-            return False
-    return _is_qb_running_windows()
+        return _is_qb_port_reachable()
+    if _is_qb_running_windows():
+        return True
+    return _is_qb_port_reachable()
 
 
 def close_qbittorrent(max_wait_sec=30.0):

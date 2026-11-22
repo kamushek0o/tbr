@@ -57,19 +57,37 @@ function switchTab(name, updateHash = true) {
     if (name === 'torrents') loadTorrents();
     if (name === 'merger') loadMergerLists();
     if (name === 'summary') loadSummary();
-    if (name === 'analytics') loadAnalyticsTab();
-    if (name === 'automation') loadAutomation();
-    if (name === 'tools' && typeof loadToolsTab === 'function') loadToolsTab();
+    if (name === 'analytics') {
+        loadAnalyticsTab();
+        if (typeof loadDeepAnalyticsWidgets === 'function') loadDeepAnalyticsWidgets();
+    }
+    if (name === 'automation') {
+        loadAutomation();
+        if (typeof loadAutoExtrasTab === 'function') loadAutoExtrasTab();
+    }
+    if (name === 'tools') {
+        if (typeof loadToolsTab === 'function') loadToolsTab();
+        if (typeof loadSafetyToolsTab === 'function') loadSafetyToolsTab();
+        if (typeof loadNetOpsTab === 'function') loadNetOpsTab();
+    }
 }
 
 function refreshActiveTab() {
     const active = document.querySelector('.tab-btn.active')?.dataset.tab || 'torrents';
     if (active === 'torrents') loadTorrents(true);
     else if (active === 'summary') loadSummary(true);
-    else if (active === 'analytics') loadAnalyticsTab();
-    else if (active === 'automation') loadAutomation();
-    else if (active === 'merger') loadTorrents(true);
-    else if (active === 'tools' && typeof loadToolsTab === 'function') loadToolsTab();
+    else if (active === 'analytics') {
+        loadAnalyticsTab();
+        if (typeof loadDeepAnalyticsWidgets === 'function') loadDeepAnalyticsWidgets();
+    } else if (active === 'automation') {
+        loadAutomation();
+        if (typeof loadAutoExtrasTab === 'function') loadAutoExtrasTab();
+    } else if (active === 'merger') loadTorrents(true);
+    else if (active === 'tools') {
+        if (typeof loadToolsTab === 'function') loadToolsTab();
+        if (typeof loadSafetyToolsTab === 'function') loadSafetyToolsTab();
+        if (typeof loadNetOpsTab === 'function') loadNetOpsTab();
+    }
     checkQbStatus();
 }
 

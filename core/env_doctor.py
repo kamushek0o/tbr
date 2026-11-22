@@ -9,7 +9,7 @@ import urllib.request
 from utils.config import cfg
 from utils.helpers import APP_DATA_DIR, BT_BACKUP_PATH, LOG_FOLDER
 from core.version import APP_VERSION
-from core.qb_api import detect_qbittorrent_port, check_qb_api_alive, _get_qb_json, is_qb_running
+from core.qb_api import detect_qbittorrent_port, check_qb_api_alive, get_qb_version, is_qb_running
 from core.disk_monitor import list_active_disks
 from core.config_vault import detect_qb_config_dir
 
@@ -39,7 +39,7 @@ def _check_time_skew():
 def run_environment_doctor():
     ip, port = detect_qbittorrent_port(cfg.config)
     api_ok = check_qb_api_alive(ip, port) if port else False
-    qb_ver = _get_qb_json(ip, port, "app/version", timeout=2.0) if api_ok else None
+    qb_ver = get_qb_version(ip, port, timeout=2.0) if api_ok else None
 
     bt_exists = os.path.isdir(BT_BACKUP_PATH)
     bt_rw = False

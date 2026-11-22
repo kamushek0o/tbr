@@ -2,6 +2,8 @@
 import os
 import re
 import json
+import socket
+import threading
 import urllib.request
 import urllib.parse
 import http.cookiejar
@@ -14,14 +16,16 @@ from core.qb_process import (
 
 cookie_jar = http.cookiejar.CookieJar()
 opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
+_AUTH_LOCK = threading.Lock()
 
 
 def reset_qb_session():
-    cookie_jar.clear()
+    with _AUTH_LOCK:
+        cookie_jar.clear()
 
 
 def _norm_ip(qb_ip):
-    return '127.0.0.1' if qb_ip in ('*', '0.0.0.0') else qb_ip
+    return '127.0.0.1' if qb_ip in ('*', '0.0.0.0', '') else qb_ip
 
 
 def qb_login(qb_ip, qb_port, username=None, password=None):
@@ -36,11 +40,12 @@ def qb_login(qb_ip, qb_port, username=None, password=None):
         data=data,
         headers={'Referer': base_url, 'Origin': base_url, 'User-Agent': 'Mozilla/5.0'}
     )
-    try:
-        with opener.open(req, timeout=2.0) as resp:
-            return "Ok." in resp.read().decode('utf-8', errors='ignore')
-    except Exception:
-        return False
+    with _AUTH_LOCK:
+        try:
+            with opener.open(req, timeout=2.5) as resp:
+                return "Ok." in resp.read().decode('utf-8', errors='ignore')
+        except Exception:
+            return False
 
 
 def _qb_config_candidates():
@@ -57,109 +62,125 @@ def _qb_config_candidates():
     ]
 
 
+def _can_tcp_connect(ip, port, timeout=0.6):
+    try:
+        with socket.create_connection((_norm_ip(ip), int(port)), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
 def detect_qbittorrent_port(config=None):
     env_ip = os.environ.get('TBR_QB_HOST', '').strip()
     env_port = os.environ.get('TBR_QB_PORT', '').strip()
     if env_ip and env_port.isdigit():
         return env_ip, int(env_port)
 
+    cfg_addr, cfg_port = '', None
     if config:
         try:
-            address = config.get('Settings', 'WebUI_Address', fallback='').strip()
+            cfg_addr = config.get('Settings', 'WebUI_Address', fallback='').strip()
             raw_port = config.get('Settings', 'WebUI_Port', fallback='').strip()
-            port = int(raw_port) if raw_port.isdigit() else None
-            if address and port:
-                return address, port
+            cfg_port = int(raw_port) if raw_port.isdigit() else None
+            if cfg_addr and cfg_port:
+                return cfg_addr, cfg_port
         except Exception:
             pass
 
-    port_from_conf, address_from_conf = None, '127.0.0.1'
+    port_from_conf, address_from_conf = None, ''
     for config_path in _qb_config_candidates():
         if not config_path or not os.path.exists(config_path):
             continue
         try:
             with open(config_path, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
-            m_port = re.search(r'(?:WebUI\\Port|Port)=(\d+)', content, re.IGNORECASE)
+            m_port = re.search(r'(?im)^(?:WebUI\\Port|Port)=(\d+)\s*$', content)
             if m_port:
                 port_from_conf = int(m_port.group(1))
-            m_addr = re.search(r'(?:WebUI\\Address|Address)=([^\s\r\n]+)', content, re.IGNORECASE)
+            m_addr = re.search(r'(?im)^(?:WebUI\\Address|Address)=([^\s\r\n]+)\s*$', content)
             if m_addr:
                 addr = m_addr.group(1).strip()
                 if addr not in ('*', '0.0.0.0', ''):
                     address_from_conf = addr
-            if port_from_conf:
-                return address_from_conf, port_from_conf
+            if port_from_conf or address_from_conf:
+                break
         except Exception:
             pass
 
-    for port in ([port_from_conf] if port_from_conf else [8080, 8081, 1488, 8888]):
-        if not port:
-            continue
-        for ip in ['127.0.0.1', 'localhost']:
-            try:
-                base_url = f"http://{ip}:{port}"
-                req = urllib.request.Request(f"{base_url}/api/v2/app/version", headers={'Referer': base_url})
-                with opener.open(req, timeout=0.8) as resp:
-                    if resp.getcode() == 200:
-                        return ip, port
-            except urllib.error.HTTPError as e:
-                if e.code in (401, 403):
-                    qb_login(ip, port)
-                    return ip, port
-            except Exception:
-                continue
+    if cfg_addr or cfg_port:
+        final_ip = cfg_addr or address_from_conf or '127.0.0.1'
+        final_port = cfg_port or port_from_conf or 8080
+        return final_ip, final_port
 
-    return '127.0.0.1', (port_from_conf or 8080)
+    if port_from_conf:
+        cand_ip = address_from_conf or '127.0.0.1'
+        if cand_ip != '127.0.0.1' and not _can_tcp_connect(cand_ip, port_from_conf) and _can_tcp_connect('127.0.0.1', port_from_conf):
+            return '127.0.0.1', port_from_conf
+        return cand_ip, port_from_conf
+
+    for port in (8080, 8081, 1488, 8888):
+        for ip in ('127.0.0.1', 'localhost'):
+            if check_qb_api_alive(ip, port, timeout=0.8):
+                return ip, port
+
+    return address_from_conf or '127.0.0.1', 8080
 
 
-def check_qb_api_alive(qb_ip, qb_port, timeout=1.5):
-    """Пингует API qBittorrent (отличает 0 раздач от реально упавшего клиента)."""
-    if not qb_ip or not qb_port:
-        return False
+def _open_qb_raw(qb_ip, qb_port, path, timeout=2.0):
     ip = _norm_ip(qb_ip)
     base_url = f"http://{ip}:{qb_port}"
-    req = urllib.request.Request(f"{base_url}/api/v2/app/version", headers={'Referer': base_url})
-    try:
-        with opener.open(req, timeout=timeout) as resp:
-            return resp.getcode() == 200
-    except urllib.error.HTTPError as e:
-        if e.code in (401, 403):
-            return qb_login(ip, qb_port)
-        return False
-    except Exception:
-        return False
-
-
-def _get_qb_json(qb_ip, qb_port, path, timeout=1.8):
-    if not qb_ip or not qb_port:
-        return None
-    qb_ip = _norm_ip(qb_ip)
-    base_url = f"http://{qb_ip}:{qb_port}"
     req = urllib.request.Request(
         f"{base_url}/api/v2/{path}",
         headers={'Referer': base_url, 'Origin': base_url, 'User-Agent': 'Mozilla/5.0'}
     )
     try:
         with opener.open(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode('utf-8'))
+            return resp.getcode(), resp.read().decode('utf-8', errors='replace')
     except urllib.error.HTTPError as e:
-        if e.code in (401, 403) and qb_login(qb_ip, qb_port):
+        if e.code in (401, 403) and qb_login(ip, qb_port):
             try:
                 with opener.open(req, timeout=timeout) as resp2:
-                    return json.loads(resp2.read().decode('utf-8'))
+                    return resp2.getcode(), resp2.read().decode('utf-8', errors='replace')
             except Exception:
-                pass
-        return None
+                return None, None
+        return e.code, None
     except Exception:
+        return None, None
+
+
+def check_qb_api_alive(qb_ip, qb_port, timeout=1.5):
+    """Пингует API qBittorrent (отличает 0 раздач от реально упавшего клиента)."""
+    if not qb_ip or not qb_port:
+        return False
+    code, _ = _open_qb_raw(qb_ip, qb_port, "app/version", timeout=timeout)
+    return code == 200
+
+
+def get_qb_version(qb_ip, qb_port, timeout=2.0):
+    """Возвращает строку версии qBittorrent (app/version отдаёт plain text, не JSON)."""
+    if not qb_ip or not qb_port:
         return None
+    code, body = _open_qb_raw(qb_ip, qb_port, "app/version", timeout=timeout)
+    return body.strip() if (code == 200 and body) else None
+
+
+def _get_qb_json(qb_ip, qb_port, path, timeout=1.8):
+    if not qb_ip or not qb_port:
+        return None
+    code, body = _open_qb_raw(qb_ip, qb_port, path, timeout=timeout)
+    if code == 200 and body is not None:
+        try:
+            return json.loads(body)
+        except Exception:
+            return None
+    return None
 
 
 def _post_qb_api(qb_ip, qb_port, path, payload=None):
     if not qb_ip or not qb_port:
         return False
-    qb_ip = _norm_ip(qb_ip)
-    base_url = f"http://{qb_ip}:{qb_port}"
+    ip = _norm_ip(qb_ip)
+    base_url = f"http://{ip}:{qb_port}"
     body = urllib.parse.urlencode(payload or {}).encode('utf-8')
     req = urllib.request.Request(
         f"{base_url}/api/v2/{path}",
@@ -171,7 +192,7 @@ def _post_qb_api(qb_ip, qb_port, path, payload=None):
         with opener.open(req, timeout=3) as resp:
             return resp.getcode() == 200
     except urllib.error.HTTPError as e:
-        if e.code in (401, 403) and qb_login(qb_ip, qb_port):
+        if e.code in (401, 403) and qb_login(ip, qb_port):
             try:
                 with opener.open(req, timeout=3) as resp2:
                     return resp2.getcode() == 200

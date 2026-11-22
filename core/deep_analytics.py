@@ -12,7 +12,7 @@ def get_rhythm_7x24(db):
     """#14 Ритм канала 7x24: медиана часовых скоростей за последние 45 дней."""
     since_ts = time.time() - (45 * 86400)
     rows = db.get_snapshots_since(since_ts)
-    hour_buckets = {}  # (date_str, weekday, hour) -> {'bytes': float, 'sec': float}
+    hour_buckets = {}
     prev = None
 
     for r in rows:
@@ -37,7 +37,7 @@ def get_rhythm_7x24(db):
     samples = {(wd, hr): [] for wd in range(7) for hr in range(24)}
     for (_, wd, hr), b in hour_buckets.items():
         if b['sec'] >= 60:
-            samples[(wd, hr)].append((b['bytes'] / b['sec']) / (1024 * 1024))  # MiB/s
+            samples[(wd, hr)].append((b['bytes'] / b['sec']) / (1024 * 1024))
 
     matrix = []
     max_med = 0.0
@@ -158,15 +158,18 @@ def _calc_period_metrics(db, start_ts, end_ts):
 def compare_periods_ab(db, start_a_str, end_a_str, start_b_str, end_b_str, same_n_days=True):
     """#33 Машина времени: сравнение двух диапазонов дат."""
     try:
-        da1 = datetime.datetime.strptime(start_a_str, '%Y-%m-%d')
-        da2 = datetime.datetime.strptime(end_a_str, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
-        db1 = datetime.datetime.strptime(start_b_str, '%Y-%m-%d')
-        db2 = datetime.datetime.strptime(end_b_str, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
+        da1 = datetime.datetime.strptime(str(start_a_str).strip(), '%Y-%m-%d')
+        da2 = datetime.datetime.strptime(str(end_a_str).strip(), '%Y-%m-%d').replace(hour=23, minute=59, second=59)
+        db1 = datetime.datetime.strptime(str(start_b_str).strip(), '%Y-%m-%d')
+        db2 = datetime.datetime.strptime(str(end_b_str).strip(), '%Y-%m-%d').replace(hour=23, minute=59, second=59)
     except ValueError:
         return {'success': False, 'error': 'Укажите даты в формате YYYY-MM-DD'}
 
+    if da2 < da1 or db2 < db1:
+        return {'success': False, 'error': 'Дата окончания не может быть раньше даты начала'}
+
     if same_n_days:
-        days_span = min((da2 - da1).days, (db2 - db1).days)
+        days_span = max(0, min((da2 - da1).days, (db2 - db1).days))
         da2 = (da1 + datetime.timedelta(days=days_span)).replace(hour=23, minute=59, second=59)
         db2 = (db1 + datetime.timedelta(days=days_span)).replace(hour=23, minute=59, second=59)
 

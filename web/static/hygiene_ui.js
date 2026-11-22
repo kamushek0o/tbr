@@ -3,12 +3,23 @@ let _hygieneTorItems = [];
 let _hygienePathItems = [];
 let _hygieneMode = 'quarantine';
 let _pathMode = 'bt_backup';
+let _relocatePollTimer = null;
+
+function toggleAllHygTor(master) {
+    document.querySelectorAll('.hyg-tor-chk').forEach(c => { c.checked = master.checked; });
+}
+
+function toggleAllHygPath(master) {
+    document.querySelectorAll('.hyg-path-chk').forEach(c => { c.checked = master.checked; });
+}
 
 async function runHygieneTorrentScan(mode) {
     _hygieneMode = mode;
     const tbody = document.getElementById('hyg-tor-tbody');
     const summary = document.getElementById('hyg-tor-summary');
     const delBtn = document.getElementById('btn-hyg-tor-trash');
+    const masterChk = document.getElementById('hyg-tor-chk-all');
+    if (masterChk) masterChk.checked = false;
     if (!tbody) return;
     tbody.innerHTML = '<tr><td colspan="4" class="center-msg">⏳ Сканирование клиента...</td></tr>';
     if (delBtn) delBtn.classList.add('hidden');
@@ -59,7 +70,7 @@ async function deleteSelectedHygieneTorrents() {
     if (!confirm('Подтвердите повторно перенос выбранных раздач в _tbr_trash:')) return;
     const res = await api('/api/hygiene/delete_torrents_soft', 'POST', { items: chosen });
     const d = await res.json();
-    alert(`Перенесено в корзину: ${d.removed || 0}`);
+    alert(`Удалено из qBittorrent: ${d.removed || 0}\nПеренесено в _tbr_trash: ${d.trashed || 0}\nЗащищено общих папок: ${d.skipped_shared || 0}`);
     runHygieneTorrentScan(_hygieneMode);
     if (typeof loadTrashItems === 'function') loadTrashItems();
 }
@@ -69,6 +80,8 @@ async function runHygienePathScan(mode) {
     const tbody = document.getElementById('hyg-path-tbody');
     const summary = document.getElementById('hyg-path-summary');
     const delBtn = document.getElementById('btn-hyg-path-trash');
+    const masterChk = document.getElementById('hyg-path-chk-all');
+    if (masterChk) masterChk.checked = false;
     if (!tbody) return;
     tbody.innerHTML = '<tr><td colspan="4" class="center-msg">⏳ Сканирование...</td></tr>';
     if (delBtn) delBtn.classList.add('hidden');
@@ -77,7 +90,7 @@ async function runHygienePathScan(mode) {
     const d = await res.json();
     if (!res.ok || !d.success) {
         summary.textContent = d.error || 'Ошибка';
-        tbody.innerHTML = '';
+        tbody.innerHTML = `<tr><td colspan="4" class="center-msg" style="color:var(--danger);">${escapeHtml(d.error || 'Ошибка')}</td></tr>`;
         return;
     }
     _hygienePathItems = d.items || [];
@@ -170,6 +183,25 @@ async function previewBatchRelocate() {
         (d.items || []).slice(0, 20).map(i => `${i.old_path} → ${i.new_path}`).join('\n');
 }
 
+function pollBatchRelocateStatus() {
+    if (_relocatePollTimer) clearInterval(_relocatePollTimer);
+    _relocatePollTimer = setInterval(async () => {
+        try {
+            const res = await api('/api/batch/relocate/status');
+            if (!res.ok) return;
+            const st = await res.json();
+            const out = document.getElementById('batch-op-out');
+            if (out) {
+                out.textContent = `🚚 Переезд: всего ${st.total} | Готово: ${st.done} | В процессе: ${st.moving} | В очереди: ${st.pending}`;
+            }
+            if (!st.running && st.pending === 0 && st.moving === 0) {
+                clearInterval(_relocatePollTimer);
+                _relocatePollTimer = null;
+            }
+        } catch (e) {}
+    }, 3000);
+}
+
 async function startBatchRelocate() {
     const old_prefix = document.getElementById('batch-rel-old').value;
     const new_prefix = document.getElementById('batch-rel-new').value;
@@ -177,6 +209,7 @@ async function startBatchRelocate() {
     const res = await api('/api/batch/relocate/start', 'POST', { old_prefix, new_prefix });
     const d = await res.json();
     document.getElementById('batch-op-out').textContent = d.success ? `🚀 В очереди переезда: ${d.queued} раздач` : `❌ ${d.error}`;
+    if (d.success) pollBatchRelocateStatus();
 }
 
 async function previewBatchRemap() {

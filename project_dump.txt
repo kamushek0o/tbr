@@ -671,7 +671,7 @@ _CLIENTS_CACHE = {'ts': 0.0, 'data': None}
 _CLIENTS_TTL = 900.0
 
 _INSIGHTS_LOCK = threading.Lock()
-_INSIGHTS_CACHE = {}  # key: (role, tracker_period) -> {'ts': float, 'data': dict}
+_INSIGHTS_CACHE = {}
 _INSIGHTS_TTL = 300.0
 _ISP_TIERS_MBPS = (10, 20, 25, 30, 50, 75, 100, 150, 200, 250, 300, 500, 1000)
 
@@ -848,7 +848,7 @@ def get_heatmap_365(db):
     return cells
 
 
-def _sum_range_deltas(rows, start_ts, end_ts):
+def _sum_range_deltas(rows, start_ts, end_ts, max_physical_bps=None):
     total, prev = 0, None
     for r in rows:
         ts = float(r['timestamp'])
@@ -856,7 +856,8 @@ def _sum_range_deltas(rows, start_ts, end_ts):
             dt = ts - float(prev['timestamp'])
             d = max(0, int(r['total_uploaded']) - int(prev['total_uploaded']))
             if dt >= MIN_DELTA_SEC and d > 0:
-                total += d
+                if max_physical_bps is None or (d / dt) <= max_physical_bps:
+                    total += d
         prev = r
     return total
 
@@ -903,12 +904,15 @@ def get_records_and_comparisons(db, heatmap_cells=None, force_recalc=False):
     week_start = (now_dt - datetime.timedelta(days=now_dt.weekday())).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
     prev_week_start, prev_week_same_end = week_start - (7 * 86400), now_ts - (7 * 86400)
 
+    max_mbps = max(10, cfg.getint('Max_Channel_Mbps', 1000))
+    max_physical_bps = ((max_mbps * 1_000_000) / 8.0) * 1.05
+
     _, min_ts = db.get_snapshot_range_info()
     rows_15d = db.get_snapshots_since(prev_week_start - 3600)
-    today_b = _sum_range_deltas(rows_15d, today_start, now_ts)
-    yest_b = _sum_range_deltas(rows_15d, yest_start, yest_same_end)
-    this_w_b = _sum_range_deltas(rows_15d, week_start, now_ts)
-    prev_w_b = _sum_range_deltas(rows_15d, prev_week_start, prev_week_same_end)
+    today_b = _sum_range_deltas(rows_15d, today_start, now_ts, max_physical_bps)
+    yest_b = _sum_range_deltas(rows_15d, yest_start, yest_same_end, max_physical_bps)
+    this_w_b = _sum_range_deltas(rows_15d, week_start, now_ts, max_physical_bps)
+    prev_w_b = _sum_range_deltas(rows_15d, prev_week_start, prev_week_same_end, max_physical_bps)
 
     day_pct = round(((today_b - yest_b) / yest_b) * 100.0, 1) if (min_ts and min_ts <= yest_start + 3600 and yest_b > 0) else None
     week_pct = round(((this_w_b - prev_w_b) / prev_w_b) * 100.0, 1) if (min_ts and min_ts <= prev_week_start + 3600 and prev_w_b > 0) else None
@@ -1268,8 +1272,8 @@ import threading
 from utils.config import cfg
 from utils.helpers import APP_DATA_DIR, format_file_size, write_log, write_error_log
 from core.qb_api import (
-    detect_qbittorrent_port, get_live_torrent_info, send_qb_command,
-    add_torrent_tags, remove_torrent_tags
+    detect_qbittorrent_port, check_qb_api_alive, get_live_torrent_info,
+    send_qb_command, add_torrent_tags, remove_torrent_tags
 )
 from core.torrent_parser import get_all_torrents
 from core.summary_tracker import summary_tracker
@@ -1286,6 +1290,7 @@ from core.torrent_targets import evaluate_targets
 from core.achievements import evaluate_achievements
 from core.autopilot_extras import tick_autopilot_extras
 from core.hdd_smart_queue import tick_recheck_queue
+from core.lineage_notes_events import record_torrent_event
 
 VALID_TIME_MODES = ('seeding_time', 'time_active')
 VALID_SPEED_OPS = ('', '>=', '<')
@@ -1497,9 +1502,9 @@ class AutomationEngine:
 
     def dry_run(self, rule_id=None):
         ip, port = detect_qbittorrent_port(cfg.config)
-        live = get_live_torrent_info(ip, port) if port else {}
-        if not live:
+        if not check_qb_api_alive(ip, port):
             return {'success': False, 'error': 'qBittorrent недоступен', 'matches': []}
+        live = get_live_torrent_info(ip, port)
         rules = self.get_rules()
         rules = [r for r in rules if r['id'] == int(rule_id)] if rule_id is not None else [r for r in rules if r.get('enabled')]
         now_ts, matches = time.time(), []
@@ -1515,8 +1520,8 @@ class AutomationEngine:
 
     def run_system_tick(self):
         ip, port = detect_qbittorrent_port(cfg.config)
-        live = get_live_torrent_info(ip, port) if port else {}
-        qb_up = bool(port and live)
+        qb_up = check_qb_api_alive(ip, port) if port else False
+        live = get_live_torrent_info(ip, port) if qb_up else {}
         keep_awake.evaluate(live)
         system_alerts.check(qb_up, live=live)
         run_watchdog(qb_up)
@@ -1526,6 +1531,11 @@ class AutomationEngine:
         maybe_send_digest(notify_all)
         evaluate_achievements(force=False)
         if qb_up:
+            try:
+                from core.network_tools import check_network_interface_guard
+                check_network_interface_guard()
+            except Exception:
+                pass
             evaluate_targets(live)
             tick_autopilot_extras(ip, port, live)
             tick_recheck_queue(ip, port, live)
@@ -1564,6 +1574,7 @@ class AutomationEngine:
                 time_lbl = "Сид" if m['time_mode'] == 'seeding_time' else "Актив"
                 write_log('automation', f"Правило '{r['name']}' -> '{m['name']}' (Ratio: {m['ratio']:.2f}, {time_lbl}: {m['dur_fmt']})")
                 app_state_db.add_audit_event('automation', f"Правило: {r['name']}", m['name'])
+                record_torrent_event(t_hash, 'autopilot', f"Правило '{r['name']}': {', '.join(actions_done) or 'сработало'}")
                 if r.get('notify'):
                     stat_line = f"Отдано: {m['uploaded_fmt']} | Ratio: {m['ratio']:.2f}x | {time_lbl}: {m['dur_fmt']}"
                     if m['v_avg'] is not None:
@@ -1901,6 +1912,7 @@ DB_TARGETS = [
     ('profiles.db', os.path.join(APP_DATA_DIR, 'profiles.db')),
     ('automation.db', os.path.join(APP_DATA_DIR, 'automation.db')),
     ('app_state.db', os.path.join(APP_DATA_DIR, 'app_state.db')),
+    ('file_index.db', os.path.join(APP_DATA_DIR, 'file_index.db')),
     ('summary_history.db', os.path.join(LOG_FOLDER, 'auto_hourly', 'summary_history.db')),
 ]
 PENDING_DIR = os.path.join(APP_DATA_DIR, '_restore_pending')
@@ -3070,7 +3082,7 @@ import urllib.request
 from utils.config import cfg
 from utils.helpers import APP_DATA_DIR, BT_BACKUP_PATH, LOG_FOLDER
 from core.version import APP_VERSION
-from core.qb_api import detect_qbittorrent_port, _get_qb_json, is_qb_running
+from core.qb_api import detect_qbittorrent_port, check_qb_api_alive, _get_qb_json, is_qb_running
 from core.disk_monitor import list_active_disks
 from core.config_vault import detect_qb_config_dir
 
@@ -3079,6 +3091,7 @@ _DB_LIST = [
     ("profiles.db", os.path.join(APP_DATA_DIR, "profiles.db")),
     ("automation.db", os.path.join(APP_DATA_DIR, "automation.db")),
     ("app_state.db", os.path.join(APP_DATA_DIR, "app_state.db")),
+    ("file_index.db", os.path.join(APP_DATA_DIR, "file_index.db")),
 ]
 
 
@@ -3098,14 +3111,8 @@ def _check_time_skew():
 
 def run_environment_doctor():
     ip, port = detect_qbittorrent_port(cfg.config)
-    qb_ver = _get_qb_json(ip, port, "app/version", timeout=2.0) if port else None
-    if qb_ver is None:
-        try:
-            req = urllib.request.Request(f"http://{ip}:{port}/api/v2/app/version")
-            with urllib.request.urlopen(req, timeout=2.0) as r:
-                qb_ver = r.read().decode("utf-8", errors="ignore").strip()
-        except Exception:
-            qb_ver = None
+    api_ok = check_qb_api_alive(ip, port) if port else False
+    qb_ver = _get_qb_json(ip, port, "app/version", timeout=2.0) if api_ok else None
 
     bt_exists = os.path.isdir(BT_BACKUP_PATH)
     bt_rw = False
@@ -3140,8 +3147,8 @@ def run_environment_doctor():
         "qb": {
             "running": is_qb_running(),
             "ip": ip, "port": port,
-            "api_ok": qb_ver is not None,
-            "version": qb_ver or "не отвечает",
+            "api_ok": api_ok,
+            "version": qb_ver or ("OK" if api_ok else "не отвечает"),
             "config_dir": detect_qb_config_dir() or "не найдена"
         },
         "bt_backup": {"path": BT_BACKUP_PATH, "exists": bt_exists, "rw": bt_rw},
@@ -3220,6 +3227,8 @@ from core.qb_api import (
 from core.torrent_parser import force_clear_cache
 from core.torrent_targets import handle_targets_on_merge
 from core.app_state_db import app_state_db
+from core.soft_trash import create_fastresume_snapshot
+from core.lineage_notes_events import record_torrent_event
 
 VALID_DELETE_MODES = ('none', 'safe', 'force')
 VALID_MERGE_MODES = ('add', 'replace')
@@ -3327,8 +3336,7 @@ def run_fastresume_merge(old_hash, new_hash, delete_mode='none', merge_mode='add
         if prev:
             dt_str = datetime.datetime.fromtimestamp(prev[0]['created_at']).strftime('%d.%m.%Y %H:%M')
             return False, log, None, 409, {
-                'is_duplicate': True,
-                'merged_at': dt_str,
+                'is_duplicate': True, 'merged_at': dt_str,
                 'warning': f"Эти раздачи уже объединялись {dt_str}. Точно сложить ещё раз?"
             }
 
@@ -3351,6 +3359,8 @@ def run_fastresume_merge(old_hash, new_hash, delete_mode='none', merge_mode='add
             if not close_qbittorrent(max_wait_sec=30.0):
                 raise RuntimeError("Не удалось завершить qBittorrent за 30с. Убедитесь, что WebUI доступен.")
             time.sleep(1.0)
+
+        create_fastresume_snapshot([old_hash, new_hash], reason='merger')
 
         with open(old_file, 'rb') as f:
             old_data = decode_bencode(f.read())
@@ -3426,6 +3436,7 @@ def run_fastresume_merge(old_hash, new_hash, delete_mode='none', merge_mode='add
         uid = app_state_db.link_torrent_lineage(old_hash, new_hash)
         if uid:
             log.append(f"🔗 Личная история поколений связана (UID: {uid[:8]}...)")
+        record_torrent_event(new_hash, 'merge', f"Мердж ({m_mode}): {format_file_size(old_up)} + {format_file_size(new_up)} → {format_file_size(final_up)}")
         if handle_targets_on_merge(old_hash, new_hash, final_uploaded=final_up):
             log.append("🎯 Целевая планка (Goal) синхронизирована с новым объёмом.")
 
@@ -3455,10 +3466,7 @@ def run_fastresume_merge(old_hash, new_hash, delete_mode='none', merge_mode='add
             else:
                 log.append("⚡ Готов к безопасному удалению исходника.")
 
-    calc_info = {
-        'source_up': old_up, 'target_up': new_up, 'final_up': final_up,
-        'calc_fmt': f"{format_file_size(old_up)} + {format_file_size(new_up)} = {format_file_size(final_up)}"
-    }
+    calc_info = {'source_up': old_up, 'target_up': new_up, 'final_up': final_up, 'calc_fmt': f"{format_file_size(old_up)} + {format_file_size(new_up)} = {format_file_size(final_up)}"}
     return True, log, confirm_info, 200, calc_info
 
 
@@ -5578,7 +5586,7 @@ def send_discord(text_md):
     req = urllib.request.Request(
         webhook,
         data=payload,
-        headers={'Content-Type': 'application/json', 'User-Agent': 'tbr-pro/3.2'}
+        headers={'Content-Type': 'application/json', 'User-Agent': 'tbr-pro/4.0'}
     )
     try:
         with urllib.request.urlopen(req, timeout=8) as resp:
@@ -5588,7 +5596,18 @@ def send_discord(text_md):
         return False, f"Discord: {e}"
 
 
-def _deliver_direct(title, lines):
+def _deliver_direct(title, lines, critical=False):
+    try:
+        from core.webhooks_bundler import emit_webhook
+        emit_webhook('alert' if critical else 'notification', {'title': title, 'lines': list(lines or []), 'critical': critical})
+    except Exception:
+        pass
+    try:
+        from core.lineage_notes_events import push_activity
+        push_activity('alert' if critical else 'notify', title)
+    except Exception:
+        pass
+
     tg_msg = f"<b>{html.escape(title)}</b>\n" + "\n".join(html.escape(l) for l in lines)
     dc_msg = f"**{title}**\n" + "\n".join(lines)
     results = []
@@ -5613,12 +5632,12 @@ def notify_all(title, lines, critical=False, bundle=False):
         if bundle or cfg.getboolean('Alert_Bundler_Enabled', True):
             try:
                 from core.webhooks_bundler import queue_bundled_alert
-                queue_bundled_alert(title, lines, _deliver_direct)
+                queue_bundled_alert(title, lines, lambda t, l: _deliver_direct(t, l, critical=False))
                 return ["Bundled (45s)"]
             except Exception:
                 pass
 
-    return _deliver_direct(title, lines)
+    return _deliver_direct(title, lines, critical=critical)
 
 
 def test_notifications():
@@ -5640,7 +5659,7 @@ import datetime
 from utils.config import cfg
 from utils.helpers import format_file_size, write_error_log
 from core.torrent_parser import get_all_torrents
-from core.qb_api import detect_qbittorrent_port, get_live_torrent_info
+from core.qb_api import detect_qbittorrent_port, get_live_torrent_info, _qb_config_candidates
 from core.app_state_db import app_state_db
 from core.soft_trash import move_to_trash
 
@@ -5650,19 +5669,18 @@ def _norm(p):
 
 
 def _read_qb_default_save_path():
-    if os.name == 'nt':
-        conf = os.path.join(os.path.expanduser('~'), 'AppData', 'Local', 'qBittorrent', 'qBittorrent.conf')
-    else:
-        conf = os.path.join(os.path.expanduser('~'), '.config', 'qBittorrent', 'qBittorrent.conf')
-    if not os.path.isfile(conf):
-        return ''
-    try:
-        with open(conf, 'r', encoding='utf-8', errors='ignore') as f:
-            txt = f.read()
-        m = re.search(r'(?:SavePath|DefaultSavePath)=([^\r\n]+)', txt, re.IGNORECASE)
-        return m.group(1).strip() if m else ''
-    except Exception:
-        return ''
+    for conf in _qb_config_candidates():
+        if not conf or not os.path.isfile(conf):
+            continue
+        try:
+            with open(conf, 'r', encoding='utf-8', errors='ignore') as f:
+                txt = f.read()
+            m = re.search(r'(?:SavePath|DefaultSavePath)=([^\r\n]+)', txt, re.IGNORECASE)
+            if m and m.group(1).strip():
+                return m.group(1).strip()
+        except Exception:
+            pass
+    return ''
 
 
 def get_download_roots():
@@ -5719,7 +5737,6 @@ def _collect_active_paths():
             active.add(_norm(cp))
         if sp and nm:
             active.add(_norm(os.path.join(sp, nm)))
-
     return active
 
 
@@ -5784,8 +5801,13 @@ def scan_orphan_entries(custom_roots=None):
     return {'roots': roots, 'orphans': orphans, 'count': len(orphans), 'total_size': total_bytes, 'total_size_fmt': format_file_size(total_bytes)}
 
 
-def delete_orphan_entries(paths, actor='admin', use_trash=True):
-    allowed_roots = [_norm(r) for r in get_download_roots()]
+def delete_orphan_entries(paths, actor='admin', use_trash=True, custom_roots=None):
+    raw_roots = list(get_download_roots())
+    if custom_roots:
+        for cr in custom_roots:
+            if cr and os.path.isdir(str(cr).strip()):
+                raw_roots.append(os.path.abspath(str(cr).strip()))
+    allowed_roots = [_norm(r) for r in raw_roots]
     active_paths = _collect_active_paths()
     deleted, errors = [], []
 
@@ -5805,7 +5827,7 @@ def delete_orphan_entries(paths, actor='admin', use_trash=True):
                 continue
 
         if not inside_allowed:
-            errors.append(f"Отклонено (вне корневых папок загрузок): {raw_p}")
+            errors.append(f"Отклонено (вне разрешённых корневых папок): {raw_p}")
             continue
         if _is_path_protected(target_norm, active_paths):
             errors.append(f"Отклонено (путь используется активным торрентом): {raw_p}")
@@ -6656,6 +6678,20 @@ def qb_login(qb_ip, qb_port, username=None, password=None):
         return False
 
 
+def _qb_config_candidates():
+    if os.name == 'nt':
+        return [
+            os.path.join(os.environ.get('APPDATA', ''), 'qBittorrent', 'qBittorrent.ini'),
+            os.path.join(os.path.expanduser('~'), 'AppData', 'Roaming', 'qBittorrent', 'qBittorrent.ini'),
+            os.path.join(os.path.expanduser('~'), 'AppData', 'Local', 'qBittorrent', 'qBittorrent.conf'),
+        ]
+    return [
+        '/config/qBittorrent/qBittorrent.conf',
+        '/config/qBittorrent.conf',
+        os.path.join(os.path.expanduser('~'), '.config', 'qBittorrent', 'qBittorrent.conf'),
+    ]
+
+
 def detect_qbittorrent_port(config=None):
     env_ip = os.environ.get('TBR_QB_HOST', '').strip()
     env_port = os.environ.get('TBR_QB_PORT', '').strip()
@@ -6672,13 +6708,10 @@ def detect_qbittorrent_port(config=None):
         except Exception:
             pass
 
-    if os.name == 'nt':
-        config_path = os.path.join(os.path.expanduser('~'), 'AppData', 'Local', 'qBittorrent', 'qBittorrent.conf')
-    else:
-        config_path = os.path.join(os.path.expanduser('~'), '.config', 'qBittorrent', 'qBittorrent.conf')
-
     port_from_conf, address_from_conf = None, '127.0.0.1'
-    if os.path.exists(config_path):
+    for config_path in _qb_config_candidates():
+        if not config_path or not os.path.exists(config_path):
+            continue
         try:
             with open(config_path, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
@@ -6690,10 +6723,10 @@ def detect_qbittorrent_port(config=None):
                 addr = m_addr.group(1).strip()
                 if addr not in ('*', '0.0.0.0', ''):
                     address_from_conf = addr
+            if port_from_conf:
+                return address_from_conf, port_from_conf
         except Exception:
             pass
-        if port_from_conf:
-            return address_from_conf, port_from_conf
 
     for port in ([port_from_conf] if port_from_conf else [8080, 8081, 1488, 8888]):
         if not port:
@@ -6713,6 +6746,24 @@ def detect_qbittorrent_port(config=None):
                 continue
 
     return '127.0.0.1', (port_from_conf or 8080)
+
+
+def check_qb_api_alive(qb_ip, qb_port, timeout=1.5):
+    """Пингует API qBittorrent (отличает 0 раздач от реально упавшего клиента)."""
+    if not qb_ip or not qb_port:
+        return False
+    ip = _norm_ip(qb_ip)
+    base_url = f"http://{ip}:{qb_port}"
+    req = urllib.request.Request(f"{base_url}/api/v2/app/version", headers={'Referer': base_url})
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            return resp.getcode() == 200
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            return qb_login(ip, qb_port)
+        return False
+    except Exception:
+        return False
 
 
 def _get_qb_json(qb_ip, qb_port, path, timeout=1.8):
@@ -6792,9 +6843,9 @@ def get_torrent_peers(qb_ip, qb_port, t_hash):
 
 
 def scan_dead_torrents(qb_ip, qb_port):
-    live = get_live_torrent_info(qb_ip, qb_port)
-    if not live:
+    if not check_qb_api_alive(qb_ip, qb_port):
         return {'success': False, 'error': 'Не удалось подключиться к WebUI qBittorrent.'}
+    live = get_live_torrent_info(qb_ip, qb_port)
     dead_items, groups = [], {}
 
     def check_one(t_hash, t_info):
@@ -6971,16 +7022,11 @@ def _is_qb_running_windows():
 
         class PROCESSENTRY32W(ctypes.Structure):
             _fields_ = [
-                ('dwSize', wintypes.DWORD),
-                ('cntUsage', wintypes.DWORD),
-                ('th32ProcessID', wintypes.DWORD),
-                ('th32DefaultHeapID', ctypes.c_size_t),
-                ('th32ModuleID', wintypes.DWORD),
-                ('cntThreads', wintypes.DWORD),
-                ('th32ParentProcessID', wintypes.DWORD),
-                ('pcPriClassBase', wintypes.LONG),
-                ('dwFlags', wintypes.DWORD),
-                ('szExeFile', wintypes.WCHAR * 260)
+                ('dwSize', wintypes.DWORD), ('cntUsage', wintypes.DWORD),
+                ('th32ProcessID', wintypes.DWORD), ('th32DefaultHeapID', ctypes.c_size_t),
+                ('th32ModuleID', wintypes.DWORD), ('cntThreads', wintypes.DWORD),
+                ('th32ParentProcessID', wintypes.DWORD), ('pcPriClassBase', wintypes.LONG),
+                ('dwFlags', wintypes.DWORD), ('szExeFile', wintypes.WCHAR * 260)
             ]
 
         entry = PROCESSENTRY32W()
@@ -6997,10 +7043,7 @@ def _is_qb_running_windows():
             kernel32.CloseHandle(h_snap)
     except Exception:
         try:
-            r = subprocess.run(
-                ['tasklist', '/FI', 'IMAGENAME eq qbittorrent.exe'],
-                capture_output=True, text=True, creationflags=_WIN_FLAGS
-            )
+            r = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq qbittorrent.exe'], capture_output=True, text=True, creationflags=_WIN_FLAGS)
             return 'qbittorrent.exe' in r.stdout.lower()
         except Exception:
             return False
@@ -7020,16 +7063,10 @@ def is_qb_running():
 
 
 def close_qbittorrent(max_wait_sec=30.0):
-    if os.name != 'nt':
-        write_log('api', "Управление процессом qBittorrent недоступно в Docker/Linux")
-        return False
     if not is_qb_running():
         return True
 
     write_log('api', "Завершение процесса qBittorrent...")
-
-    # 1. Сначала пробуем WebUI API app/shutdown:
-    # Работает даже если qB запущен от Администратора, обходя ошибку 'Access Denied' в taskkill.
     try:
         from core.qb_api import detect_qbittorrent_port, shutdown_qb_webui
         ip, port = detect_qbittorrent_port(cfg.config)
@@ -7038,13 +7075,21 @@ def close_qbittorrent(max_wait_sec=30.0):
     except Exception:
         pass
 
-    # 2. Мягкий taskkill (WM_CLOSE) на случай отключенного WebUI
+    if os.name != 'nt':
+        deadline = time.monotonic() + max(5.0, float(max_wait_sec))
+        while time.monotonic() < deadline:
+            time.sleep(0.5)
+            if not is_qb_running():
+                write_log('api', "qBittorrent (Linux/Docker) завершён через WebUI.")
+                return True
+        write_log('api', "Не удалось завершить qBittorrent через WebUI на Linux/Docker.")
+        return False
+
     try:
         subprocess.run(['taskkill', '/IM', 'qbittorrent.exe'], capture_output=True, creationflags=_WIN_FLAGS)
     except Exception:
         pass
 
-    # 3. Ждём завершения процесса до 30 секунд (клиент сбрасывает кэш на диск)
     deadline = time.monotonic() + max(5.0, float(max_wait_sec))
     while time.monotonic() < deadline:
         time.sleep(0.5)
@@ -7052,7 +7097,6 @@ def close_qbittorrent(max_wait_sec=30.0):
             write_log('api', "qBittorrent успешно завершил работу.")
             return True
 
-    # 4. Если не вышел за 30с — пробуем принудительный taskkill /F
     try:
         subprocess.run(['taskkill', '/F', '/IM', 'qbittorrent.exe'], capture_output=True, creationflags=_WIN_FLAGS)
     except Exception:
@@ -8514,17 +8558,14 @@ class SummaryTracker:
                         SELECT ts.hash_id, s.timestamp, s.datetime, ts.uploaded
                         FROM snapshots s
                         JOIN torrent_snapshots ts ON s.id = ts.snapshot_id
-                        WHERE ts.hash_id IN ({placeholders}) AND s.timestamp >= ?
+                        WHERE COALESCE(s.ignore_in_stats, 0) = 0 AND ts.hash_id IN ({placeholders}) AND s.timestamp >= ?
                         ORDER BY ts.hash_id ASC, s.timestamp ASC
                     """, (*hashes, since_ts)).fetchall()
             except Exception:
                 rows = []
 
         max_bps = (max(10, cfg.getint('Max_Channel_Mbps', 1000)) * 1024 * 1024) / 8.0
-        buckets = {}  # { bucket_ts: {'delta': int, 'bps': float, 'dt_str': str, 'is_merge': bool} }
-        consumed_merges = set()
-
-        by_hash = {}
+        buckets, consumed_merges, by_hash = {}, set(), {}
         for r in rows:
             by_hash.setdefault(r['hash_id'], []).append(r)
 
@@ -10408,6 +10449,7 @@ from core.qb_api import detect_qbittorrent_port, get_live_torrent_info, is_qb_ru
 from core.torrent_parser import get_all_torrents
 from core.scheduler import MIN_DELTA_SEC
 from core.disk_monitor import get_monitored_disk_info
+from core.private_vault import get_hidden_hashes, get_vault_settings
 
 _ICON_CACHE = {}
 PERIOD_DAYS = {'1d': 1, '7d': 7, '30d': 30}
@@ -10539,21 +10581,30 @@ def compute_top_n_torrents(db, summaries, live=None, top_n=5, period='1d', with_
     return top_items, others
 
 
-def get_widget_summary(db, ui_settings=None, top_period=None, top_scale=None):
+def get_widget_summary(db, ui_settings=None, top_period=None, top_scale=None, role='admin'):
     now_ts = time.time()
     torrents = list(get_all_torrents(use_cache=True).values())
     ip, port = detect_qbittorrent_port(cfg.config)
     qb_up = is_qb_running()
     live = get_live_torrent_info(ip, port) if (qb_up and port) else {}
 
-    if live:
-        total_uploaded = sum(int(t.get('uploaded', 0) or 0) for t in live.values())
-        cur_bps = sum(int(t.get('upspeed', 0) or 0) for t in live.values())
-        active_cnt = sum(1 for t in live.values() if str(t.get('state', '')).lower() not in ('pausedup', 'pauseddl', 'stoppedup', 'stoppeddl', 'error', 'missingfiles'))
-        total_cnt = len(live)
+    hidden = get_hidden_hashes(live) if role != 'admin' else set()
+    vault_mode = get_vault_settings().get('aggregate_mode', 'exclude') if hidden else 'anonymize'
+
+    vis_live = {h: v for h, v in live.items() if h.lower() not in hidden} if hidden else live
+    vis_torrents = [t for t in torrents if (t.get('hash_id') or '').lower() not in hidden] if hidden else torrents
+
+    agg_live = vis_live if (hidden and vault_mode == 'exclude') else live
+    agg_torrents = vis_torrents if (hidden and vault_mode == 'exclude') else torrents
+
+    if agg_live:
+        total_uploaded = sum(int(t.get('uploaded', 0) or 0) for t in agg_live.values())
+        cur_bps = sum(int(t.get('upspeed', 0) or 0) for t in agg_live.values())
+        active_cnt = sum(1 for t in agg_live.values() if str(t.get('state', '')).lower() not in ('pausedup', 'pauseddl', 'stoppedup', 'stoppeddl', 'error', 'missingfiles'))
+        total_cnt = len(agg_live)
     else:
-        total_uploaded = sum(int(t.get('uploaded', 0) or 0) for t in torrents)
-        active_cnt, total_cnt = len(torrents), len(torrents)
+        total_uploaded = sum(int(t.get('uploaded', 0) or 0) for t in agg_torrents)
+        active_cnt, total_cnt = len(agg_torrents), len(agg_torrents)
         s6 = build_detailed_speed_series(db, hours=6)
         cur_bps = s6[-1]['speed_bps'] if s6 else 0.0
 
@@ -10586,7 +10637,8 @@ def get_widget_summary(db, ui_settings=None, top_period=None, top_scale=None):
                 daily_map[dk] = daily_map.get(dk, 0.0) + delta / (1024 ** 3)
         prev_r = r
 
-    top_items = compute_top_n_torrents(db, torrents, live=live, top_n=5, period=per)
+    # В Топ-5 никогда не раскрываем названия скрытых раздач Private Vault
+    top_items = compute_top_n_torrents(db, vis_torrents, live=vis_live, top_n=5, period=per)
     disk = get_monitored_disk_info(live)
 
     return {
@@ -11329,7 +11381,7 @@ FILE: utils/bencode.py
 # utils/bencode.py
 
 def decode_bencode(data):
-    """Декодирует bencode-данные с автоматическим декодированием ключей и текста в UTF-8."""
+    """Декодирует bencode-данные: валидные UTF-8 строки -> str, сырые бинарные байты -> bytes без искажения."""
     if isinstance(data, str):
         data = data.encode('latin1')
 
@@ -11350,14 +11402,14 @@ def decode_bencode(data):
             res = {}
             while data[idx:idx + 1] != b'e':
                 raw_key, idx = decode_first(idx)
-                # Ключи словаря всегда декодируем в строковый вид (str)
                 if isinstance(raw_key, bytes):
                     try:
                         key = raw_key.decode('utf-8')
                     except UnicodeDecodeError:
-                        key = raw_key.decode('latin1', errors='replace')
+                        # Не-UTF8 ключи оставляем сырыми bytes во избежание порчи при обратном кодировании
+                        key = raw_key
                 else:
-                    key = str(raw_key)
+                    key = raw_key if isinstance(raw_key, str) else str(raw_key)
 
                 val, idx = decode_first(idx)
                 res[key] = val
@@ -11368,8 +11420,6 @@ def decode_bencode(data):
             start = colon + 1
             end = start + length
             raw_bytes = data[start:end]
-
-            # Текстовые строки декодируем в str, бинарные данные (куски, хэши) оставляем в bytes
             try:
                 val = raw_bytes.decode('utf-8')
             except UnicodeDecodeError:
@@ -11394,7 +11444,7 @@ def encode_bencode(val):
         return b'l' + b''.join(encode_bencode(x) for x in val) + b'e'
     elif isinstance(val, dict):
         def to_bytes(k):
-            return k if isinstance(k, (bytes, bytearray)) else str(k).encode('utf-8')
+            return bytes(k) if isinstance(k, (bytes, bytearray)) else str(k).encode('utf-8')
 
         sorted_keys = sorted(val.keys(), key=to_bytes)
         out = [b'd']
@@ -11697,7 +11747,7 @@ except ImportError:
     HAS_WAITRESS = False
 
 from utils.config import cfg
-from utils.helpers import write_error_log
+from utils.helpers import APP_DATA_DIR, write_error_log
 from core.torrent_parser import get_global_torrent_summaries
 from core.summary_tracker import summary_tracker
 from core.automation import automation_engine
@@ -11730,12 +11780,27 @@ def get_resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 
+def _get_or_create_secret_key():
+    key_file = os.path.join(APP_DATA_DIR, '.flask_secret')
+    try:
+        if os.path.isfile(key_file):
+            data = open(key_file, 'rb').read()
+            if len(data) >= 24:
+                return data
+        new_key = os.urandom(32)
+        with open(key_file, 'wb') as f:
+            f.write(new_key)
+        return new_key
+    except Exception:
+        return os.urandom(24)
+
+
 app = Flask(
     __name__,
     template_folder=get_resource_path(os.path.join('web', 'templates')),
     static_folder=get_resource_path(os.path.join('web', 'static'))
 )
-app.secret_key = os.urandom(24)
+app.secret_key = _get_or_create_secret_key()
 app.config['BUILD_VER'] = str(int(time.time()))
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
@@ -12037,15 +12102,19 @@ def api_smart_calc_export():
 
 @analytics_bp.route('/api/export_csv', methods=['GET', 'POST'])
 def api_export_csv():
+    role = g.get('role') or 'viewer'
     if request.method == 'POST':
         req_data = request.get_json(silent=True)
         items = req_data.get('items') if isinstance(req_data, dict) else None
         if not isinstance(items, list) or len(items) > 5000 or not all(isinstance(x, dict) for x in items):
             return jsonify({'error': 'Некорректный список или превышен лимит 5000 строк'}), 400
+        summary_tracker.save_manual_csv(items)
     else:
-        items = summary_tracker.get_stats(get_global_torrent_summaries())['items']
+        stats = summary_tracker.get_stats(get_global_torrent_summaries())
+        if role != 'admin':
+            stats = filter_summary_stats_for_role(stats, role, get_hidden_hashes(_get_live_dict()))
+        items = stats.get('items', [])
 
-    summary_tracker.save_manual_csv(items)
     output = io.StringIO()
     writer = csv.writer(output, delimiter=';')
     writer.writerow(['Имя', 'Хэш', 'Размер (байт)', 'Размер (ГБ)', 'Отдано (байт)', 'Отдано (ГБ)', 'Ratio', 'Ср. скорость (всё время)', 'Скорость за 1ч', 'Скорость за 24ч', 'МБ/ч', 'МБ/день', 'Ratio/ч (всего)', 'Ratio/ч (1ч)', 'Ratio/ч (24ч)', 'Дата создания'])
@@ -12550,13 +12619,15 @@ def api_torrents_mediainfo():
 FILE: web/routes/hygiene_bp.py
 ================================================================================
 # web/routes/hygiene_bp.py
+import os
 import urllib.parse
 from flask import Blueprint, request, jsonify, Response, g
 from utils.config import cfg
-from core.qb_api import detect_qbittorrent_port, delete_torrents
+from core.qb_api import detect_qbittorrent_port, get_live_torrent_info, delete_torrents
 from core.hygiene_trackers import scan_quarantine, scan_stalled_incompletes, scan_dead_weight
 from core.hygiene_disk import scan_bt_backup_garbage, scan_inner_content_junk, trash_paths_list
 from core.torrent_archiver import sync_torrent_archive, list_archived_torrents, get_archived_torrent_bytes, export_archive_zip_by_tag
+from core.fastresume_merger import paths_overlap
 from core.soft_trash import move_to_trash
 from core.app_state_db import app_state_db
 from web.security import HASH_RE
@@ -12596,6 +12667,7 @@ def api_hygiene_dead_weight():
 
 @hygiene_bp.route('/api/hygiene/delete_torrents_soft', methods=['POST'])
 def api_hygiene_delete_torrents_soft():
+    """Удаляет торренты из qB и переносит файлы в _tbr_trash с защитой общих папок и save_path."""
     if _not_admin():
         return jsonify({'success': False, 'error': 'Только для Admin'}), 403
     data = request.get_json(silent=True) or {}
@@ -12607,21 +12679,41 @@ def api_hygiene_delete_torrents_soft():
     if not port:
         return jsonify({'success': False, 'error': 'qBittorrent недоступен'}), 400
 
-    removed = 0
+    live = get_live_torrent_info(ip, port)
+    live_lower = {k.lower(): v for k, v in live.items()}
+    del_hashes = {str(it.get('hash', '')).strip().lower() for it in items if HASH_RE.fullmatch(str(it.get('hash', '')).strip())}
+    other_paths = [
+        str(v.get('content_path') or v.get('save_path') or '').strip()
+        for k, v in live_lower.items() if k not in del_hashes and (v.get('content_path') or v.get('save_path'))
+    ]
+
+    removed, trashed, skipped_shared = 0, 0, 0
     for it in items:
         h = str(it.get('hash', '')).strip()
-        cp = str(it.get('content_path', '')).strip()
-        nm = str(it.get('name', h))
         if not HASH_RE.fullmatch(h):
             continue
+        lv = live_lower.get(h.lower(), {})
+        sp = str(lv.get('save_path') or '').strip()
+        cp = str(lv.get('content_path') or it.get('content_path') or '').strip()
+        nm = str(lv.get('name') or it.get('name') or h)
+
         if delete_torrents(ip, port, h, delete_files=False):
-            if cp:
-                move_to_trash(cp, name=nm, t_hash=h, actor='admin')
             removed += 1
+            if cp:
+                # Защита 1: никогда не сносим корень save_path
+                is_root = bool(sp and os.path.normcase(os.path.abspath(cp)) == os.path.normcase(os.path.abspath(sp)))
+                # Защита 2: проверяем пересечение путей с оставшимися раздачами (кросс-сид / мердж)
+                is_shared = any(paths_overlap(cp, op) for op in other_paths)
+                if is_root or is_shared:
+                    skipped_shared += 1
+                else:
+                    ok, _ = move_to_trash(cp, name=nm, t_hash=h, actor='admin')
+                    if ok:
+                        trashed += 1
 
     if removed:
-        app_state_db.add_audit_event('system', 'Гигиена: перенос в _tbr_trash', f'Удалено раздач: {removed}', actor='admin')
-    return jsonify({'success': True, 'removed': removed})
+        app_state_db.add_audit_event('system', 'Гигиена -> _tbr_trash', f'Удалено: {removed}, в корзину: {trashed}, защищено общих: {skipped_shared}', actor='admin')
+    return jsonify({'success': True, 'removed': removed, 'trashed': trashed, 'skipped_shared': skipped_shared})
 
 
 @hygiene_bp.route('/api/hygiene/bt_backup')
@@ -14541,7 +14633,9 @@ def api_widget():
     ui_settings = profiles_db.get_ui_settings(prof['id'] if prof else 0)
     top_period = request.args.get('top_period')
     top_scale = request.args.get('top_scale')
-    return jsonify(get_widget_summary(summary_tracker.db, ui_settings=ui_settings, top_period=top_period, top_scale=top_scale))
+    is_kiosk = request.args.get('kiosk') == '1'
+    role = 'viewer' if is_kiosk else (g.get('role') or 'viewer')
+    return jsonify(get_widget_summary(summary_tracker.db, ui_settings=ui_settings, top_period=top_period, top_scale=top_scale, role=role))
 
 
 @widget_bp.route('/api/widget/chart.png')
@@ -14585,8 +14679,25 @@ def record_failed_login(ip, bucket='login'):
     sessions_mgr.record_failure(ip, bucket=bucket)
 
 
+def _is_trusted_proxy_ip(ip_str):
+    s = str(ip_str or '').strip()
+    if s in ('127.0.0.1', '::1'):
+        return True
+    try:
+        obj = ipaddress.ip_address(s)
+        return obj.is_loopback or obj.is_private
+    except ValueError:
+        return False
+
+
 def get_client_ip():
-    return (request.headers.get('X-Forwarded-For') or request.remote_addr or '127.0.0.1').split(',')[0].strip()
+    """Защита от спуфинга X-Forwarded-For: доверяем прокси-заголовку только если remote_addr — локальный/доверенный прокси."""
+    remote = (request.remote_addr or '127.0.0.1').strip()
+    if _is_trusted_proxy_ip(remote):
+        fwd = (request.headers.get('X-Forwarded-For') or request.headers.get('X-Real-IP') or '').split(',')[0].strip()
+        if fwd:
+            return fwd
+    return remote
 
 
 def get_csrf_token():
@@ -15093,9 +15204,7 @@ function _renderThrottleBadge(th) {
     const b = document.getElementById('isp-throttle-badge');
     if (!b) return;
     b.classList.toggle('hidden', !th.throttled);
-    if (th.throttled) {
-        b.textContent = `🚧 Полка скорости ~${th.tier_mbps} Мбит/с (${th.plateau_mbs} MiB/s)`;
-    }
+    if (th.throttled) b.textContent = `🚧 Полка скорости ~${th.tier_mbps} Мбит/с (${th.plateau_mbs} MiB/s)`;
 }
 
 function _renderHeatmap365(cells) {
@@ -15198,7 +15307,8 @@ function _renderTrackersChart(tr) {
     });
 }
 
-function openTorrentInspectorModal() {
+function openTorrentInspectorModal(hashOverride = null) {
+    if (hashOverride) selectedHash = hashOverride;
     if (typeof selectedHash === 'undefined' || !selectedHash) return alert(t('err_select_torrent'));
     _inspHash = selectedHash;
     const item = (typeof torrentsData !== 'undefined' ? torrentsData : []).find(x => x.hash === _inspHash);
@@ -15206,6 +15316,8 @@ function openTorrentInspectorModal() {
     document.getElementById('inspector-modal').style.display = 'flex';
     loadInspectorChart('24h');
     loadInspectorPeers();
+    if (typeof loadInspectorPhase4 === 'function') loadInspectorPhase4(_inspHash, 1);
+    if (typeof loadInspectorMediaInfo === 'function') loadInspectorMediaInfo(_inspHash);
 }
 
 function closeInspectorModal() { document.getElementById('inspector-modal').style.display = 'none'; }
@@ -15257,10 +15369,7 @@ async function loadInspectorPeers() {
         return;
     }
     const peers = d.peers || [];
-    if (!peers.length) {
-        tbody.innerHTML = '<tr><td colspan="5" class="center-msg">Активных пиров сейчас нет</td></tr>';
-        return;
-    }
+    if (!peers.length) { tbody.innerHTML = '<tr><td colspan="5" class="center-msg">Активных пиров сейчас нет</td></tr>'; return; }
     tbody.innerHTML = '';
     const frag = document.createDocumentFragment();
     peers.forEach(p => {
@@ -15798,14 +15907,14 @@ document.addEventListener('keydown', (e) => {
     }
 });
 
-window.onload = async () => {
+document.addEventListener('DOMContentLoaded', async () => {
     applyI18n();
     await loadMeAndApplyRole();
     syncTabWithHash();
     if (typeof initSystemStatusAndUpdates === 'function') initSystemStatusAndUpdates();
     if (typeof initTimersUi === 'function') initTimersUi();
     setInterval(checkQbStatus, 5000);
-};
+});
 
 ================================================================================
 FILE: web/static/customizer.js
@@ -15863,6 +15972,32 @@ function hexToRgb(hex) {
     return { r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16) };
 }
 
+function _maybeLoadGoogleFont(fontObj, allowGf) {
+    if (!fontObj || !fontObj.web || !allowGf) return;
+    const linkId = 'tbr-google-font-link';
+    const fam = encodeURIComponent(fontObj.name).replace(/%20/g, '+') + ':wght@400;600;700;800';
+    const href = `https://fonts.googleapis.com/css2?family=${fam}&display=swap`;
+    let link = document.getElementById(linkId);
+    if (!link) {
+        link = document.createElement('link');
+        link.id = linkId;
+        link.rel = 'stylesheet';
+        document.head.appendChild(link);
+    }
+    if (link.href !== href) link.href = href;
+}
+
+function updateFontNote(fontObj) {
+    const el = document.getElementById('cust-font-note');
+    if (!el) return;
+    const allow = document.getElementById('cust-allow-gf')?.checked;
+    if (fontObj && fontObj.web && !allow) {
+        el.textContent = `ℹ️ Шрифт «${fontObj.name}» будет использован, если установлен локально (или включите Google Fonts).`;
+    } else {
+        el.textContent = '';
+    }
+}
+
 function applyUiSettings(ui) {
     if (!ui) return;
     const root = document.documentElement;
@@ -15887,6 +16022,7 @@ function applyUiSettings(ui) {
     if (typeof updateMobileCardsBtn === 'function') updateMobileCardsBtn();
 
     const fontObj = AVAILABLE_FONTS.find(f => f.name === ui.font) || AVAILABLE_FONTS[0];
+    _maybeLoadGoogleFont(fontObj, Boolean(ui.allow_google_fonts));
     root.style.setProperty('--app-font', fontObj.css);
 
     if (typeof syncAnalyticsControlsFromUi === 'function') syncAnalyticsControlsFromUi();
@@ -15927,6 +16063,7 @@ function openCustomizeModal() {
     fontSel.value = ui.font || 'Segoe UI';
     document.getElementById('cust-allow-gf').checked = Boolean(ui.allow_google_fonts);
     document.getElementById('cust-mobile-mode').checked = (ui.mobile_mode !== false);
+    updateFontNote(AVAILABLE_FONTS.find(f => f.name === fontSel.value));
 
     renderChartEditors(ui.charts || {});
     renderClientColorEditors(ui.peer_client_colors || {});
@@ -16652,9 +16789,7 @@ function applySmartPair(oldHash, newHash) {
 async function openTorrentDiffModal() {
     const oldH = document.getElementById('merger-old')?.value || '';
     const newH = document.getElementById('merger-new')?.value || '';
-    if (!oldH || !newH || oldH.toLowerCase() === newH.toLowerCase()) {
-        return alert(t('err_same_torrent'));
-    }
+    if (!oldH || !newH || oldH.toLowerCase() === newH.toLowerCase()) return alert(t('err_same_torrent'));
 
     const modal = document.getElementById('diff-modal');
     const tbody = document.getElementById('diff-tbody');
@@ -16674,7 +16809,6 @@ async function openTorrentDiffModal() {
             tbody.innerHTML = `<tr><td colspan="4" class="center-msg" style="color:var(--danger);">${escapeHtml(d.error || 'Ошибка анализа')}</td></tr>`;
             return;
         }
-
         matchBadge.textContent = `Совпадение: ${d.match_percent}%`;
         const st = d.stats || {};
         badges.innerHTML = `
@@ -16684,30 +16818,16 @@ async function openTorrentDiffModal() {
             <span class="badge badge-dl">➕ Новые: ${st.added || 0}</span>
             <span class="badge badge-pause">${escapeHtml(d.old_total_fmt)} → ${escapeHtml(d.new_total_fmt)}</span>
         `;
-
         const files = d.files || [];
-        if (!files.length) {
-            tbody.innerHTML = '<tr><td colspan="4" class="center-msg">Файлы не найдены</td></tr>';
-            return;
-        }
+        if (!files.length) { tbody.innerHTML = '<tr><td colspan="4" class="center-msg">Файлы не найдены</td></tr>'; return; }
         tbody.innerHTML = '';
         const frag = document.createDocumentFragment();
-        const statusMap = {
-            exact: { cls: 'diff-row-exact', badge: 'badge-up', txt: '100% ОК' },
-            changed: { cls: 'diff-row-changed', badge: 'badge-stall', txt: 'Размер ≠' },
-            removed: { cls: 'diff-row-removed', badge: 'badge-stop', txt: 'Удалён' },
-            added: { cls: 'diff-row-added', badge: 'badge-dl', txt: 'Новый' }
-        };
+        const statusMap = { exact: { cls: 'diff-row-exact', badge: 'badge-up', txt: '100% ОК' }, changed: { cls: 'diff-row-changed', badge: 'badge-stall', txt: 'Размер ≠' }, removed: { cls: 'diff-row-removed', badge: 'badge-stop', txt: 'Удалён' }, added: { cls: 'diff-row-added', badge: 'badge-dl', txt: 'Новый' } };
         files.forEach(f => {
             const s = statusMap[f.status] || statusMap.exact;
             const tr = document.createElement('tr');
             tr.className = s.cls;
-            tr.innerHTML = `
-                <td style="white-space:normal; word-break:break-all;">${escapeHtml(f.path)}</td>
-                <td><span class="badge ${s.badge}">${s.txt}</span></td>
-                <td>${escapeHtml(f.old_size_fmt)}</td>
-                <td>${escapeHtml(f.new_size_fmt)}</td>
-            `;
+            tr.innerHTML = `<td style="white-space:normal; word-break:break-all;">${escapeHtml(f.path)}</td><td><span class="badge ${s.badge}">${s.txt}</span></td><td>${escapeHtml(f.old_size_fmt)}</td><td>${escapeHtml(f.new_size_fmt)}</td>`;
             frag.appendChild(tr);
         });
         tbody.appendChild(frag);
@@ -16717,9 +16837,7 @@ async function openTorrentDiffModal() {
     }
 }
 
-function closeTorrentDiffModal() {
-    document.getElementById('diff-modal').style.display = 'none';
-}
+function closeTorrentDiffModal() { document.getElementById('diff-modal').style.display = 'none'; }
 
 async function scanOrphans() {
     const tbody = document.getElementById('orphan-tbody');
@@ -16779,21 +16897,25 @@ function updateOrphanDelBtn() {
     const btn = document.getElementById('btn-delete-orphans');
     if (btn) {
         btn.classList.toggle('hidden', cnt === 0);
-        btn.textContent = `🗑️ Удалить выбранные (${cnt}) навсегда`;
+        btn.textContent = `🗑️ В корзину _tbr_trash (${cnt})`;
     }
 }
 
 async function deleteSelectedOrphans() {
     const paths = [...document.querySelectorAll('.orphan-chk:checked')].map(c => c.value);
     if (!paths.length) return;
-    if (!confirm(`⚠️ ВНИМАНИЕ! Вы выбрали объектов: ${paths.length}.\nФайлы будут удалены НАВСЕГДА мимо корзины!\n\nПродолжить?`)) return;
-    if (!confirm(`🚨 ПОСЛЕДНЕЕ ПРЕДУПРЕЖДЕНИЕ!\nТочно уничтожить ${paths.length} папок/файлов без возможности восстановления?`)) return;
+    if (!confirm(`Переместить выбранные объекты (${paths.length} шт.) в корзину _tbr_trash?\n(Можно восстановить в течение 7 дней)`)) return;
+    if (!confirm(`Подтвердите перенос ${paths.length} объектов в корзину _tbr_trash:`)) return;
 
-    const res = await api('/api/tools/orphans/delete', 'POST', { paths, confirmed: true });
+    const custom = document.getElementById('orphan-custom-root')?.value.trim();
+    const res = await api('/api/tools/orphans/delete', 'POST', {
+        paths, confirmed: true, use_trash: true, custom_roots: custom ? [custom] : undefined
+    });
     const d = await res.json();
-    const msg = `Удалено: ${(d.deleted || []).length}` + ((d.errors && d.errors.length) ? `\nОшибки:\n${d.errors.join('\n')}` : '');
+    const msg = `Перенесено в _tbr_trash: ${(d.deleted || []).length}` + ((d.errors && d.errors.length) ? `\nОшибки:\n${d.errors.join('\n')}` : '');
     alert(msg);
     scanOrphans();
+    if (typeof loadTrashItems === 'function') loadTrashItems();
 }
 
 async function loadVaultSettings() {
@@ -20113,7 +20235,7 @@ FILE: web/templates/kiosk.html
 let _shift = 0;
 async function refreshKiosk() {
     try {
-        const res = await fetch('/api/widget');
+        const res = await fetch('/api/widget?kiosk=1');
         if (!res.ok) return;
         const d = await res.json();
         document.getElementById('k-speed').textContent = d.current_speed_fmt || '—';
@@ -20125,7 +20247,6 @@ async function refreshKiosk() {
         qb.textContent = d.qb_running ? '🟢 qBittorrent OK' : '🔴 qBittorrent OFF';
         const top = d.charts?.top_5 || [];
         document.getElementById('k-top').innerHTML = top.map((x, i) => `<div class="row-between"><span>${i + 1}. ${x.name}</span><b class="accent-txt">${x.gb} GiB</b></div>`).join('') || 'Нет данных';
-        // Лёгкий сдвиг против выгорания экрана
         _shift = (_shift + 1) % 4;
         const offsets = ['translate(0,0)', 'translate(3px,2px)', 'translate(-2px,3px)', 'translate(2px,-2px)'];
         document.getElementById('kiosk-wrap').style.transform = offsets[_shift];

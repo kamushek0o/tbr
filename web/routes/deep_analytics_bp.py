@@ -91,7 +91,8 @@ def api_title_groups():
 def api_wrapped():
     period = 'year' if request.args.get('period') == 'year' else 'month'
     _, _, live, hidden = _live_and_hidden()
-    return jsonify(build_wrapped_summary(summary_tracker.db, get_global_torrent_summaries(), live, period=period, hidden_hashes=hidden))
+    hid = hidden if g.get('role') != 'admin' else set()
+    return jsonify(build_wrapped_summary(summary_tracker.db, get_global_torrent_summaries(), live, period=period, hidden_hashes=hid))
 
 
 @deep_analytics_bp.route('/api/inventory/export')

@@ -260,6 +260,5 @@ async function finishOnboarding(skipped = false) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-    document.querySelector('[data-tab="tools"]')?.addEventListener('click', () => setTimeout(loadSafetyToolsTab, 50));
     setTimeout(checkOnboardingWizard, 1200);
 });

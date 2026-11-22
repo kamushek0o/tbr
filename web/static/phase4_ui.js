@@ -1,6 +1,7 @@
 // web/static/phase4_ui.js
 let _hmMode = '365';
 let _inspFilesPage = 1;
+let _inspTotalPages = 1;
 
 async function toggleHeatmapMode(mode) {
     _hmMode = mode;
@@ -33,7 +34,7 @@ async function loadDayHourlyBreakdown(dateStr) {
     const d = await res.json();
     if (!d.success) { out.textContent = d.error || 'Ошибка'; return; }
     if (!d.has_detail) { out.innerHTML = `📅 <b>${escapeHtml(dateStr)}</b>: детальные почасовые точки за этот архивный день отсутствуют.`; return; }
-    out.innerHTML = `<b>📅 ${escapeHtml(dateStr)} по часам:</b> ` + (d.hours || []).filter(h => h.bytes > 0).map(h => `<span class="badge badge-up" style="margin:2px;">${h.hour}: ${escapeHtml(h.fmt)}</span>`).join('') || 'Нулевая активность';
+    out.innerHTML = `<b>📅 ${escapeHtml(dateStr)} по часам:</b> ` + ((d.hours || []).filter(h => h.bytes > 0).map(h => `<span class="badge badge-up" style="margin:2px;">${h.hour}: ${escapeHtml(h.fmt)}</span>`).join('') || 'Нулевая активность');
 }
 
 async function loadDeepAnalyticsWidgets() {
@@ -48,6 +49,8 @@ async function loadRunwayAndQuota() {
         const [rRes, qRes] = await Promise.all([api('/api/analytics/runway'), api('/api/analytics/quota')]);
         if (rRes.ok) {
             const r = await rRes.json();
+            const resInp = document.getElementById('inp-reserve-gib');
+            if (resInp && document.activeElement !== resInp) resInp.value = r.reserve_gib ?? 20;
             document.getElementById('runway-box').innerHTML = `
                 <div>Диск <b>${escapeHtml(r.disk_path)}</b>: свободно <b>${escapeHtml(r.free_fmt)}</b> (после очереди: <b class="${r.guard_triggered ? 'orange-txt' : 'accent-txt'}">${escapeHtml(r.post_queue_fmt)}</b>)</div>
                 <div class="lbl-xs muted-text mt-10">Темп роста (30д): ${escapeHtml(r.daily_growth_fmt)} • Запас до резерва (${r.reserve_gib} GiB): <b>${r.days_left !== null ? r.days_left + ' дн.' : '∞'}</b></div>
@@ -55,6 +58,8 @@ async function loadRunwayAndQuota() {
         }
         if (qRes.ok) {
             const q = await qRes.json();
+            const qInp = document.getElementById('inp-quota-tib');
+            if (qInp && document.activeElement !== qInp) qInp.value = q.quota_tib > 0 ? q.quota_tib : '';
             document.getElementById('quota-box').innerHTML = `
                 <div>За месяц: <b class="accent-txt">${escapeHtml(q.used_fmt)}</b> / <b>${escapeHtml(q.quota_fmt)}</b> (${q.percent}%)</div>
                 <div style="height:6px; background:var(--bg-main); border-radius:3px; overflow:hidden; margin:6px 0;"><div style="height:100%; width:${q.percent}%; background:var(--accent);"></div></div>
@@ -164,6 +169,13 @@ async function refreshActivityTicker() {
     } catch (e) {}
 }
 
+function changeInspectorFilesPage(delta) {
+    const h = (typeof _inspHash !== 'undefined' && _inspHash) ? _inspHash : selectedHash;
+    if (!h) return;
+    const next = Math.max(1, Math.min(_inspTotalPages, _inspFilesPage + delta));
+    if (next !== _inspFilesPage) loadInspectorPhase4(h, next);
+}
+
 async function loadInspectorPhase4(tHash, page = 1) {
     _inspFilesPage = page;
     const [noteRes, timeRes, filesRes] = await Promise.all([
@@ -178,6 +190,9 @@ async function loadInspectorPhase4(tHash, page = 1) {
     }
     if (filesRes.ok) {
         const fd = await filesRes.json();
+        _inspTotalPages = fd.total_pages || 1;
+        const pgInfo = document.getElementById('insp-files-page-info');
+        if (pgInfo) pgInfo.textContent = `${_inspFilesPage} / ${_inspTotalPages} (${fd.total || 0})`;
         document.getElementById('insp-files-tbody').innerHTML = (fd.files || []).map(f => `
             <tr>
                 <td style="white-space:normal; word-break:break-all;">${escapeHtml(f.name)}</td>
@@ -190,8 +205,9 @@ async function loadInspectorPhase4(tHash, page = 1) {
 }
 
 async function saveInspectorNote() {
-    if (!selectedHash) return;
-    await api('/api/torrent/notes', 'POST', { hash: selectedHash, note: document.getElementById('insp-note-inp').value });
+    const h = (typeof _inspHash !== 'undefined' && _inspHash) ? _inspHash : selectedHash;
+    if (!h) return;
+    await api('/api/torrent/notes', 'POST', { hash: h, note: document.getElementById('insp-note-inp').value });
     alert('📝 Заметка сохранена (привязана к UID)');
 }
 
@@ -207,6 +223,4 @@ document.addEventListener('DOMContentLoaded', () => {
             if (/^\d{4}-\d{2}-\d{2}$/.test(dStr)) loadDayHourlyBreakdown(dStr);
         }
     });
-    document.querySelector('[data-tab="analytics"]')?.addEventListener('click', () => setTimeout(loadDeepAnalyticsWidgets, 150));
-    document.querySelector('button[onclick*="openTorrentInspectorModal"]')?.addEventListener('click', () => setTimeout(() => { if (selectedHash) loadInspectorPhase4(selectedHash, 1); }, 100));
 });

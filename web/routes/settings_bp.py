@@ -16,7 +16,7 @@ from core.backup_manager import create_backup_zip, stage_restore_zip
 from core.keep_awake import keep_awake
 from core.app_state_db import app_state_db
 from core.disk_monitor import list_active_disks
-from core.analytics_insights import invalidate_insights_cache
+from core.analytics_insights import invalidate_insights_cache, get_records_and_comparisons
 from web.security import get_csrf_token, is_allowed_qb_ip, get_client_ip
 
 settings_bp = Blueprint('settings_bp', __name__)
@@ -217,6 +217,7 @@ def api_settings():
         summary_tracker.notify_interval_changed()
     if cfg.getint('Max_Channel_Mbps', 1000) != old_mbps:
         invalidate_insights_cache()
+        get_records_and_comparisons(summary_tracker.db, force_recalc=True)
 
     app_state_db.add_audit_event('system', 'Изменение настроек', f'host={new_host}:{new_p}', actor='admin')
     net_changed = (old_p != new_p) or (old_h != new_host)

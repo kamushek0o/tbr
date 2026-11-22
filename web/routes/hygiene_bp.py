@@ -1,8 +1,10 @@
 # web/routes/hygiene_bp.py
 import os
+import json
 import urllib.parse
 from flask import Blueprint, request, jsonify, Response, g
 from utils.config import cfg
+from utils.helpers import BT_BACKUP_PATH
 from core.qb_api import detect_qbittorrent_port, get_live_torrent_info, delete_torrents
 from core.hygiene_trackers import scan_quarantine, scan_stalled_incompletes, scan_dead_weight
 from core.hygiene_disk import scan_bt_backup_garbage, scan_inner_content_junk, trash_paths_list
@@ -17,6 +19,20 @@ hygiene_bp = Blueprint('hygiene_bp', __name__)
 
 def _not_admin():
     return g.get('role') != 'admin'
+
+
+def _read_bt_torrent_bytes(t_hash):
+    if not t_hash or not os.path.isdir(BT_BACKUP_PATH):
+        return None
+    target = t_hash.lower() + '.torrent'
+    for fname in os.listdir(BT_BACKUP_PATH):
+        if fname.lower() == target:
+            try:
+                with open(os.path.join(BT_BACKUP_PATH, fname), 'rb') as f:
+                    return f.read()
+            except OSError:
+                return None
+    return None
 
 
 @hygiene_bp.route('/api/hygiene/quarantine')
@@ -47,7 +63,7 @@ def api_hygiene_dead_weight():
 
 @hygiene_bp.route('/api/hygiene/delete_torrents_soft', methods=['POST'])
 def api_hygiene_delete_torrents_soft():
-    """Удаляет торренты из qB и переносит файлы в _tbr_trash с защитой общих папок и save_path."""
+    """Удаляет торренты из qB и переносит файлы в _tbr_trash с защитой общих папок и сохранением .torrent."""
     if _not_admin():
         return jsonify({'success': False, 'error': 'Только для Admin'}), 403
     data = request.get_json(silent=True) or {}
@@ -77,19 +93,30 @@ def api_hygiene_delete_torrents_soft():
         cp = str(lv.get('content_path') or it.get('content_path') or '').strip()
         nm = str(lv.get('name') or it.get('name') or h)
 
+        # Копируем .torrent до удаления из qB, иначе клиент сразу сотрёт его из BT_backup
+        tor_bytes = _read_bt_torrent_bytes(h)
+
         if delete_torrents(ip, port, h, delete_files=False):
             removed += 1
             if cp:
-                # Защита 1: никогда не сносим корень save_path
                 is_root = bool(sp and os.path.normcase(os.path.abspath(cp)) == os.path.normcase(os.path.abspath(sp)))
-                # Защита 2: проверяем пересечение путей с оставшимися раздачами (кросс-сид / мердж)
                 is_shared = any(paths_overlap(cp, op) for op in other_paths)
                 if is_root or is_shared:
                     skipped_shared += 1
                 else:
-                    ok, _ = move_to_trash(cp, name=nm, t_hash=h, actor='admin')
+                    ok, meta = move_to_trash(cp, name=nm, t_hash=h, actor='admin')
                     if ok:
                         trashed += 1
+                        if tor_bytes and isinstance(meta, dict) and not meta.get('has_torrent'):
+                            try:
+                                item_dir = os.path.join(meta['trash_root'], meta['id'])
+                                with open(os.path.join(item_dir, 'backup.torrent'), 'wb') as tf:
+                                    tf.write(tor_bytes)
+                                meta['has_torrent'] = True
+                                with open(os.path.join(item_dir, 'meta.json'), 'w', encoding='utf-8') as mf:
+                                    json.dump(meta, mf, ensure_ascii=False, indent=2)
+                            except OSError:
+                                pass
 
     if removed:
         app_state_db.add_audit_event('system', 'Гигиена -> _tbr_trash', f'Удалено: {removed}, в корзину: {trashed}, защищено общих: {skipped_shared}', actor='admin')

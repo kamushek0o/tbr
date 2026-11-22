@@ -153,8 +153,16 @@
                 <div id="insp-timeline-box" class="col-gap"></div>
             </div>
         </div>
-        <div class="scroll-box mt-10" style="max-height:160px; border:1px solid var(--border); border-radius:6px; padding:6px;">
-            <div class="row-between mb-8"><span class="lbl-xs orange-txt">📁 ФАЙЛЫ И ПРИОРИТЕТЫ</span><span class="lbl-xs muted-text">Снятие галочки с уже скачанного не удаляет его с диска (.parts)</span></div>
+        <div class="scroll-box mt-10" style="max-height:185px; border:1px solid var(--border); border-radius:6px; padding:6px;">
+            <div class="row-between mb-8">
+                <span class="lbl-xs orange-txt">📁 ФАЙЛЫ И ПРИОРИТЕТЫ</span>
+                <div class="row-gap" style="gap:6px;">
+                    <span class="lbl-xs muted-text">Снятие галочки с уже скачанного не удаляет его с диска (.parts)</span>
+                    <button class="btn btn-secondary btn-xs" onclick="changeInspectorFilesPage(-1)">◀</button>
+                    <span id="insp-files-page-info" class="lbl-xs muted-text">1 / 1</span>
+                    <button class="btn btn-secondary btn-xs" onclick="changeInspectorFilesPage(1)">▶</button>
+                </div>
+            </div>
             <table><thead><tr><th>Файл</th><th>Размер</th><th>%</th><th>Приоритет</th></tr></thead><tbody id="insp-files-tbody"></tbody></table>
         </div>
     </div>
