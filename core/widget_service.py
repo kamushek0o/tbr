@@ -9,6 +9,7 @@ from core.qb_api import detect_qbittorrent_port, get_live_torrent_info, is_qb_ru
 from core.torrent_parser import get_all_torrents
 from core.scheduler import MIN_DELTA_SEC
 from core.disk_monitor import get_monitored_disk_info
+from core.private_vault import get_hidden_hashes, get_vault_settings
 
 _ICON_CACHE = {}
 PERIOD_DAYS = {'1d': 1, '7d': 7, '30d': 30}
@@ -140,21 +141,30 @@ def compute_top_n_torrents(db, summaries, live=None, top_n=5, period='1d', with_
     return top_items, others
 
 
-def get_widget_summary(db, ui_settings=None, top_period=None, top_scale=None):
+def get_widget_summary(db, ui_settings=None, top_period=None, top_scale=None, role='admin'):
     now_ts = time.time()
     torrents = list(get_all_torrents(use_cache=True).values())
     ip, port = detect_qbittorrent_port(cfg.config)
     qb_up = is_qb_running()
     live = get_live_torrent_info(ip, port) if (qb_up and port) else {}
 
-    if live:
-        total_uploaded = sum(int(t.get('uploaded', 0) or 0) for t in live.values())
-        cur_bps = sum(int(t.get('upspeed', 0) or 0) for t in live.values())
-        active_cnt = sum(1 for t in live.values() if str(t.get('state', '')).lower() not in ('pausedup', 'pauseddl', 'stoppedup', 'stoppeddl', 'error', 'missingfiles'))
-        total_cnt = len(live)
+    hidden = get_hidden_hashes(live) if role != 'admin' else set()
+    vault_mode = get_vault_settings().get('aggregate_mode', 'exclude') if hidden else 'anonymize'
+
+    vis_live = {h: v for h, v in live.items() if h.lower() not in hidden} if hidden else live
+    vis_torrents = [t for t in torrents if (t.get('hash_id') or '').lower() not in hidden] if hidden else torrents
+
+    agg_live = vis_live if (hidden and vault_mode == 'exclude') else live
+    agg_torrents = vis_torrents if (hidden and vault_mode == 'exclude') else torrents
+
+    if agg_live:
+        total_uploaded = sum(int(t.get('uploaded', 0) or 0) for t in agg_live.values())
+        cur_bps = sum(int(t.get('upspeed', 0) or 0) for t in agg_live.values())
+        active_cnt = sum(1 for t in agg_live.values() if str(t.get('state', '')).lower() not in ('pausedup', 'pauseddl', 'stoppedup', 'stoppeddl', 'error', 'missingfiles'))
+        total_cnt = len(agg_live)
     else:
-        total_uploaded = sum(int(t.get('uploaded', 0) or 0) for t in torrents)
-        active_cnt, total_cnt = len(torrents), len(torrents)
+        total_uploaded = sum(int(t.get('uploaded', 0) or 0) for t in agg_torrents)
+        active_cnt, total_cnt = len(agg_torrents), len(agg_torrents)
         s6 = build_detailed_speed_series(db, hours=6)
         cur_bps = s6[-1]['speed_bps'] if s6 else 0.0
 
@@ -187,7 +197,8 @@ def get_widget_summary(db, ui_settings=None, top_period=None, top_scale=None):
                 daily_map[dk] = daily_map.get(dk, 0.0) + delta / (1024 ** 3)
         prev_r = r
 
-    top_items = compute_top_n_torrents(db, torrents, live=live, top_n=5, period=per)
+    # В Топ-5 никогда не раскрываем названия скрытых раздач Private Vault
+    top_items = compute_top_n_torrents(db, vis_torrents, live=vis_live, top_n=5, period=per)
     disk = get_monitored_disk_info(live)
 
     return {

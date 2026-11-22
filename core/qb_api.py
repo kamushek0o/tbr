@@ -43,6 +43,20 @@ def qb_login(qb_ip, qb_port, username=None, password=None):
         return False
 
 
+def _qb_config_candidates():
+    if os.name == 'nt':
+        return [
+            os.path.join(os.environ.get('APPDATA', ''), 'qBittorrent', 'qBittorrent.ini'),
+            os.path.join(os.path.expanduser('~'), 'AppData', 'Roaming', 'qBittorrent', 'qBittorrent.ini'),
+            os.path.join(os.path.expanduser('~'), 'AppData', 'Local', 'qBittorrent', 'qBittorrent.conf'),
+        ]
+    return [
+        '/config/qBittorrent/qBittorrent.conf',
+        '/config/qBittorrent.conf',
+        os.path.join(os.path.expanduser('~'), '.config', 'qBittorrent', 'qBittorrent.conf'),
+    ]
+
+
 def detect_qbittorrent_port(config=None):
     env_ip = os.environ.get('TBR_QB_HOST', '').strip()
     env_port = os.environ.get('TBR_QB_PORT', '').strip()
@@ -59,13 +73,10 @@ def detect_qbittorrent_port(config=None):
         except Exception:
             pass
 
-    if os.name == 'nt':
-        config_path = os.path.join(os.path.expanduser('~'), 'AppData', 'Local', 'qBittorrent', 'qBittorrent.conf')
-    else:
-        config_path = os.path.join(os.path.expanduser('~'), '.config', 'qBittorrent', 'qBittorrent.conf')
-
     port_from_conf, address_from_conf = None, '127.0.0.1'
-    if os.path.exists(config_path):
+    for config_path in _qb_config_candidates():
+        if not config_path or not os.path.exists(config_path):
+            continue
         try:
             with open(config_path, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
@@ -77,10 +88,10 @@ def detect_qbittorrent_port(config=None):
                 addr = m_addr.group(1).strip()
                 if addr not in ('*', '0.0.0.0', ''):
                     address_from_conf = addr
+            if port_from_conf:
+                return address_from_conf, port_from_conf
         except Exception:
             pass
-        if port_from_conf:
-            return address_from_conf, port_from_conf
 
     for port in ([port_from_conf] if port_from_conf else [8080, 8081, 1488, 8888]):
         if not port:
@@ -100,6 +111,24 @@ def detect_qbittorrent_port(config=None):
                 continue
 
     return '127.0.0.1', (port_from_conf or 8080)
+
+
+def check_qb_api_alive(qb_ip, qb_port, timeout=1.5):
+    """Пингует API qBittorrent (отличает 0 раздач от реально упавшего клиента)."""
+    if not qb_ip or not qb_port:
+        return False
+    ip = _norm_ip(qb_ip)
+    base_url = f"http://{ip}:{qb_port}"
+    req = urllib.request.Request(f"{base_url}/api/v2/app/version", headers={'Referer': base_url})
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            return resp.getcode() == 200
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            return qb_login(ip, qb_port)
+        return False
+    except Exception:
+        return False
 
 
 def _get_qb_json(qb_ip, qb_port, path, timeout=1.8):
@@ -179,9 +208,9 @@ def get_torrent_peers(qb_ip, qb_port, t_hash):
 
 
 def scan_dead_torrents(qb_ip, qb_port):
-    live = get_live_torrent_info(qb_ip, qb_port)
-    if not live:
+    if not check_qb_api_alive(qb_ip, qb_port):
         return {'success': False, 'error': 'Не удалось подключиться к WebUI qBittorrent.'}
+    live = get_live_torrent_info(qb_ip, qb_port)
     dead_items, groups = [], {}
 
     def check_one(t_hash, t_info):

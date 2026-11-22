@@ -79,16 +79,11 @@ def _is_qb_running_windows():
 
         class PROCESSENTRY32W(ctypes.Structure):
             _fields_ = [
-                ('dwSize', wintypes.DWORD),
-                ('cntUsage', wintypes.DWORD),
-                ('th32ProcessID', wintypes.DWORD),
-                ('th32DefaultHeapID', ctypes.c_size_t),
-                ('th32ModuleID', wintypes.DWORD),
-                ('cntThreads', wintypes.DWORD),
-                ('th32ParentProcessID', wintypes.DWORD),
-                ('pcPriClassBase', wintypes.LONG),
-                ('dwFlags', wintypes.DWORD),
-                ('szExeFile', wintypes.WCHAR * 260)
+                ('dwSize', wintypes.DWORD), ('cntUsage', wintypes.DWORD),
+                ('th32ProcessID', wintypes.DWORD), ('th32DefaultHeapID', ctypes.c_size_t),
+                ('th32ModuleID', wintypes.DWORD), ('cntThreads', wintypes.DWORD),
+                ('th32ParentProcessID', wintypes.DWORD), ('pcPriClassBase', wintypes.LONG),
+                ('dwFlags', wintypes.DWORD), ('szExeFile', wintypes.WCHAR * 260)
             ]
 
         entry = PROCESSENTRY32W()
@@ -105,10 +100,7 @@ def _is_qb_running_windows():
             kernel32.CloseHandle(h_snap)
     except Exception:
         try:
-            r = subprocess.run(
-                ['tasklist', '/FI', 'IMAGENAME eq qbittorrent.exe'],
-                capture_output=True, text=True, creationflags=_WIN_FLAGS
-            )
+            r = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq qbittorrent.exe'], capture_output=True, text=True, creationflags=_WIN_FLAGS)
             return 'qbittorrent.exe' in r.stdout.lower()
         except Exception:
             return False
@@ -128,16 +120,10 @@ def is_qb_running():
 
 
 def close_qbittorrent(max_wait_sec=30.0):
-    if os.name != 'nt':
-        write_log('api', "Управление процессом qBittorrent недоступно в Docker/Linux")
-        return False
     if not is_qb_running():
         return True
 
     write_log('api', "Завершение процесса qBittorrent...")
-
-    # 1. Сначала пробуем WebUI API app/shutdown:
-    # Работает даже если qB запущен от Администратора, обходя ошибку 'Access Denied' в taskkill.
     try:
         from core.qb_api import detect_qbittorrent_port, shutdown_qb_webui
         ip, port = detect_qbittorrent_port(cfg.config)
@@ -146,13 +132,21 @@ def close_qbittorrent(max_wait_sec=30.0):
     except Exception:
         pass
 
-    # 2. Мягкий taskkill (WM_CLOSE) на случай отключенного WebUI
+    if os.name != 'nt':
+        deadline = time.monotonic() + max(5.0, float(max_wait_sec))
+        while time.monotonic() < deadline:
+            time.sleep(0.5)
+            if not is_qb_running():
+                write_log('api', "qBittorrent (Linux/Docker) завершён через WebUI.")
+                return True
+        write_log('api', "Не удалось завершить qBittorrent через WebUI на Linux/Docker.")
+        return False
+
     try:
         subprocess.run(['taskkill', '/IM', 'qbittorrent.exe'], capture_output=True, creationflags=_WIN_FLAGS)
     except Exception:
         pass
 
-    # 3. Ждём завершения процесса до 30 секунд (клиент сбрасывает кэш на диск)
     deadline = time.monotonic() + max(5.0, float(max_wait_sec))
     while time.monotonic() < deadline:
         time.sleep(0.5)
@@ -160,7 +154,6 @@ def close_qbittorrent(max_wait_sec=30.0):
             write_log('api', "qBittorrent успешно завершил работу.")
             return True
 
-    # 4. Если не вышел за 30с — пробуем принудительный taskkill /F
     try:
         subprocess.run(['taskkill', '/F', '/IM', 'qbittorrent.exe'], capture_output=True, creationflags=_WIN_FLAGS)
     except Exception:

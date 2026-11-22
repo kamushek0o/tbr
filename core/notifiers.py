@@ -37,7 +37,7 @@ def send_discord(text_md):
     req = urllib.request.Request(
         webhook,
         data=payload,
-        headers={'Content-Type': 'application/json', 'User-Agent': 'tbr-pro/3.2'}
+        headers={'Content-Type': 'application/json', 'User-Agent': 'tbr-pro/4.0'}
     )
     try:
         with urllib.request.urlopen(req, timeout=8) as resp:
@@ -47,7 +47,18 @@ def send_discord(text_md):
         return False, f"Discord: {e}"
 
 
-def _deliver_direct(title, lines):
+def _deliver_direct(title, lines, critical=False):
+    try:
+        from core.webhooks_bundler import emit_webhook
+        emit_webhook('alert' if critical else 'notification', {'title': title, 'lines': list(lines or []), 'critical': critical})
+    except Exception:
+        pass
+    try:
+        from core.lineage_notes_events import push_activity
+        push_activity('alert' if critical else 'notify', title)
+    except Exception:
+        pass
+
     tg_msg = f"<b>{html.escape(title)}</b>\n" + "\n".join(html.escape(l) for l in lines)
     dc_msg = f"**{title}**\n" + "\n".join(lines)
     results = []
@@ -72,12 +83,12 @@ def notify_all(title, lines, critical=False, bundle=False):
         if bundle or cfg.getboolean('Alert_Bundler_Enabled', True):
             try:
                 from core.webhooks_bundler import queue_bundled_alert
-                queue_bundled_alert(title, lines, _deliver_direct)
+                queue_bundled_alert(title, lines, lambda t, l: _deliver_direct(t, l, critical=False))
                 return ["Bundled (45s)"]
             except Exception:
                 pass
 
-    return _deliver_direct(title, lines)
+    return _deliver_direct(title, lines, critical=critical)
 
 
 def test_notifications():

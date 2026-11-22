@@ -8,7 +8,6 @@ from core.qb_api import detect_qbittorrent_port, get_live_torrent_info, get_torr
 from core.health_score import compute_health_metrics
 
 _FATAL_KEYWORDS = ('unregistered', 'not registered', 'deleted', 'banned', 'not found', 'не зарегистрирован', 'удален', 'удалён', 'запрещен', 'запрещён')
-_INACTIVE_STATES = {'pausedup', 'pauseddl', 'stoppedup', 'stoppeddl', 'error', 'missingfiles'}
 _PROTECTED_TAGS = {'keep', 'vip', 'protected', 'archive'}
 
 
@@ -51,7 +50,6 @@ def scan_quarantine(hours_threshold=72, apply_tags=False):
         real = [tr for tr in trackers if not str(tr.get('url', '')).startswith('**[') and tr.get('status', 0) != 0]
         if not real:
             return t_hash.lower(), None
-        # Для мультитрекерных: карантин только если мертвы ВСЕ реальные трекеры фатальной ошибкой
         all_fatal = all(tr.get('status') == 4 and _is_fatal_msg(tr.get('msg')) for tr in real)
         if not all_fatal:
             return t_hash.lower(), None
@@ -104,36 +102,65 @@ def scan_quarantine(hours_threshold=72, apply_tags=False):
     return {'success': True, 'items': out, 'threshold_hours': hours_threshold}
 
 
-def scan_stalled_incompletes(stalled_days=14):
-    """#37 Кладбище недокачек (Availability < 1.0, не на паузе)."""
+def scan_stalled_incompletes(stalled_days=0):
+    """#37 Кладбище недокачек: незавершённые раздачи (на паузе, зависшие, без сидов или avail < 1.0)."""
     ip, port = detect_qbittorrent_port(cfg.config)
     live = get_live_torrent_info(ip, port) if port else {}
     if not live:
         return {'success': False, 'error': 'qBittorrent недоступен', 'items': []}
 
     now = time.time()
-    min_idle = max(1, int(stalled_days)) * 86400
+    min_idle = max(0, int(stalled_days or 0)) * 86400
     items = []
 
     for h, info in live.items():
         progress = float(info.get('progress', 0.0) or 0.0)
+        amt_left = int(info.get('amount_left', 0) or 0)
         state = str(info.get('state', '')).lower()
-        if progress >= 0.9999 or state in _INACTIVE_STATES:
+
+        # Полностью скачанные и отдающиеся раздачи отбрасываем
+        if progress >= 0.9999 and amt_left == 0:
             continue
-        avail = float(info.get('availability', 1.0) if info.get('availability') is not None else 1.0)
-        if avail >= 1.0:
+        if state in ('uploading', 'seeding', 'stalledup', 'forcedup', 'pausedup', 'stoppedup'):
             continue
-        last_act = int(info.get('last_activity') or info.get('added_on') or now)
-        idle_sec = max(0, now - last_act)
-        if idle_sec < min_idle:
+
+        raw_avail = info.get('availability')
+        avail = float(raw_avail) if raw_avail is not None else -1.0
+        num_seeds = int(info.get('num_seeds', 0) or 0)
+        num_complete = int(info.get('num_complete', 0) or 0)
+        dlspeed = int(info.get('dlspeed', 0) or 0)
+
+        # Любая недокачка, которая сейчас не качает на полной скорости
+        is_stalled = (
+            (0.0 <= avail < 1.0) or
+            avail < 0 or
+            (num_seeds == 0 and num_complete <= 0) or
+            state in ('stalleddl', 'pauseddl', 'stoppeddl', 'queueddl', 'metadl') or
+            dlspeed == 0
+        )
+        if not is_stalled:
             continue
+
+        last_act = int(info.get('last_activity') or 0)
+        added_on = int(info.get('added_on') or now)
+        ref_ts = last_act if last_act > 0 else added_on
+        idle_sec = max(0, now - ref_ts)
+
+        if min_idle > 0 and idle_sec < min_idle:
+            continue
+
         sz = int(info.get('total_size', 0) or 0)
+        downloaded = int(info.get('downloaded', 0) or (sz - amt_left if sz > amt_left else 0))
         items.append({
-            'hash': h, 'name': info.get('name', h),
+            'hash': h,
+            'name': info.get('name', h),
             'progress_pct': round(progress * 100.0, 1),
-            'availability': round(avail, 2),
+            'availability': round(avail, 2) if avail >= 0 else '—',
+            'state': state,
             'idle_days': round(idle_sec / 86400.0, 1),
-            'size': sz, 'size_fmt': format_file_size(sz),
+            'size': sz,
+            'size_fmt': format_file_size(sz),
+            'downloaded_fmt': format_file_size(downloaded),
             'content_path': info.get('content_path') or info.get('save_path') or ''
         })
 

@@ -1,11 +1,13 @@
 # web/routes/hygiene_bp.py
+import os
 import urllib.parse
 from flask import Blueprint, request, jsonify, Response, g
 from utils.config import cfg
-from core.qb_api import detect_qbittorrent_port, delete_torrents
+from core.qb_api import detect_qbittorrent_port, get_live_torrent_info, delete_torrents
 from core.hygiene_trackers import scan_quarantine, scan_stalled_incompletes, scan_dead_weight
 from core.hygiene_disk import scan_bt_backup_garbage, scan_inner_content_junk, trash_paths_list
 from core.torrent_archiver import sync_torrent_archive, list_archived_torrents, get_archived_torrent_bytes, export_archive_zip_by_tag
+from core.fastresume_merger import paths_overlap
 from core.soft_trash import move_to_trash
 from core.app_state_db import app_state_db
 from web.security import HASH_RE
@@ -30,7 +32,7 @@ def api_hygiene_quarantine():
 def api_hygiene_incompletes():
     if _not_admin():
         return jsonify({'error': 'Только для Admin'}), 403
-    days = request.args.get('days', 14, type=int)
+    days = request.args.get('days', 0, type=int)
     return jsonify(scan_stalled_incompletes(stalled_days=days))
 
 
@@ -45,7 +47,7 @@ def api_hygiene_dead_weight():
 
 @hygiene_bp.route('/api/hygiene/delete_torrents_soft', methods=['POST'])
 def api_hygiene_delete_torrents_soft():
-    """Удаляет торренты из qB и переносит их файлы в _tbr_trash (#8)."""
+    """Удаляет торренты из qB и переносит файлы в _tbr_trash с защитой общих папок и save_path."""
     if _not_admin():
         return jsonify({'success': False, 'error': 'Только для Admin'}), 403
     data = request.get_json(silent=True) or {}
@@ -57,21 +59,41 @@ def api_hygiene_delete_torrents_soft():
     if not port:
         return jsonify({'success': False, 'error': 'qBittorrent недоступен'}), 400
 
-    removed = 0
+    live = get_live_torrent_info(ip, port)
+    live_lower = {k.lower(): v for k, v in live.items()}
+    del_hashes = {str(it.get('hash', '')).strip().lower() for it in items if HASH_RE.fullmatch(str(it.get('hash', '')).strip())}
+    other_paths = [
+        str(v.get('content_path') or v.get('save_path') or '').strip()
+        for k, v in live_lower.items() if k not in del_hashes and (v.get('content_path') or v.get('save_path'))
+    ]
+
+    removed, trashed, skipped_shared = 0, 0, 0
     for it in items:
         h = str(it.get('hash', '')).strip()
-        cp = str(it.get('content_path', '')).strip()
-        nm = str(it.get('name', h))
         if not HASH_RE.fullmatch(h):
             continue
+        lv = live_lower.get(h.lower(), {})
+        sp = str(lv.get('save_path') or '').strip()
+        cp = str(lv.get('content_path') or it.get('content_path') or '').strip()
+        nm = str(lv.get('name') or it.get('name') or h)
+
         if delete_torrents(ip, port, h, delete_files=False):
-            if cp:
-                move_to_trash(cp, name=nm, t_hash=h, actor='admin')
             removed += 1
+            if cp:
+                # Защита 1: никогда не сносим корень save_path
+                is_root = bool(sp and os.path.normcase(os.path.abspath(cp)) == os.path.normcase(os.path.abspath(sp)))
+                # Защита 2: проверяем пересечение путей с оставшимися раздачами (кросс-сид / мердж)
+                is_shared = any(paths_overlap(cp, op) for op in other_paths)
+                if is_root or is_shared:
+                    skipped_shared += 1
+                else:
+                    ok, _ = move_to_trash(cp, name=nm, t_hash=h, actor='admin')
+                    if ok:
+                        trashed += 1
 
     if removed:
-        app_state_db.add_audit_event('system', 'Гигиена: перенос в _tbr_trash', f'Удалено раздач: {removed}', actor='admin')
-    return jsonify({'success': True, 'removed': removed})
+        app_state_db.add_audit_event('system', 'Гигиена -> _tbr_trash', f'Удалено: {removed}, в корзину: {trashed}, защищено общих: {skipped_shared}', actor='admin')
+    return jsonify({'success': True, 'removed': removed, 'trashed': trashed, 'skipped_shared': skipped_shared})
 
 
 @hygiene_bp.route('/api/hygiene/bt_backup')

@@ -4,7 +4,7 @@
         <div class="card-title" style="margin:0;">🩺 ГИГИЕНА ТРЕКЕРОВ И ТУНЕЯДЦЕВ (#7, #37, #4)</div>
         <div class="row-gap" style="flex-wrap:wrap;">
             <button class="btn btn-secondary btn-xs" onclick="runHygieneTorrentScan('quarantine')">☣️ Карантин (72ч)</button>
-            <button class="btn btn-secondary btn-xs" onclick="runHygieneTorrentScan('incompletes')">🪦 Недокачки (&lt;1.0)</button>
+            <button class="btn btn-secondary btn-xs" onclick="runHygieneTorrentScan('incompletes')">🪦 Недокачки</button>
             <button class="btn btn-secondary btn-xs" onclick="runHygieneTorrentScan('dead_weight')">🦥 Тунеядцы (30д)</button>
             <span id="hyg-tor-summary" class="badge badge-pause">—</span>
             <button id="btn-hyg-tor-trash" class="btn btn-danger btn-xs hidden" onclick="deleteSelectedHygieneTorrents()">🗑️ В _tbr_trash</button>
@@ -12,7 +12,7 @@
     </div>
     <div class="scroll-box" style="max-height:220px; border:1px solid var(--border); border-radius:6px;">
         <table>
-            <thead><tr><th style="width:28px;"></th><th>Раздача / Причина</th><th>Размер</th><th>Режим</th></tr></thead>
+            <thead><tr><th style="width:28px;"></th><th>Раздача / Инфо</th><th>Размер</th><th>Статус</th></tr></thead>
             <tbody id="hyg-tor-tbody"><tr><td colspan="4" class="center-msg">Выберите режим сканирования выше</td></tr></tbody>
         </table>
     </div>

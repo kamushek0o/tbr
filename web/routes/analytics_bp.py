@@ -151,15 +151,19 @@ def api_smart_calc_export():
 
 @analytics_bp.route('/api/export_csv', methods=['GET', 'POST'])
 def api_export_csv():
+    role = g.get('role') or 'viewer'
     if request.method == 'POST':
         req_data = request.get_json(silent=True)
         items = req_data.get('items') if isinstance(req_data, dict) else None
         if not isinstance(items, list) or len(items) > 5000 or not all(isinstance(x, dict) for x in items):
             return jsonify({'error': 'Некорректный список или превышен лимит 5000 строк'}), 400
+        summary_tracker.save_manual_csv(items)
     else:
-        items = summary_tracker.get_stats(get_global_torrent_summaries())['items']
+        stats = summary_tracker.get_stats(get_global_torrent_summaries())
+        if role != 'admin':
+            stats = filter_summary_stats_for_role(stats, role, get_hidden_hashes(_get_live_dict()))
+        items = stats.get('items', [])
 
-    summary_tracker.save_manual_csv(items)
     output = io.StringIO()
     writer = csv.writer(output, delimiter=';')
     writer.writerow(['Имя', 'Хэш', 'Размер (байт)', 'Размер (ГБ)', 'Отдано (байт)', 'Отдано (ГБ)', 'Ratio', 'Ср. скорость (всё время)', 'Скорость за 1ч', 'Скорость за 24ч', 'МБ/ч', 'МБ/день', 'Ratio/ч (всего)', 'Ratio/ч (1ч)', 'Ratio/ч (24ч)', 'Дата создания'])

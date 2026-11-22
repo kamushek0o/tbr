@@ -6,8 +6,8 @@ import threading
 from utils.config import cfg
 from utils.helpers import APP_DATA_DIR, format_file_size, write_log, write_error_log
 from core.qb_api import (
-    detect_qbittorrent_port, get_live_torrent_info, send_qb_command,
-    add_torrent_tags, remove_torrent_tags
+    detect_qbittorrent_port, check_qb_api_alive, get_live_torrent_info,
+    send_qb_command, add_torrent_tags, remove_torrent_tags
 )
 from core.torrent_parser import get_all_torrents
 from core.summary_tracker import summary_tracker
@@ -24,6 +24,7 @@ from core.torrent_targets import evaluate_targets
 from core.achievements import evaluate_achievements
 from core.autopilot_extras import tick_autopilot_extras
 from core.hdd_smart_queue import tick_recheck_queue
+from core.lineage_notes_events import record_torrent_event
 
 VALID_TIME_MODES = ('seeding_time', 'time_active')
 VALID_SPEED_OPS = ('', '>=', '<')
@@ -235,9 +236,9 @@ class AutomationEngine:
 
     def dry_run(self, rule_id=None):
         ip, port = detect_qbittorrent_port(cfg.config)
-        live = get_live_torrent_info(ip, port) if port else {}
-        if not live:
+        if not check_qb_api_alive(ip, port):
             return {'success': False, 'error': 'qBittorrent недоступен', 'matches': []}
+        live = get_live_torrent_info(ip, port)
         rules = self.get_rules()
         rules = [r for r in rules if r['id'] == int(rule_id)] if rule_id is not None else [r for r in rules if r.get('enabled')]
         now_ts, matches = time.time(), []
@@ -253,8 +254,8 @@ class AutomationEngine:
 
     def run_system_tick(self):
         ip, port = detect_qbittorrent_port(cfg.config)
-        live = get_live_torrent_info(ip, port) if port else {}
-        qb_up = bool(port and live)
+        qb_up = check_qb_api_alive(ip, port) if port else False
+        live = get_live_torrent_info(ip, port) if qb_up else {}
         keep_awake.evaluate(live)
         system_alerts.check(qb_up, live=live)
         run_watchdog(qb_up)
@@ -264,6 +265,11 @@ class AutomationEngine:
         maybe_send_digest(notify_all)
         evaluate_achievements(force=False)
         if qb_up:
+            try:
+                from core.network_tools import check_network_interface_guard
+                check_network_interface_guard()
+            except Exception:
+                pass
             evaluate_targets(live)
             tick_autopilot_extras(ip, port, live)
             tick_recheck_queue(ip, port, live)
@@ -302,6 +308,7 @@ class AutomationEngine:
                 time_lbl = "Сид" if m['time_mode'] == 'seeding_time' else "Актив"
                 write_log('automation', f"Правило '{r['name']}' -> '{m['name']}' (Ratio: {m['ratio']:.2f}, {time_lbl}: {m['dur_fmt']})")
                 app_state_db.add_audit_event('automation', f"Правило: {r['name']}", m['name'])
+                record_torrent_event(t_hash, 'autopilot', f"Правило '{r['name']}': {', '.join(actions_done) or 'сработало'}")
                 if r.get('notify'):
                     stat_line = f"Отдано: {m['uploaded_fmt']} | Ratio: {m['ratio']:.2f}x | {time_lbl}: {m['dur_fmt']}"
                     if m['v_avg'] is not None:

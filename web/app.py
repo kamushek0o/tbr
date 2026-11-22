@@ -15,7 +15,7 @@ except ImportError:
     HAS_WAITRESS = False
 
 from utils.config import cfg
-from utils.helpers import write_error_log
+from utils.helpers import APP_DATA_DIR, write_error_log
 from core.torrent_parser import get_global_torrent_summaries
 from core.summary_tracker import summary_tracker
 from core.automation import automation_engine
@@ -48,12 +48,27 @@ def get_resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 
+def _get_or_create_secret_key():
+    key_file = os.path.join(APP_DATA_DIR, '.flask_secret')
+    try:
+        if os.path.isfile(key_file):
+            data = open(key_file, 'rb').read()
+            if len(data) >= 24:
+                return data
+        new_key = os.urandom(32)
+        with open(key_file, 'wb') as f:
+            f.write(new_key)
+        return new_key
+    except Exception:
+        return os.urandom(24)
+
+
 app = Flask(
     __name__,
     template_folder=get_resource_path(os.path.join('web', 'templates')),
     static_folder=get_resource_path(os.path.join('web', 'static'))
 )
-app.secret_key = os.urandom(24)
+app.secret_key = _get_or_create_secret_key()
 app.config['BUILD_VER'] = str(int(time.time()))
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'

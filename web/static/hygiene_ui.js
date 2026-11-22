@@ -10,18 +10,18 @@ async function runHygieneTorrentScan(mode) {
     const summary = document.getElementById('hyg-tor-summary');
     const delBtn = document.getElementById('btn-hyg-tor-trash');
     if (!tbody) return;
-    tbody.innerHTML = '<tr><td colspan="4" class="center-msg">⏳ Сканирование...</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="4" class="center-msg">⏳ Сканирование клиента...</td></tr>';
     if (delBtn) delBtn.classList.add('hidden');
 
     let url = '/api/hygiene/quarantine?hours=72&tag=1';
-    if (mode === 'incompletes') url = '/api/hygiene/incompletes?days=14';
+    if (mode === 'incompletes') url = '/api/hygiene/incompletes?days=0';
     if (mode === 'dead_weight') url = '/api/hygiene/dead_weight?days=30&min_seeds=10';
 
     const res = await api(url);
     const d = await res.json();
     if (!res.ok || !d.success) {
         summary.textContent = d.error || 'Ошибка';
-        tbody.innerHTML = '';
+        tbody.innerHTML = `<tr><td colspan="4" class="center-msg" style="color:var(--danger);">${escapeHtml(d.error || 'Ошибка')}</td></tr>`;
         return;
     }
     _hygieneTorItems = d.items || [];
@@ -32,15 +32,21 @@ async function runHygieneTorrentScan(mode) {
     }
     if (delBtn) delBtn.classList.remove('hidden');
     tbody.innerHTML = _hygieneTorItems.map((it, idx) => {
-        const meta = mode === 'quarantine'
-            ? `Ошибка ${it.elapsed_hours}ч: ${escapeHtml(it.error_msg)}`
-            : (mode === 'incompletes' ? `${it.progress_pct}% • Avail: ${it.availability} • ${it.idle_days}д` : `Сиды: ${it.seeds} • Простой: ${it.idle_days}д • Ratio: ${it.ratio}x`);
+        let meta = '';
+        if (mode === 'quarantine') {
+            meta = `Ошибка ${it.elapsed_hours}ч: ${escapeHtml(it.error_msg)}`;
+        } else if (mode === 'incompletes') {
+            const stBadge = it.state.includes('pause') ? '⏸️ Пауза' : (it.state.includes('stall') ? '⏳ Зависла' : it.state);
+            meta = `${stBadge} • Скачано: ${escapeHtml(it.downloaded_fmt || '—')} (${it.progress_pct}%) • Сиды/Avail: ${it.availability} • Простой: ${it.idle_days}д`;
+        } else {
+            meta = `Сиды: ${it.seeds} • Простой: ${it.idle_days}д • Ratio: ${it.ratio}x`;
+        }
         return `
             <tr>
                 <td><input type="checkbox" class="hyg-tor-chk" data-idx="${idx}"></td>
                 <td style="white-space:normal;"><b>${escapeHtml(it.name)}</b><div class="lbl-xs muted-text">${meta}</div></td>
                 <td><b>${escapeHtml(it.size_fmt)}</b></td>
-                <td><span class="badge ${it.ready ? 'badge-err' : 'badge-stall'}">${mode}</span></td>
+                <td><span class="badge ${it.ready ? 'badge-err' : 'badge-stall'}">${escapeHtml(it.state || mode)}</span></td>
             </tr>
         `;
     }).join('');

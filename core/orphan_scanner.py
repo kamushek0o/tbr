@@ -6,7 +6,7 @@ import datetime
 from utils.config import cfg
 from utils.helpers import format_file_size, write_error_log
 from core.torrent_parser import get_all_torrents
-from core.qb_api import detect_qbittorrent_port, get_live_torrent_info
+from core.qb_api import detect_qbittorrent_port, get_live_torrent_info, _qb_config_candidates
 from core.app_state_db import app_state_db
 from core.soft_trash import move_to_trash
 
@@ -16,19 +16,18 @@ def _norm(p):
 
 
 def _read_qb_default_save_path():
-    if os.name == 'nt':
-        conf = os.path.join(os.path.expanduser('~'), 'AppData', 'Local', 'qBittorrent', 'qBittorrent.conf')
-    else:
-        conf = os.path.join(os.path.expanduser('~'), '.config', 'qBittorrent', 'qBittorrent.conf')
-    if not os.path.isfile(conf):
-        return ''
-    try:
-        with open(conf, 'r', encoding='utf-8', errors='ignore') as f:
-            txt = f.read()
-        m = re.search(r'(?:SavePath|DefaultSavePath)=([^\r\n]+)', txt, re.IGNORECASE)
-        return m.group(1).strip() if m else ''
-    except Exception:
-        return ''
+    for conf in _qb_config_candidates():
+        if not conf or not os.path.isfile(conf):
+            continue
+        try:
+            with open(conf, 'r', encoding='utf-8', errors='ignore') as f:
+                txt = f.read()
+            m = re.search(r'(?:SavePath|DefaultSavePath)=([^\r\n]+)', txt, re.IGNORECASE)
+            if m and m.group(1).strip():
+                return m.group(1).strip()
+        except Exception:
+            pass
+    return ''
 
 
 def get_download_roots():
@@ -85,7 +84,6 @@ def _collect_active_paths():
             active.add(_norm(cp))
         if sp and nm:
             active.add(_norm(os.path.join(sp, nm)))
-
     return active
 
 
@@ -150,8 +148,13 @@ def scan_orphan_entries(custom_roots=None):
     return {'roots': roots, 'orphans': orphans, 'count': len(orphans), 'total_size': total_bytes, 'total_size_fmt': format_file_size(total_bytes)}
 
 
-def delete_orphan_entries(paths, actor='admin', use_trash=True):
-    allowed_roots = [_norm(r) for r in get_download_roots()]
+def delete_orphan_entries(paths, actor='admin', use_trash=True, custom_roots=None):
+    raw_roots = list(get_download_roots())
+    if custom_roots:
+        for cr in custom_roots:
+            if cr and os.path.isdir(str(cr).strip()):
+                raw_roots.append(os.path.abspath(str(cr).strip()))
+    allowed_roots = [_norm(r) for r in raw_roots]
     active_paths = _collect_active_paths()
     deleted, errors = [], []
 
@@ -171,7 +174,7 @@ def delete_orphan_entries(paths, actor='admin', use_trash=True):
                 continue
 
         if not inside_allowed:
-            errors.append(f"Отклонено (вне корневых папок загрузок): {raw_p}")
+            errors.append(f"Отклонено (вне разрешённых корневых папок): {raw_p}")
             continue
         if _is_path_protected(target_norm, active_paths):
             errors.append(f"Отклонено (путь используется активным торрентом): {raw_p}")

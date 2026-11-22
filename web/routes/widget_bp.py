@@ -60,7 +60,9 @@ def api_widget():
     ui_settings = profiles_db.get_ui_settings(prof['id'] if prof else 0)
     top_period = request.args.get('top_period')
     top_scale = request.args.get('top_scale')
-    return jsonify(get_widget_summary(summary_tracker.db, ui_settings=ui_settings, top_period=top_period, top_scale=top_scale))
+    is_kiosk = request.args.get('kiosk') == '1'
+    role = 'viewer' if is_kiosk else (g.get('role') or 'viewer')
+    return jsonify(get_widget_summary(summary_tracker.db, ui_settings=ui_settings, top_period=top_period, top_scale=top_scale, role=role))
 
 
 @widget_bp.route('/api/widget/chart.png')

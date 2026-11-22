@@ -25,8 +25,25 @@ def record_failed_login(ip, bucket='login'):
     sessions_mgr.record_failure(ip, bucket=bucket)
 
 
+def _is_trusted_proxy_ip(ip_str):
+    s = str(ip_str or '').strip()
+    if s in ('127.0.0.1', '::1'):
+        return True
+    try:
+        obj = ipaddress.ip_address(s)
+        return obj.is_loopback or obj.is_private
+    except ValueError:
+        return False
+
+
 def get_client_ip():
-    return (request.headers.get('X-Forwarded-For') or request.remote_addr or '127.0.0.1').split(',')[0].strip()
+    """Защита от спуфинга X-Forwarded-For: доверяем прокси-заголовку только если remote_addr — локальный/доверенный прокси."""
+    remote = (request.remote_addr or '127.0.0.1').strip()
+    if _is_trusted_proxy_ip(remote):
+        fwd = (request.headers.get('X-Forwarded-For') or request.headers.get('X-Real-IP') or '').split(',')[0].strip()
+        if fwd:
+            return fwd
+    return remote
 
 
 def get_csrf_token():

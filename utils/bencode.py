@@ -1,7 +1,7 @@
 # utils/bencode.py
 
 def decode_bencode(data):
-    """Декодирует bencode-данные с автоматическим декодированием ключей и текста в UTF-8."""
+    """Декодирует bencode-данные: валидные UTF-8 строки -> str, сырые бинарные байты -> bytes без искажения."""
     if isinstance(data, str):
         data = data.encode('latin1')
 
@@ -22,14 +22,14 @@ def decode_bencode(data):
             res = {}
             while data[idx:idx + 1] != b'e':
                 raw_key, idx = decode_first(idx)
-                # Ключи словаря всегда декодируем в строковый вид (str)
                 if isinstance(raw_key, bytes):
                     try:
                         key = raw_key.decode('utf-8')
                     except UnicodeDecodeError:
-                        key = raw_key.decode('latin1', errors='replace')
+                        # Не-UTF8 ключи оставляем сырыми bytes во избежание порчи при обратном кодировании
+                        key = raw_key
                 else:
-                    key = str(raw_key)
+                    key = raw_key if isinstance(raw_key, str) else str(raw_key)
 
                 val, idx = decode_first(idx)
                 res[key] = val
@@ -40,8 +40,6 @@ def decode_bencode(data):
             start = colon + 1
             end = start + length
             raw_bytes = data[start:end]
-
-            # Текстовые строки декодируем в str, бинарные данные (куски, хэши) оставляем в bytes
             try:
                 val = raw_bytes.decode('utf-8')
             except UnicodeDecodeError:
@@ -66,7 +64,7 @@ def encode_bencode(val):
         return b'l' + b''.join(encode_bencode(x) for x in val) + b'e'
     elif isinstance(val, dict):
         def to_bytes(k):
-            return k if isinstance(k, (bytes, bytearray)) else str(k).encode('utf-8')
+            return bytes(k) if isinstance(k, (bytes, bytearray)) else str(k).encode('utf-8')
 
         sorted_keys = sorted(val.keys(), key=to_bytes)
         out = [b'd']
