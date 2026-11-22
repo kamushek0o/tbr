@@ -143,6 +143,8 @@ def _extract_season_sig(name):
 def _extract_sequel_numbers(name):
     base = re.sub(r'\.[a-z0-9]{2,4}$', '', str(name or ''))
     base = _JUNK_TAGS_RE.sub(' ', base)
+    base = _VERSION_EXPLICIT_RE.sub(' ', base)
+    base = _VERSION_NUMERIC_RE.sub(' ', base)
     nums = []
     for m in _ROMAN_MULTI_RE.finditer(base):
         val = _ROMAN_MAP.get(m.group(1).upper())
@@ -199,6 +201,7 @@ def _clean_title(name):
     s = re.sub(r'\.[a-z0-9]{2,4}$', '', str(name or '').lower())
     s = _JUNK_TAGS_RE.sub(' ', s)
     s = _VERSION_EXPLICIT_RE.sub(' ', s)
+    s = _VERSION_NUMERIC_RE.sub(' ', s)
     s = re.sub(r'[._\-]+', ' ', s)
     return ' '.join(s.split())
 
@@ -252,7 +255,6 @@ def find_smart_merge_candidates(items, max_results=20):
             if not ((same_content_dir and sim >= 0.55) or sim >= 0.78):
                 continue
 
-            # Приоритет №1: сравнение версий в названии (меньшая -> большая)
             ver_cmp = _compare_version_tuples(a['version'], b['version'])
             if ver_cmp != 0:
                 old_it, new_it = (a['item'], b['item']) if ver_cmp < 0 else (b['item'], a['item'])
@@ -260,7 +262,6 @@ def find_smart_merge_candidates(items, max_results=20):
                 v_new = b['version'] if ver_cmp < 0 else a['version']
                 reason = f"Обновление версии: v{'.'.join(map(str, v_old))} → v{'.'.join(map(str, v_new))}"
             else:
-                # Приоритет №2: сравнение даты добавления (раньше -> позже)
                 ta, tb = a['added_on'], b['added_on']
                 if ta > 0 and tb > 0 and ta != tb:
                     old_it, new_it = (a['item'], b['item']) if ta < tb else (b['item'], a['item'])

@@ -6,7 +6,7 @@ import datetime
 from utils.config import cfg
 from utils.helpers import format_file_size, write_error_log
 from core.torrent_parser import get_all_torrents
-from core.qb_api import detect_qbittorrent_port, get_live_torrent_info, _qb_config_candidates
+from core.qb_api import detect_qbittorrent_port, get_live_torrent_info, get_torrent_files, _qb_config_candidates
 from core.app_state_db import app_state_db
 from core.soft_trash import move_to_trash
 
@@ -61,7 +61,9 @@ def get_download_roots():
 
 
 def _collect_active_paths():
-    active = set()
+    """Разделяет save_paths (защита вверх) и content_paths (защита данных торрентов)."""
+    save_paths = set()
+    content_paths = set()
     parsed = get_all_torrents(use_cache=True)
     ip, port = detect_qbittorrent_port(cfg.config)
     live = get_live_torrent_info(ip, port) if port else {}
@@ -70,21 +72,33 @@ def _collect_active_paths():
         sp = str(t.get('save_path') or '').strip()
         nm = str(t.get('name') or '').strip()
         if sp:
-            active.add(_norm(sp))
+            save_paths.add(_norm(sp))
             if nm:
-                active.add(_norm(os.path.join(sp, nm)))
+                content_paths.add(_norm(os.path.join(sp, nm)))
 
-    for t in live.values():
+    for h, t in live.items():
         sp = str(t.get('save_path') or '').strip()
         cp = str(t.get('content_path') or '').strip()
         nm = str(t.get('name') or '').strip()
         if sp:
-            active.add(_norm(sp))
+            save_paths.add(_norm(sp))
         if cp:
-            active.add(_norm(cp))
-        if sp and nm:
-            active.add(_norm(os.path.join(sp, nm)))
-    return active
+            cp_n = _norm(cp)
+            sp_n = _norm(sp) if sp else ''
+            if sp_n and cp_n == sp_n:
+                files = get_torrent_files(ip, port, h) if port else []
+                if files:
+                    for f in files:
+                        top = str(f.get('name', '')).replace('\\', '/').strip('/').split('/', 1)[0]
+                        if top:
+                            content_paths.add(_norm(os.path.join(sp, top)))
+                elif nm:
+                    content_paths.add(_norm(os.path.join(sp, nm)))
+            else:
+                content_paths.add(cp_n)
+        elif sp and nm:
+            content_paths.add(_norm(os.path.join(sp, nm)))
+    return save_paths, content_paths
 
 
 def _entry_size(path):
@@ -103,11 +117,17 @@ def _entry_size(path):
     return total
 
 
-def _is_path_protected(entry_norm, active_paths):
-    for ap in active_paths:
+def _is_path_protected(entry_norm, save_paths, content_paths):
+    for cp in content_paths:
         try:
-            common = os.path.commonpath([entry_norm, ap])
-            if common == entry_norm or common == ap:
+            common = os.path.commonpath([entry_norm, cp])
+            if common == entry_norm or common == cp:
+                return True
+        except ValueError:
+            continue
+    for sp in save_paths:
+        try:
+            if os.path.commonpath([entry_norm, sp]) == entry_norm:
                 return True
         except ValueError:
             continue
@@ -117,7 +137,7 @@ def _is_path_protected(entry_norm, active_paths):
 def scan_orphan_entries(custom_roots=None):
     valid_roots = get_download_roots()
     roots = [os.path.abspath(str(r).strip()) for r in custom_roots if r and os.path.isdir(str(r).strip())] if custom_roots else valid_roots
-    active_paths = _collect_active_paths()
+    save_paths, content_paths = _collect_active_paths()
     orphans, total_bytes = [], 0
 
     for root_dir in roots:
@@ -127,7 +147,7 @@ def scan_orphan_entries(custom_roots=None):
                     if ent.name.startswith('.') or ent.name in ('$RECYCLE.BIN', 'System Volume Information', '_tbr_trash'):
                         continue
                     ent_abs = os.path.abspath(ent.path)
-                    if _is_path_protected(_norm(ent_abs), active_paths):
+                    if _is_path_protected(_norm(ent_abs), save_paths, content_paths):
                         continue
                     sz = _entry_size(ent_abs)
                     try:
@@ -155,7 +175,7 @@ def delete_orphan_entries(paths, actor='admin', use_trash=True, custom_roots=Non
             if cr and os.path.isdir(str(cr).strip()):
                 raw_roots.append(os.path.abspath(str(cr).strip()))
     allowed_roots = [_norm(r) for r in raw_roots]
-    active_paths = _collect_active_paths()
+    save_paths, content_paths = _collect_active_paths()
     deleted, errors = [], []
 
     for raw_p in paths:
@@ -176,7 +196,7 @@ def delete_orphan_entries(paths, actor='admin', use_trash=True, custom_roots=Non
         if not inside_allowed:
             errors.append(f"Отклонено (вне разрешённых корневых папок): {raw_p}")
             continue
-        if _is_path_protected(target_norm, active_paths):
+        if _is_path_protected(target_norm, save_paths, content_paths):
             errors.append(f"Отклонено (путь используется активным торрентом): {raw_p}")
             continue
 

@@ -14,7 +14,7 @@ _SUB_EXTS = {'.srt', '.ass', '.ssa', '.vtt', '.sub'}
 
 
 def scan_bt_backup_garbage():
-    """#31 Санитар BT_backup: безпарные, 0-байтные и призраки старше 24ч, отсутствующие в API qB."""
+    """Санитар BT_backup: безпарные, 0-байтные и призраки старше 24ч, отсутствующие в API qB."""
     ip, port = detect_qbittorrent_port(cfg.config)
     live = get_live_torrent_info(ip, port) if port else {}
     if not live:
@@ -24,7 +24,7 @@ def scan_bt_backup_garbage():
 
     live_hashes = {h.lower() for h in live.keys()}
     now = time.time()
-    min_age = 86400.0  # 24 часа
+    min_age = 86400.0
 
     by_hash = {}
     for ent in os.scandir(BT_BACKUP_PATH):
@@ -81,13 +81,13 @@ def _classify_inner_file(fname, progress):
 
 
 def scan_inner_content_junk(limit_torrents=80):
-    """#51 Пылесос мусора внутри content_path живых раздач (без авто-удаления)."""
+    """Пылесос мусора внутри content_path живых раздач с защитой кросс-сида в общей папке."""
     ip, port = detect_qbittorrent_port(cfg.config)
     live = get_live_torrent_info(ip, port) if port else {}
     if not live:
         return {'success': False, 'error': 'qBittorrent недоступен', 'items': []}
 
-    found = []
+    dir_groups = {}
     scanned = 0
     for t_hash, info in live.items():
         cp = str(info.get('content_path') or '').strip()
@@ -103,21 +103,34 @@ def scan_inner_content_junk(limit_torrents=80):
         files = get_torrent_files(ip, port, t_hash)
         if not files:
             continue
-        expected = set()
+
+        cp_abs = os.path.abspath(cp)
+        cp_key = os.path.normcase(cp_abs)
+        grp = dir_groups.setdefault(cp_key, {'cp_abs': cp_abs, 'names': [], 'expected': set(), 'min_prog': 1.0})
+        grp['names'].append(info.get('name', t_hash))
+        grp['min_prog'] = min(grp['min_prog'], float(info.get('progress', 0.0) or 0.0))
+
         for f in files:
             rel = str(f.get('name', '')).replace('\\', '/').strip('/')
             parts = rel.split('/', 1)
             rel_inner = parts[1] if len(parts) > 1 else parts[0]
-            expected.add(os.path.normcase(rel_inner.replace('/', os.sep)))
+            grp['expected'].add(os.path.normcase(rel_inner.replace('/', os.sep)))
 
-        prog = float(info.get('progress', 0.0) or 0.0)
-        cp_abs = os.path.abspath(cp)
+    found = []
+    seen_paths = set()
+    for grp in dir_groups.values():
+        cp_abs = grp['cp_abs']
+        expected = grp['expected']
+        prog = grp['min_prog']
+        t_label = grp['names'][0] if len(grp['names']) == 1 else f"{grp['names'][0]} (+{len(grp['names']) - 1})"
         try:
             for root, dirs, fnames in os.walk(cp_abs):
-                # Не трогаем служебную папку .unwanted (частично снятые файлы qBittorrent)
                 dirs[:] = [d for d in dirs if d.lower() != '.unwanted']
                 for fn in fnames:
                     full_p = os.path.join(root, fn)
+                    norm_fp = os.path.normcase(full_p)
+                    if norm_fp in seen_paths:
+                        continue
                     rel_disk = os.path.relpath(full_p, cp_abs)
                     rel_check = rel_disk[:-4] if (prog < 0.9999 and rel_disk.lower().endswith('.!qb')) else rel_disk
                     if os.path.normcase(rel_check) in expected or os.path.normcase(rel_disk) in expected:
@@ -125,13 +138,14 @@ def scan_inner_content_junk(limit_torrents=80):
                     cat = _classify_inner_file(fn, prog)
                     if cat == 'active_part':
                         continue
+                    seen_paths.add(norm_fp)
                     try:
                         sz = os.path.getsize(full_p)
                     except OSError:
                         sz = 0
                     found.append({
                         'path': full_p, 'name': fn, 'rel_path': rel_disk,
-                        'torrent_name': info.get('name', t_hash), 'category': cat,
+                        'torrent_name': t_label, 'category': cat,
                         'size': sz, 'size_fmt': format_file_size(sz)
                     })
         except Exception as e:
