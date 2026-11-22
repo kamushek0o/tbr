@@ -32,7 +32,7 @@
 let _shift = 0;
 async function refreshKiosk() {
     try {
-        const res = await fetch('/api/widget');
+        const res = await fetch('/api/widget?kiosk=1');
         if (!res.ok) return;
         const d = await res.json();
         document.getElementById('k-speed').textContent = d.current_speed_fmt || '—';
@@ -44,7 +44,6 @@ async function refreshKiosk() {
         qb.textContent = d.qb_running ? '🟢 qBittorrent OK' : '🔴 qBittorrent OFF';
         const top = d.charts?.top_5 || [];
         document.getElementById('k-top').innerHTML = top.map((x, i) => `<div class="row-between"><span>${i + 1}. ${x.name}</span><b class="accent-txt">${x.gb} GiB</b></div>`).join('') || 'Нет данных';
-        // Лёгкий сдвиг против выгорания экрана
         _shift = (_shift + 1) % 4;
         const offsets = ['translate(0,0)', 'translate(3px,2px)', 'translate(-2px,3px)', 'translate(2px,-2px)'];
         document.getElementById('kiosk-wrap').style.transform = offsets[_shift];

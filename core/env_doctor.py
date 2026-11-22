@@ -9,7 +9,7 @@ import urllib.request
 from utils.config import cfg
 from utils.helpers import APP_DATA_DIR, BT_BACKUP_PATH, LOG_FOLDER
 from core.version import APP_VERSION
-from core.qb_api import detect_qbittorrent_port, _get_qb_json, is_qb_running
+from core.qb_api import detect_qbittorrent_port, check_qb_api_alive, _get_qb_json, is_qb_running
 from core.disk_monitor import list_active_disks
 from core.config_vault import detect_qb_config_dir
 
@@ -18,6 +18,7 @@ _DB_LIST = [
     ("profiles.db", os.path.join(APP_DATA_DIR, "profiles.db")),
     ("automation.db", os.path.join(APP_DATA_DIR, "automation.db")),
     ("app_state.db", os.path.join(APP_DATA_DIR, "app_state.db")),
+    ("file_index.db", os.path.join(APP_DATA_DIR, "file_index.db")),
 ]
 
 
@@ -37,14 +38,8 @@ def _check_time_skew():
 
 def run_environment_doctor():
     ip, port = detect_qbittorrent_port(cfg.config)
-    qb_ver = _get_qb_json(ip, port, "app/version", timeout=2.0) if port else None
-    if qb_ver is None:
-        try:
-            req = urllib.request.Request(f"http://{ip}:{port}/api/v2/app/version")
-            with urllib.request.urlopen(req, timeout=2.0) as r:
-                qb_ver = r.read().decode("utf-8", errors="ignore").strip()
-        except Exception:
-            qb_ver = None
+    api_ok = check_qb_api_alive(ip, port) if port else False
+    qb_ver = _get_qb_json(ip, port, "app/version", timeout=2.0) if api_ok else None
 
     bt_exists = os.path.isdir(BT_BACKUP_PATH)
     bt_rw = False
@@ -79,8 +74,8 @@ def run_environment_doctor():
         "qb": {
             "running": is_qb_running(),
             "ip": ip, "port": port,
-            "api_ok": qb_ver is not None,
-            "version": qb_ver or "не отвечает",
+            "api_ok": api_ok,
+            "version": qb_ver or ("OK" if api_ok else "не отвечает"),
             "config_dir": detect_qb_config_dir() or "не найдена"
         },
         "bt_backup": {"path": BT_BACKUP_PATH, "exists": bt_exists, "rw": bt_rw},

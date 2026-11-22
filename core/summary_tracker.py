@@ -174,17 +174,14 @@ class SummaryTracker:
                         SELECT ts.hash_id, s.timestamp, s.datetime, ts.uploaded
                         FROM snapshots s
                         JOIN torrent_snapshots ts ON s.id = ts.snapshot_id
-                        WHERE ts.hash_id IN ({placeholders}) AND s.timestamp >= ?
+                        WHERE COALESCE(s.ignore_in_stats, 0) = 0 AND ts.hash_id IN ({placeholders}) AND s.timestamp >= ?
                         ORDER BY ts.hash_id ASC, s.timestamp ASC
                     """, (*hashes, since_ts)).fetchall()
             except Exception:
                 rows = []
 
         max_bps = (max(10, cfg.getint('Max_Channel_Mbps', 1000)) * 1024 * 1024) / 8.0
-        buckets = {}  # { bucket_ts: {'delta': int, 'bps': float, 'dt_str': str, 'is_merge': bool} }
-        consumed_merges = set()
-
-        by_hash = {}
+        buckets, consumed_merges, by_hash = {}, set(), {}
         for r in rows:
             by_hash.setdefault(r['hash_id'], []).append(r)
 

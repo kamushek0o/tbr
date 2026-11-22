@@ -103,9 +103,7 @@ function applySmartPair(oldHash, newHash) {
 async function openTorrentDiffModal() {
     const oldH = document.getElementById('merger-old')?.value || '';
     const newH = document.getElementById('merger-new')?.value || '';
-    if (!oldH || !newH || oldH.toLowerCase() === newH.toLowerCase()) {
-        return alert(t('err_same_torrent'));
-    }
+    if (!oldH || !newH || oldH.toLowerCase() === newH.toLowerCase()) return alert(t('err_same_torrent'));
 
     const modal = document.getElementById('diff-modal');
     const tbody = document.getElementById('diff-tbody');
@@ -125,7 +123,6 @@ async function openTorrentDiffModal() {
             tbody.innerHTML = `<tr><td colspan="4" class="center-msg" style="color:var(--danger);">${escapeHtml(d.error || 'Ошибка анализа')}</td></tr>`;
             return;
         }
-
         matchBadge.textContent = `Совпадение: ${d.match_percent}%`;
         const st = d.stats || {};
         badges.innerHTML = `
@@ -135,30 +132,16 @@ async function openTorrentDiffModal() {
             <span class="badge badge-dl">➕ Новые: ${st.added || 0}</span>
             <span class="badge badge-pause">${escapeHtml(d.old_total_fmt)} → ${escapeHtml(d.new_total_fmt)}</span>
         `;
-
         const files = d.files || [];
-        if (!files.length) {
-            tbody.innerHTML = '<tr><td colspan="4" class="center-msg">Файлы не найдены</td></tr>';
-            return;
-        }
+        if (!files.length) { tbody.innerHTML = '<tr><td colspan="4" class="center-msg">Файлы не найдены</td></tr>'; return; }
         tbody.innerHTML = '';
         const frag = document.createDocumentFragment();
-        const statusMap = {
-            exact: { cls: 'diff-row-exact', badge: 'badge-up', txt: '100% ОК' },
-            changed: { cls: 'diff-row-changed', badge: 'badge-stall', txt: 'Размер ≠' },
-            removed: { cls: 'diff-row-removed', badge: 'badge-stop', txt: 'Удалён' },
-            added: { cls: 'diff-row-added', badge: 'badge-dl', txt: 'Новый' }
-        };
+        const statusMap = { exact: { cls: 'diff-row-exact', badge: 'badge-up', txt: '100% ОК' }, changed: { cls: 'diff-row-changed', badge: 'badge-stall', txt: 'Размер ≠' }, removed: { cls: 'diff-row-removed', badge: 'badge-stop', txt: 'Удалён' }, added: { cls: 'diff-row-added', badge: 'badge-dl', txt: 'Новый' } };
         files.forEach(f => {
             const s = statusMap[f.status] || statusMap.exact;
             const tr = document.createElement('tr');
             tr.className = s.cls;
-            tr.innerHTML = `
-                <td style="white-space:normal; word-break:break-all;">${escapeHtml(f.path)}</td>
-                <td><span class="badge ${s.badge}">${s.txt}</span></td>
-                <td>${escapeHtml(f.old_size_fmt)}</td>
-                <td>${escapeHtml(f.new_size_fmt)}</td>
-            `;
+            tr.innerHTML = `<td style="white-space:normal; word-break:break-all;">${escapeHtml(f.path)}</td><td><span class="badge ${s.badge}">${s.txt}</span></td><td>${escapeHtml(f.old_size_fmt)}</td><td>${escapeHtml(f.new_size_fmt)}</td>`;
             frag.appendChild(tr);
         });
         tbody.appendChild(frag);
@@ -168,9 +151,7 @@ async function openTorrentDiffModal() {
     }
 }
 
-function closeTorrentDiffModal() {
-    document.getElementById('diff-modal').style.display = 'none';
-}
+function closeTorrentDiffModal() { document.getElementById('diff-modal').style.display = 'none'; }
 
 async function scanOrphans() {
     const tbody = document.getElementById('orphan-tbody');
@@ -230,21 +211,25 @@ function updateOrphanDelBtn() {
     const btn = document.getElementById('btn-delete-orphans');
     if (btn) {
         btn.classList.toggle('hidden', cnt === 0);
-        btn.textContent = `🗑️ Удалить выбранные (${cnt}) навсегда`;
+        btn.textContent = `🗑️ В корзину _tbr_trash (${cnt})`;
     }
 }
 
 async function deleteSelectedOrphans() {
     const paths = [...document.querySelectorAll('.orphan-chk:checked')].map(c => c.value);
     if (!paths.length) return;
-    if (!confirm(`⚠️ ВНИМАНИЕ! Вы выбрали объектов: ${paths.length}.\nФайлы будут удалены НАВСЕГДА мимо корзины!\n\nПродолжить?`)) return;
-    if (!confirm(`🚨 ПОСЛЕДНЕЕ ПРЕДУПРЕЖДЕНИЕ!\nТочно уничтожить ${paths.length} папок/файлов без возможности восстановления?`)) return;
+    if (!confirm(`Переместить выбранные объекты (${paths.length} шт.) в корзину _tbr_trash?\n(Можно восстановить в течение 7 дней)`)) return;
+    if (!confirm(`Подтвердите перенос ${paths.length} объектов в корзину _tbr_trash:`)) return;
 
-    const res = await api('/api/tools/orphans/delete', 'POST', { paths, confirmed: true });
+    const custom = document.getElementById('orphan-custom-root')?.value.trim();
+    const res = await api('/api/tools/orphans/delete', 'POST', {
+        paths, confirmed: true, use_trash: true, custom_roots: custom ? [custom] : undefined
+    });
     const d = await res.json();
-    const msg = `Удалено: ${(d.deleted || []).length}` + ((d.errors && d.errors.length) ? `\nОшибки:\n${d.errors.join('\n')}` : '');
+    const msg = `Перенесено в _tbr_trash: ${(d.deleted || []).length}` + ((d.errors && d.errors.length) ? `\nОшибки:\n${d.errors.join('\n')}` : '');
     alert(msg);
     scanOrphans();
+    if (typeof loadTrashItems === 'function') loadTrashItems();
 }
 
 async function loadVaultSettings() {

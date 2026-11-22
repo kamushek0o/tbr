@@ -16,7 +16,7 @@ _CLIENTS_CACHE = {'ts': 0.0, 'data': None}
 _CLIENTS_TTL = 900.0
 
 _INSIGHTS_LOCK = threading.Lock()
-_INSIGHTS_CACHE = {}  # key: (role, tracker_period) -> {'ts': float, 'data': dict}
+_INSIGHTS_CACHE = {}
 _INSIGHTS_TTL = 300.0
 _ISP_TIERS_MBPS = (10, 20, 25, 30, 50, 75, 100, 150, 200, 250, 300, 500, 1000)
 
@@ -193,7 +193,7 @@ def get_heatmap_365(db):
     return cells
 
 
-def _sum_range_deltas(rows, start_ts, end_ts):
+def _sum_range_deltas(rows, start_ts, end_ts, max_physical_bps=None):
     total, prev = 0, None
     for r in rows:
         ts = float(r['timestamp'])
@@ -201,7 +201,8 @@ def _sum_range_deltas(rows, start_ts, end_ts):
             dt = ts - float(prev['timestamp'])
             d = max(0, int(r['total_uploaded']) - int(prev['total_uploaded']))
             if dt >= MIN_DELTA_SEC and d > 0:
-                total += d
+                if max_physical_bps is None or (d / dt) <= max_physical_bps:
+                    total += d
         prev = r
     return total
 
@@ -248,12 +249,15 @@ def get_records_and_comparisons(db, heatmap_cells=None, force_recalc=False):
     week_start = (now_dt - datetime.timedelta(days=now_dt.weekday())).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
     prev_week_start, prev_week_same_end = week_start - (7 * 86400), now_ts - (7 * 86400)
 
+    max_mbps = max(10, cfg.getint('Max_Channel_Mbps', 1000))
+    max_physical_bps = ((max_mbps * 1_000_000) / 8.0) * 1.05
+
     _, min_ts = db.get_snapshot_range_info()
     rows_15d = db.get_snapshots_since(prev_week_start - 3600)
-    today_b = _sum_range_deltas(rows_15d, today_start, now_ts)
-    yest_b = _sum_range_deltas(rows_15d, yest_start, yest_same_end)
-    this_w_b = _sum_range_deltas(rows_15d, week_start, now_ts)
-    prev_w_b = _sum_range_deltas(rows_15d, prev_week_start, prev_week_same_end)
+    today_b = _sum_range_deltas(rows_15d, today_start, now_ts, max_physical_bps)
+    yest_b = _sum_range_deltas(rows_15d, yest_start, yest_same_end, max_physical_bps)
+    this_w_b = _sum_range_deltas(rows_15d, week_start, now_ts, max_physical_bps)
+    prev_w_b = _sum_range_deltas(rows_15d, prev_week_start, prev_week_same_end, max_physical_bps)
 
     day_pct = round(((today_b - yest_b) / yest_b) * 100.0, 1) if (min_ts and min_ts <= yest_start + 3600 and yest_b > 0) else None
     week_pct = round(((this_w_b - prev_w_b) / prev_w_b) * 100.0, 1) if (min_ts and min_ts <= prev_week_start + 3600 and prev_w_b > 0) else None

@@ -51,6 +51,32 @@ function hexToRgb(hex) {
     return { r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16) };
 }
 
+function _maybeLoadGoogleFont(fontObj, allowGf) {
+    if (!fontObj || !fontObj.web || !allowGf) return;
+    const linkId = 'tbr-google-font-link';
+    const fam = encodeURIComponent(fontObj.name).replace(/%20/g, '+') + ':wght@400;600;700;800';
+    const href = `https://fonts.googleapis.com/css2?family=${fam}&display=swap`;
+    let link = document.getElementById(linkId);
+    if (!link) {
+        link = document.createElement('link');
+        link.id = linkId;
+        link.rel = 'stylesheet';
+        document.head.appendChild(link);
+    }
+    if (link.href !== href) link.href = href;
+}
+
+function updateFontNote(fontObj) {
+    const el = document.getElementById('cust-font-note');
+    if (!el) return;
+    const allow = document.getElementById('cust-allow-gf')?.checked;
+    if (fontObj && fontObj.web && !allow) {
+        el.textContent = `ℹ️ Шрифт «${fontObj.name}» будет использован, если установлен локально (или включите Google Fonts).`;
+    } else {
+        el.textContent = '';
+    }
+}
+
 function applyUiSettings(ui) {
     if (!ui) return;
     const root = document.documentElement;
@@ -75,6 +101,7 @@ function applyUiSettings(ui) {
     if (typeof updateMobileCardsBtn === 'function') updateMobileCardsBtn();
 
     const fontObj = AVAILABLE_FONTS.find(f => f.name === ui.font) || AVAILABLE_FONTS[0];
+    _maybeLoadGoogleFont(fontObj, Boolean(ui.allow_google_fonts));
     root.style.setProperty('--app-font', fontObj.css);
 
     if (typeof syncAnalyticsControlsFromUi === 'function') syncAnalyticsControlsFromUi();
@@ -115,6 +142,7 @@ function openCustomizeModal() {
     fontSel.value = ui.font || 'Segoe UI';
     document.getElementById('cust-allow-gf').checked = Boolean(ui.allow_google_fonts);
     document.getElementById('cust-mobile-mode').checked = (ui.mobile_mode !== false);
+    updateFontNote(AVAILABLE_FONTS.find(f => f.name === fontSel.value));
 
     renderChartEditors(ui.charts || {});
     renderClientColorEditors(ui.peer_client_colors || {});

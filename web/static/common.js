@@ -86,11 +86,11 @@ document.addEventListener('keydown', (e) => {
     }
 });
 
-window.onload = async () => {
+document.addEventListener('DOMContentLoaded', async () => {
     applyI18n();
     await loadMeAndApplyRole();
     syncTabWithHash();
     if (typeof initSystemStatusAndUpdates === 'function') initSystemStatusAndUpdates();
     if (typeof initTimersUi === 'function') initTimersUi();
     setInterval(checkQbStatus, 5000);
-};
+});

@@ -70,9 +70,7 @@ function _renderThrottleBadge(th) {
     const b = document.getElementById('isp-throttle-badge');
     if (!b) return;
     b.classList.toggle('hidden', !th.throttled);
-    if (th.throttled) {
-        b.textContent = `🚧 Полка скорости ~${th.tier_mbps} Мбит/с (${th.plateau_mbs} MiB/s)`;
-    }
+    if (th.throttled) b.textContent = `🚧 Полка скорости ~${th.tier_mbps} Мбит/с (${th.plateau_mbs} MiB/s)`;
 }
 
 function _renderHeatmap365(cells) {
@@ -175,7 +173,8 @@ function _renderTrackersChart(tr) {
     });
 }
 
-function openTorrentInspectorModal() {
+function openTorrentInspectorModal(hashOverride = null) {
+    if (hashOverride) selectedHash = hashOverride;
     if (typeof selectedHash === 'undefined' || !selectedHash) return alert(t('err_select_torrent'));
     _inspHash = selectedHash;
     const item = (typeof torrentsData !== 'undefined' ? torrentsData : []).find(x => x.hash === _inspHash);
@@ -183,6 +182,8 @@ function openTorrentInspectorModal() {
     document.getElementById('inspector-modal').style.display = 'flex';
     loadInspectorChart('24h');
     loadInspectorPeers();
+    if (typeof loadInspectorPhase4 === 'function') loadInspectorPhase4(_inspHash, 1);
+    if (typeof loadInspectorMediaInfo === 'function') loadInspectorMediaInfo(_inspHash);
 }
 
 function closeInspectorModal() { document.getElementById('inspector-modal').style.display = 'none'; }
@@ -234,10 +235,7 @@ async function loadInspectorPeers() {
         return;
     }
     const peers = d.peers || [];
-    if (!peers.length) {
-        tbody.innerHTML = '<tr><td colspan="5" class="center-msg">Активных пиров сейчас нет</td></tr>';
-        return;
-    }
+    if (!peers.length) { tbody.innerHTML = '<tr><td colspan="5" class="center-msg">Активных пиров сейчас нет</td></tr>'; return; }
     tbody.innerHTML = '';
     const frag = document.createDocumentFragment();
     peers.forEach(p => {

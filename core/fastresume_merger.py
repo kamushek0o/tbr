@@ -13,6 +13,8 @@ from core.qb_api import (
 from core.torrent_parser import force_clear_cache
 from core.torrent_targets import handle_targets_on_merge
 from core.app_state_db import app_state_db
+from core.soft_trash import create_fastresume_snapshot
+from core.lineage_notes_events import record_torrent_event
 
 VALID_DELETE_MODES = ('none', 'safe', 'force')
 VALID_MERGE_MODES = ('add', 'replace')
@@ -120,8 +122,7 @@ def run_fastresume_merge(old_hash, new_hash, delete_mode='none', merge_mode='add
         if prev:
             dt_str = datetime.datetime.fromtimestamp(prev[0]['created_at']).strftime('%d.%m.%Y %H:%M')
             return False, log, None, 409, {
-                'is_duplicate': True,
-                'merged_at': dt_str,
+                'is_duplicate': True, 'merged_at': dt_str,
                 'warning': f"Эти раздачи уже объединялись {dt_str}. Точно сложить ещё раз?"
             }
 
@@ -144,6 +145,8 @@ def run_fastresume_merge(old_hash, new_hash, delete_mode='none', merge_mode='add
             if not close_qbittorrent(max_wait_sec=30.0):
                 raise RuntimeError("Не удалось завершить qBittorrent за 30с. Убедитесь, что WebUI доступен.")
             time.sleep(1.0)
+
+        create_fastresume_snapshot([old_hash, new_hash], reason='merger')
 
         with open(old_file, 'rb') as f:
             old_data = decode_bencode(f.read())
@@ -219,6 +222,7 @@ def run_fastresume_merge(old_hash, new_hash, delete_mode='none', merge_mode='add
         uid = app_state_db.link_torrent_lineage(old_hash, new_hash)
         if uid:
             log.append(f"🔗 Личная история поколений связана (UID: {uid[:8]}...)")
+        record_torrent_event(new_hash, 'merge', f"Мердж ({m_mode}): {format_file_size(old_up)} + {format_file_size(new_up)} → {format_file_size(final_up)}")
         if handle_targets_on_merge(old_hash, new_hash, final_uploaded=final_up):
             log.append("🎯 Целевая планка (Goal) синхронизирована с новым объёмом.")
 
@@ -248,10 +252,7 @@ def run_fastresume_merge(old_hash, new_hash, delete_mode='none', merge_mode='add
             else:
                 log.append("⚡ Готов к безопасному удалению исходника.")
 
-    calc_info = {
-        'source_up': old_up, 'target_up': new_up, 'final_up': final_up,
-        'calc_fmt': f"{format_file_size(old_up)} + {format_file_size(new_up)} = {format_file_size(final_up)}"
-    }
+    calc_info = {'source_up': old_up, 'target_up': new_up, 'final_up': final_up, 'calc_fmt': f"{format_file_size(old_up)} + {format_file_size(new_up)} = {format_file_size(final_up)}"}
     return True, log, confirm_info, 200, calc_info
 
 
