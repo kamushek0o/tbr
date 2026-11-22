@@ -9,8 +9,8 @@ import urllib.request
 from difflib import SequenceMatcher
 from utils.config import cfg
 from utils.bencode import decode_bencode
-from utils.helpers import APP_DATA_DIR, format_file_size, write_error_log
-from core.qb_api import detect_qbittorrent_port, get_live_torrent_info, add_torrent_url, opener, qb_login
+from utils.helpers import APP_DATA_DIR, format_file_size
+from core.qb_api import detect_qbittorrent_port, get_live_torrent_info, add_torrent_url, opener, qb_login, _norm_ip
 from core.torrent_parser import get_all_torrents
 from core.torrent_diff import _clean_title
 from core.disk_monitor import get_monitored_disk_info
@@ -23,7 +23,7 @@ _RADAR_CACHE = {'ts': 0.0, 'qb_latest': '', 'qb_url': ''}
 
 
 def preflight_analyze(magnet_or_url='', torrent_bytes=None, save_path=''):
-    """#5 Pre-Flight проверка перед добавлением раздачи."""
+    """Pre-Flight проверка перед добавлением раздачи."""
     ip, port = detect_qbittorrent_port(cfg.config)
     live = get_live_torrent_info(ip, port) if port else {}
     queue_left = sum(int(v.get('amount_left', 0) or 0) for v in live.values() if int(v.get('amount_left', 0) or 0) > 0)
@@ -66,7 +66,6 @@ def preflight_analyze(magnet_or_url='', torrent_bytes=None, save_path=''):
         else:
             name = raw_u[:60]
 
-    # Smart Match проверка на дубликаты в библиотеке
     similar = []
     if name:
         clean_new = _clean_title(name)
@@ -111,6 +110,7 @@ def add_torrent_to_qb(magnet_or_url='', torrent_bytes=None, filename='upload.tor
         fields['tags'] = tags
     if paused:
         fields['paused'] = 'true'
+        fields['stopped'] = 'true'
 
     for k, v in fields.items():
         parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n".encode('utf-8'))
@@ -122,7 +122,7 @@ def add_torrent_to_qb(magnet_or_url='', torrent_bytes=None, filename='upload.tor
     parts.append(f"--{boundary}--\r\n".encode('utf-8'))
     body = b"".join(parts)
 
-    base_url = f"http://{ip}:{port}"
+    base_url = f"http://{_norm_ip(ip)}:{port}"
     req = urllib.request.Request(
         f"{base_url}/api/v2/torrents/add",
         data=body, method='POST',
@@ -131,7 +131,8 @@ def add_torrent_to_qb(magnet_or_url='', torrent_bytes=None, filename='upload.tor
     for attempt in range(2):
         try:
             with opener.open(req, timeout=8) as resp:
-                return resp.getcode() == 200, 'Файл .torrent отправлен в qBittorrent'
+                ok = 200 <= resp.getcode() < 300
+                return ok, 'Файл .torrent отправлен в qBittorrent' if ok else f'HTTP {resp.getcode()}'
         except urllib.error.HTTPError as e:
             if e.code in (401, 403) and attempt == 0 and qb_login(ip, port):
                 continue
@@ -142,14 +143,14 @@ def add_torrent_to_qb(magnet_or_url='', torrent_bytes=None, filename='upload.tor
 
 
 def get_update_radar(force=False):
-    """#48 Радар обновлений tbr PRO + qBittorrent (кэш 12 часов)."""
+    """Радар обновлений tbr PRO + qBittorrent (кэш 12 часов)."""
     tbr_upd = check_for_updates(force=force)
     now = time.time()
     if force or not _RADAR_CACHE['qb_latest'] or (now - _RADAR_CACHE['ts']) >= 43200:
         try:
             req = urllib.request.Request(
                 "https://api.github.com/repos/qbittorrent/qBittorrent/releases/latest",
-                headers={"User-Agent": "tbr-pro-radar/3.2", "Accept": "application/vnd.github+json"}
+                headers={"User-Agent": "tbr-pro-radar/4.0", "Accept": "application/vnd.github+json"}
             )
             with urllib.request.urlopen(req, timeout=6.0) as resp:
                 rel = json.loads(resp.read().decode('utf-8'))
@@ -162,7 +163,7 @@ def get_update_radar(force=False):
 
 
 def prepare_qb_update_safe():
-    """#48 Подготовка к обновлению qB: Config Vault (#11) + ZIP БД + Архивариус (#32)."""
+    """Подготовка к обновлению qB: Config Vault + ZIP БД + Архивариус .torrent."""
     ok_cfg, res_cfg = create_config_backup(reason='pre_update')
     res_arch = sync_torrent_archive()
     os.makedirs(os.path.join(APP_DATA_DIR, 'pre_update_backups'), exist_ok=True)

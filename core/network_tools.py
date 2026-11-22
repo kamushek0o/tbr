@@ -20,7 +20,7 @@ from core.notifiers import notify_all
 
 
 def diagnose_bottleneck(db):
-    """#9 «Почему всё тормозит?» — диагностика узких горлышек в реальном времени."""
+    """«Почему всё тормозит?» — диагностика узких горлышек в реальном времени."""
     ip, port = detect_qbittorrent_port(cfg.config)
     if not port:
         return {'success': False, 'issues': ['qBittorrent WebUI недоступен']}
@@ -58,7 +58,7 @@ def diagnose_bottleneck(db):
 
 
 def ping_trackers_dns_tcp(max_hosts=25):
-    """#46 Пингер трекеров: только DNS + TCP handshake (без HTTP GET к announce URL)."""
+    """Пингер трекеров: только DNS + TCP handshake (без HTTP GET к announce URL)."""
     ip, port = detect_qbittorrent_port(cfg.config)
     live = get_live_torrent_info(ip, port) if port else {}
     hosts = {}
@@ -97,23 +97,21 @@ def ping_trackers_dns_tcp(max_hosts=25):
 
 
 def check_network_interface_guard():
-    """#23 Страж сетевого интерфейса qBittorrent."""
-    if not cfg.getboolean('Interface_Guard_Enabled', False):
-        return {'enabled': False, 'ok': True}
+    """Страж сетевого интерфейса qBittorrent."""
+    enabled = cfg.getboolean('Interface_Guard_Enabled', False)
     ip, port = detect_qbittorrent_port(cfg.config)
-    if not port:
-        return {'enabled': True, 'ok': True, 'reason': 'qb_down'}
-    prefs = _get_qb_json(ip, port, "app/preferences", timeout=2.0)
+    prefs = _get_qb_json(ip, port, "app/preferences", timeout=2.0) if port else None
     if not isinstance(prefs, dict):
-        return {'enabled': True, 'ok': True, 'reason': 'no_prefs'}
+        return {'enabled': enabled, 'ok': True, 'reason': 'qb_down', 'current': '', 'current_name': ''}
 
     cur_iface = str(prefs.get('current_network_interface') or '').strip()
+    cur_name = str(prefs.get('current_network_interface_name') or cur_iface).strip()
     expected = cfg.get('Expected_Net_Interface', '').strip()
-    if not expected:
-        return {'enabled': True, 'ok': True, 'current': cur_iface}
+    if not enabled or not expected:
+        return {'enabled': enabled, 'ok': True, 'current': cur_iface, 'current_name': cur_name}
 
-    if cur_iface != expected:
-        msg = f"Сетевой интерфейс qB изменился: '{expected}' → '{cur_iface or 'Any'}'!"
+    if cur_iface != expected and cur_name != expected:
+        msg = f"Сетевой интерфейс qB изменился: '{expected}' → '{cur_name or cur_iface or 'Any'}'!"
         last_alert = cfg.getint('Interface_Last_Alert_Ts', 0)
         if (time.time() - last_alert) >= 300:
             cfg.set('Interface_Last_Alert_Ts', str(int(time.time())))
@@ -122,8 +120,8 @@ def check_network_interface_guard():
             notify_all("🛡️ Страж интерфейса qBittorrent", [msg], critical=True)
             if cfg.getboolean('Interface_Guard_Panic', False):
                 execute_panic_killswitch(kill_qb=False, actor='interface_guard')
-        return {'enabled': True, 'ok': False, 'expected': expected, 'current': cur_iface, 'message': msg}
-    return {'enabled': True, 'ok': True, 'expected': expected, 'current': cur_iface}
+        return {'enabled': True, 'ok': False, 'expected': expected, 'current': cur_iface, 'current_name': cur_name, 'message': msg}
+    return {'enabled': True, 'ok': True, 'expected': expected, 'current': cur_iface, 'current_name': cur_name}
 
 
 def _find_qb_log_path():
@@ -141,7 +139,7 @@ def _find_qb_log_path():
 
 
 def read_sanitized_qb_log(lines_count=80):
-    """#17 Безопасное чтение последних N строк qbittorrent.log с маскировкой IP и пасскеев."""
+    """Безопасное чтение последних N строк qbittorrent.log с маскировкой IP и пасскеев."""
     path = _find_qb_log_path()
     if not path:
         return False, "Файл qbittorrent.log не найден"
@@ -156,12 +154,13 @@ def read_sanitized_qb_log(lines_count=80):
 
 
 def reanimate_qb(force_kill=False):
-    """#17 Удалённый реаниматор qB: сначала мягко (до 20с), при необходимости принудительно."""
+    """Удалённый реаниматор qB: мягкий или быстрый перезапуск."""
     if os.name != 'nt':
         return False, "Локальное управление процессом доступно только на Windows"
     write_log('system', f"Реаниматор qBittorrent (force={force_kill})")
     if is_qb_running():
-        closed = close_qbittorrent(max_wait_sec=20.0)
+        wait_sec = 2.0 if force_kill else 20.0
+        closed = close_qbittorrent(max_wait_sec=wait_sec)
         if not closed and not force_kill:
             return False, "qBittorrent не завершился мягко за 20с. Используйте принудительный перезапуск."
     time.sleep(1.5)

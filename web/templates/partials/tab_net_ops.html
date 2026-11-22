@@ -1,7 +1,7 @@
-<!-- Панель Фазы 3 + Фазы 5: Сеть, Реаниматор, Вебхуки, Радар, Undo, SMART и RSS + Pre-Flight модал -->
+<!-- Панель сети, реаниматора, вебхуков, радара, Undo, SMART и RSS + Pre-Flight модал -->
 <div class="card admin-only" style="grid-column: 1 / -1;">
     <div class="row-between mb-8">
-        <div class="card-title" style="margin:0;">🌐 СЕТЬ, ДИАГНОСТИКА И РЕАНИМАТОР qB (#9, #46, #17)</div>
+        <div class="card-title" style="margin:0;">🌐 СЕТЬ, ДИАГНОСТИКА И РЕАНИМАТОР qB</div>
         <div class="row-gap" style="flex-wrap:wrap;">
             <button class="btn btn-secondary btn-xs" onclick="runBottleneckCheck()">🐢 Почему тормозит?</button>
             <button class="btn btn-secondary btn-xs" onclick="runTrackerPing()">📡 Пинг трекеров</button>
@@ -14,7 +14,7 @@
 </div>
 
 <div class="card admin-only">
-    <div class="card-title">🛡️ СТРАЖ ИНТЕРФЕЙСА (#23) И РАДАР (#48)</div>
+    <div class="card-title">🛡️ СТРАЖ ИНТЕРФЕЙСА И РАДАР ОБНОВЛЕНИЙ</div>
     <label class="row-gap pointer lbl-xs mb-8"><input type="checkbox" id="iface-guard-en"> Следить за интерфейсом qB</label>
     <div class="row-gap mb-8">
         <input id="iface-guard-name" class="form-control grow-1" placeholder="Эталонный интерфейс (напр. tun0)">
@@ -29,7 +29,7 @@
 </div>
 
 <div class="card admin-only">
-    <div class="card-title">🔗 ВЕБХУКИ (#41) И АНТИ-СПАМ (#49)</div>
+    <div class="card-title">🔗 ВЕБХУКИ И АНТИ-СПАМ</div>
     <label class="row-gap pointer lbl-xs mb-8"><input type="checkbox" id="webhooks-bundler" checked> Группировать алерты (окно 45с)</label>
     <textarea id="webhooks-urls" class="form-control mb-8" rows="2" placeholder="URL вебхуков (по одному на строку)"></textarea>
     <div class="row-gap">
@@ -40,7 +40,7 @@
 
 <div class="card admin-only">
     <div class="row-between mb-8">
-        <div class="card-title" style="margin:0;">💽 ОХРАНА HDD: SMART И РЕЧЕКИ (#30)</div>
+        <div class="card-title" style="margin:0;">💽 ОХРАНА HDD: SMART И РЕЧЕКИ</div>
         <button class="btn btn-secondary btn-xs" onclick="loadSmartStatus()">🔎 Проверить</button>
     </div>
     <div id="smart-hdd-box" style="font-size:12px;"><span class="muted-text">Нажмите «Проверить»</span></div>
@@ -48,7 +48,7 @@
 
 <div class="card admin-only">
     <div class="row-between mb-8">
-        <div class="card-title" style="margin:0;">📰 УМНЫЙ RSS-ФИЛЬТР ДУБЛЕЙ (#34)</div>
+        <div class="card-title" style="margin:0;">📰 УМНЫЙ RSS-ФИЛЬТР ДУБЛЕЙ</div>
         <button class="btn btn-secondary btn-xs" onclick="checkRssDuplicates()">🔎 Проверить RSS</button>
     </div>
     <div id="rss-dedup-box" class="scroll-box" style="max-height:150px; font-size:12px;"><span class="muted-text">Чтение лент через API qB</span></div>
@@ -56,13 +56,13 @@
 
 <div class="card admin-only" style="grid-column: 1 / -1;">
     <div class="row-between mb-8">
-        <div class="card-title" style="margin:0;">↩️ МАШИНА ОТКАТА МАССОВЫХ ОПЕРАЦИЙ (UNDO STACK #54)</div>
+        <div class="card-title" style="margin:0;">↩️ МАШИНА ОТКАТА МАССОВЫХ ОПЕРАЦИЙ (UNDO STACK)</div>
         <button class="btn btn-secondary btn-xs" onclick="loadUndoStack()">🔄</button>
     </div>
     <div id="undo-stack-list" class="col-gap" style="font-size:12px;"><span class="muted-text">Загрузка...</span></div>
 </div>
 
-<!-- Модальное окно Pre-Flight Инбокса (#5) -->
+<!-- Модальное окно Pre-Flight Инбокса -->
 <div id="preflight-modal" class="modal-backdrop">
     <div class="modal" style="max-width:520px;">
         <div class="card-title">📥 PRE-FLIGHT ИНБОКС (ДОБАВЛЕНИЕ РАЗДАЧИ)</div>

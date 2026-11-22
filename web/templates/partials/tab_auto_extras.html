@@ -1,7 +1,7 @@
-<!-- Панель Фазы 3 в Автопилоте: #26, #27, #52, #56, #29 -->
+<!-- Панель дирижёра, очередей, пресетов и авто-роутера -->
 <div class="card">
     <div class="row-between mb-8">
-        <div class="card-title" style="margin:0;">🎼 СУТОЧНЫЙ ДИРИЖЁР (#26), ОЧЕРЕДИ (#52, #56) И ПРЕСЕТЫ (#29)</div>
+        <div class="card-title" style="margin:0;">🎼 СУТОЧНЫЙ ДИРИЖЁР, ОЧЕРЕДИ И ПРЕСЕТЫ</div>
         <div class="row-gap">
             <button class="btn btn-secondary btn-xs" onclick="overrideConductor()">⚡ Переопределить на 1ч</button>
             <button class="btn btn-xs" onclick="saveConductorAndExtras()">💾 Сохранить</button>
@@ -24,7 +24,7 @@
 </div>
 
 <div class="card">
-    <div class="card-title">🧭 АВТО-РОУТЕР ВХОДЯЩИХ (1 РАЗ НА НОВЫЙ ХЭШ #27)</div>
+    <div class="card-title">🧭 АВТО-РОУТЕР ВХОДЯЩИХ (1 РАЗ НА НОВЫЙ ХЭШ)</div>
     <div class="row-wrap mb-8" style="gap:6px;">
         <select id="router-field" class="form-control" style="width:130px;"><option value="tracker">Трекер</option><option value="ext">Имя/расш.</option><option value="min_gib">Размер &gt;= GiB</option></select>
         <input id="router-pattern" class="form-control grow-1" placeholder="Паттерн (напр. rutracker или .mkv)">

@@ -22,6 +22,8 @@ from core.torrent_targets import list_targets
 from core.health_score import enrich_live_metrics
 from core.tracker_inspector import inspect_tracker_errors
 from core.app_state_db import app_state_db
+from core.tracker_replacer import push_undo_record
+from core.lineage_notes_events import record_torrent_event, push_activity
 from web.security import HASH_RE
 
 torrents_bp = Blueprint('torrents_bp', __name__)
@@ -169,11 +171,29 @@ def api_torrent_action():
         return jsonify({'success': False, 'error': 'qBittorrent недоступен'}), 400
 
     joined = '|'.join(hashes)
-    if action == 'addTags':
-        return jsonify({'success': add_torrent_tags(ip, port, joined, tag)})
-    if action == 'removeTags':
-        return jsonify({'success': remove_torrent_tags(ip, port, joined, tag)})
-    return jsonify({'success': send_qb_command(ip, port, action, joined)})
+    if action in ('addTags', 'removeTags'):
+        ok = add_torrent_tags(ip, port, joined, tag) if action == 'addTags' else remove_torrent_tags(ip, port, joined, tag)
+        if ok:
+            lbl = f"{'+Тег' if action == 'addTags' else '-Тег'} '{tag}' ({len(hashes)} шт.)"
+            push_undo_record('tags_bulk', lbl, {'action': action, 'hashes': joined, 'tag': tag})
+            if len(hashes) == 1:
+                record_torrent_event(hashes[0], 'tag', lbl)
+            else:
+                push_activity('tag', lbl)
+        return jsonify({'success': ok})
+
+    ok = send_qb_command(ip, port, action, joined)
+    if ok:
+        if action in ('stop', 'start'):
+            lbl = f"{'Пауза' if action == 'stop' else 'Пуск'} ({len(hashes)} шт.)"
+            if len(hashes) > 1:
+                push_undo_record('pause_start_bulk', lbl, {'action': action, 'hashes': joined})
+                push_activity('control', lbl)
+            else:
+                record_torrent_event(hashes[0], 'control', 'Поставлено на паузу' if action == 'stop' else 'Возобновлено')
+        elif action == 'setForceStart' and len(hashes) == 1:
+            record_torrent_event(hashes[0], 'control', 'Включён форсированный старт')
+    return jsonify({'success': ok})
 
 
 @torrents_bp.route('/api/torrents/delete', methods=['POST'])
@@ -193,6 +213,7 @@ def api_torrents_delete():
     if ok:
         force_clear_cache()
         app_state_db.add_audit_event('system', 'Удаление торрента', f'count={len(hashes)}, files={delete_files}', actor='admin')
+        push_activity('delete', f"Удалено раздач: {len(hashes)} (файлы={delete_files})", t_hash=hashes[0] if len(hashes) == 1 else '')
     return jsonify({'success': ok})
 
 
@@ -207,6 +228,8 @@ def api_torrents_action_all():
         return jsonify({'success': False, 'error': 'qBittorrent не запущен'}), 400
     ok = send_qb_command(ip, port, action, 'all')
     msg = "Все раздачи поставлены на паузу" if action == 'stop' else "Все раздачи возобновлены"
+    if ok:
+        push_activity('control', msg)
     return jsonify({'success': ok, 'message': msg})
 
 

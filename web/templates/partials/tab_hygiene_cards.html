@@ -1,7 +1,7 @@
-<!-- Карточки Фазы 2: Гигиена, Архивариус и Массовые операции -->
+<!-- Карточки гигиены, архивариуса и массовых операций -->
 <div class="card admin-only" style="grid-column: 1 / -1;">
     <div class="row-between mb-8">
-        <div class="card-title" style="margin:0;">🩺 ГИГИЕНА ТРЕКЕРОВ И ТУНЕЯДЦЕВ (#7, #37, #4)</div>
+        <div class="card-title" style="margin:0;">🩺 ГИГИЕНА ТРЕКЕРОВ И ТУНЕЯДЦЕВ</div>
         <div class="row-gap" style="flex-wrap:wrap;">
             <button class="btn btn-secondary btn-xs" onclick="runHygieneTorrentScan('quarantine')">☣️ Карантин (72ч)</button>
             <button class="btn btn-secondary btn-xs" onclick="runHygieneTorrentScan('incompletes')">🪦 Недокачки</button>
@@ -20,7 +20,7 @@
 
 <div class="card admin-only" style="grid-column: 1 / -1;">
     <div class="row-between mb-8">
-        <div class="card-title" style="margin:0;">🧽 САНИТАР BT_BACKUP И ПЫЛЕСОС ВНУТРИ ПАПОК (#31, #51)</div>
+        <div class="card-title" style="margin:0;">🧽 САНИТАР BT_BACKUP И ПЫЛЕСОС ВНУТРИ ПАПОК</div>
         <div class="row-gap" style="flex-wrap:wrap;">
             <button class="btn btn-secondary btn-xs" onclick="runHygienePathScan('bt_backup')">🧬 Санитар BT_backup</button>
             <button class="btn btn-secondary btn-xs" onclick="runHygienePathScan('inner_junk')">🧹 Пылесос папок</button>
@@ -37,22 +37,22 @@
 </div>
 
 <div class="card admin-only" style="grid-column: 1 / -1;">
-    <div class="card-title">🚚 МАССОВЫЕ ОПЕРАЦИИ (#21 Трекеры, #24 Переезд, #38 Remap .fastresume)</div>
+    <div class="card-title">🚚 МАССОВЫЕ ОПЕРАЦИИ (ТРЕКЕРЫ, ПЕРЕЕЗД, REMAP .FASTRESUME)</div>
     <div class="grid-3 mb-10" style="gap:10px;">
         <div style="background:var(--bg-input); padding:8px; border-radius:6px;">
-            <div class="lbl-xs mb-8"><b>#21 Смена трекеров / пасскеев</b></div>
+            <div class="lbl-xs mb-8"><b>Смена трекеров / пасскеев</b></div>
             <input id="batch-tr-find" class="form-control mb-8" placeholder="Найти (домен/пасскей)">
             <input id="batch-tr-rep" class="form-control mb-8" placeholder="Заменить на">
             <div class="row-gap"><button class="btn btn-secondary btn-xs" onclick="previewBatchTrackers()">Dry-Run</button><button class="btn btn-xs" onclick="applyBatchTrackers()">Применить</button></div>
         </div>
         <div style="background:var(--bg-input); padding:8px; border-radius:6px;">
-            <div class="lbl-xs mb-8"><b>#24 Пакетный переезд (API)</b></div>
+            <div class="lbl-xs mb-8"><b>Пакетный переезд (API)</b></div>
             <input id="batch-rel-old" class="form-control mb-8" placeholder="Старый префикс (D:\Torrents)">
             <input id="batch-rel-new" class="form-control mb-8" placeholder="Новый префикс (E:\Torrents)">
             <div class="row-gap"><button class="btn btn-secondary btn-xs" onclick="previewBatchRelocate()">Проверка</button><button class="btn btn-xs" onclick="startBatchRelocate()">Старт</button></div>
         </div>
         <div style="background:var(--bg-input); padding:8px; border-radius:6px;">
-            <div class="lbl-xs mb-8"><b>#38 Remap .fastresume (qB стоп)</b></div>
+            <div class="lbl-xs mb-8"><b>Remap .fastresume (qB стоп)</b></div>
             <input id="batch-rem-old" class="form-control mb-8" placeholder="Старая буква/путь">
             <input id="batch-rem-new" class="form-control mb-8" placeholder="Новая буква/путь">
             <div class="row-gap"><button class="btn btn-secondary btn-xs" onclick="previewBatchRemap()">Dry-Run</button><button class="btn btn-danger btn-xs" onclick="applyBatchRemap()">Переписать</button></div>
@@ -63,7 +63,7 @@
 
 <div class="card" style="grid-column: 1 / -1;">
     <div class="row-between mb-8">
-        <div class="card-title" style="margin:0;">🗄️ АРХИВАРИУС .TORRENT-ФАЙЛОВ (#32)</div>
+        <div class="card-title" style="margin:0;">🗄️ АРХИВАРИУС .TORRENT-ФАЙЛОВ</div>
         <div class="row-gap" style="flex-wrap:wrap;">
             <input id="archive-search" class="form-control" style="width:150px;" placeholder="Поиск (имя/UID)..." oninput="loadArchivedTorrents()">
             <input id="archive-tag" class="form-control" style="width:110px;" placeholder="Тег...">

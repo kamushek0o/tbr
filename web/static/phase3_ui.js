@@ -123,7 +123,10 @@ async function loadNetOpsTab() {
         if (ifRes.ok) {
             const d = await ifRes.json();
             document.getElementById('iface-guard-en').checked = Boolean(d.enabled);
-            document.getElementById('iface-guard-name').value = d.expected_cfg || d.current || '';
+            const ifInp = document.getElementById('iface-guard-name');
+            ifInp.value = d.expected_cfg || '';
+            const curLbl = d.current_name || d.current || 'Any';
+            ifInp.placeholder = `Эталонный интерфейс (сейчас в qB: ${curLbl})`;
             document.getElementById('iface-guard-panic').checked = Boolean(d.panic_on_drop);
         }
         if (whRes.ok) {

@@ -2,7 +2,6 @@
 import os
 import re
 import json
-import socket
 import threading
 import urllib.request
 import urllib.parse
@@ -62,12 +61,14 @@ def _qb_config_candidates():
     ]
 
 
-def _can_tcp_connect(ip, port, timeout=0.6):
-    try:
-        with socket.create_connection((_norm_ip(ip), int(port)), timeout=timeout):
-            return True
-    except Exception:
-        return False
+def _parse_qb_conf_file(content):
+    m_port = re.search(r'(?im)^WebUI\\Port=(\d+)\s*$', content) or re.search(r'(?im)^Port=(\d+)\s*$', content)
+    m_addr = re.search(r'(?im)^WebUI\\Address=([^\s\r\n]+)\s*$', content) or re.search(r'(?im)^Address=([^\s\r\n]+)\s*$', content)
+    port = int(m_port.group(1)) if m_port else None
+    addr = m_addr.group(1).strip() if m_addr else ''
+    if addr in ('*', '0.0.0.0'):
+        addr = ''
+    return addr, port
 
 
 def detect_qbittorrent_port(config=None):
@@ -93,29 +94,20 @@ def detect_qbittorrent_port(config=None):
             continue
         try:
             with open(config_path, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read()
-            m_port = re.search(r'(?im)^(?:WebUI\\Port|Port)=(\d+)\s*$', content)
-            if m_port:
-                port_from_conf = int(m_port.group(1))
-            m_addr = re.search(r'(?im)^(?:WebUI\\Address|Address)=([^\s\r\n]+)\s*$', content)
-            if m_addr:
-                addr = m_addr.group(1).strip()
-                if addr not in ('*', '0.0.0.0', ''):
-                    address_from_conf = addr
+                address_from_conf, port_from_conf = _parse_qb_conf_file(f.read())
             if port_from_conf or address_from_conf:
                 break
         except Exception:
             pass
 
     if cfg_addr or cfg_port:
-        final_ip = cfg_addr or address_from_conf or '127.0.0.1'
-        final_port = cfg_port or port_from_conf or 8080
-        return final_ip, final_port
+        return (cfg_addr or address_from_conf or '127.0.0.1'), (cfg_port or port_from_conf or 8080)
 
     if port_from_conf:
         cand_ip = address_from_conf or '127.0.0.1'
-        if cand_ip != '127.0.0.1' and not _can_tcp_connect(cand_ip, port_from_conf) and _can_tcp_connect('127.0.0.1', port_from_conf):
-            return '127.0.0.1', port_from_conf
+        if cand_ip != '127.0.0.1' and not check_qb_api_alive(cand_ip, port_from_conf, timeout=0.6):
+            if check_qb_api_alive('127.0.0.1', port_from_conf, timeout=0.6):
+                return '127.0.0.1', port_from_conf
         return cand_ip, port_from_conf
 
     for port in (8080, 8081, 1488, 8888):
@@ -149,7 +141,6 @@ def _open_qb_raw(qb_ip, qb_port, path, timeout=2.0):
 
 
 def check_qb_api_alive(qb_ip, qb_port, timeout=1.5):
-    """Пингует API qBittorrent (отличает 0 раздач от реально упавшего клиента)."""
     if not qb_ip or not qb_port:
         return False
     code, _ = _open_qb_raw(qb_ip, qb_port, "app/version", timeout=timeout)
@@ -157,7 +148,6 @@ def check_qb_api_alive(qb_ip, qb_port, timeout=1.5):
 
 
 def get_qb_version(qb_ip, qb_port, timeout=2.0):
-    """Возвращает строку версии qBittorrent (app/version отдаёт plain text, не JSON)."""
     if not qb_ip or not qb_port:
         return None
     code, body = _open_qb_raw(qb_ip, qb_port, "app/version", timeout=timeout)
@@ -176,9 +166,9 @@ def _get_qb_json(qb_ip, qb_port, path, timeout=1.8):
     return None
 
 
-def _post_qb_api(qb_ip, qb_port, path, payload=None):
+def _post_qb_api_code(qb_ip, qb_port, path, payload=None):
     if not qb_ip or not qb_port:
-        return False
+        return 0
     ip = _norm_ip(qb_ip)
     base_url = f"http://{ip}:{qb_port}"
     body = urllib.parse.urlencode(payload or {}).encode('utf-8')
@@ -190,17 +180,24 @@ def _post_qb_api(qb_ip, qb_port, path, payload=None):
     )
     try:
         with opener.open(req, timeout=3) as resp:
-            return resp.getcode() == 200
+            return resp.getcode()
     except urllib.error.HTTPError as e:
         if e.code in (401, 403) and qb_login(ip, qb_port):
             try:
                 with opener.open(req, timeout=3) as resp2:
-                    return resp2.getcode() == 200
+                    return resp2.getcode()
+            except urllib.error.HTTPError as e2:
+                return e2.code
             except Exception:
-                pass
-        return False
+                return 0
+        return e.code
     except Exception:
-        return False
+        return 0
+
+
+def _post_qb_api(qb_ip, qb_port, path, payload=None):
+    code = _post_qb_api_code(qb_ip, qb_port, path, payload)
+    return 200 <= code < 300
 
 
 def get_live_torrent_info(qb_ip, qb_port):
@@ -304,6 +301,7 @@ def add_torrent_url(qb_ip, qb_port, urls, savepath='', tags='', paused=False):
         payload['tags'] = tags
     if paused:
         payload['paused'] = 'true'
+        payload['stopped'] = 'true'
     return _post_qb_api(qb_ip, qb_port, 'torrents/add', payload)
 
 
@@ -322,4 +320,10 @@ def send_qb_command(qb_ip, qb_port, action, hash_val):
     payload = {'hashes': hash_val}
     if action == 'setForceStart':
         payload['value'] = 'true'
-    return _post_qb_api(qb_ip, qb_port, f'torrents/{action}', payload)
+    code = _post_qb_api_code(qb_ip, qb_port, f'torrents/{action}', payload)
+    if 200 <= code < 300:
+        return True
+    if code == 404 and action in ('stop', 'start'):
+        legacy = 'pause' if action == 'stop' else 'resume'
+        return _post_qb_api(qb_ip, qb_port, f'torrents/{legacy}', payload)
+    return False
