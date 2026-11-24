@@ -4,8 +4,14 @@ import time
 import sqlite3
 import datetime
 import threading
+from contextlib import contextmanager
 from utils.helpers import LOG_FOLDER, write_log, write_error_log
 from core.history_migrations import migrate_json_if_needed, migrate_old_csvs_if_needed
+from core.history_queries import (
+    query_snapshot_range_info, query_hist_delta, query_torrent_history_rows,
+    query_torrent_window_bounds, query_available_snapshot_days,
+    query_snapshots_by_day_paginated, query_snapshots_by_day_all
+)
 
 AUTO_FOLDER = os.path.join(LOG_FOLDER, "auto_hourly")
 MANUAL_FOLDER = os.path.join(LOG_FOLDER, "manual_exports")
@@ -19,25 +25,33 @@ class HistoryDB:
         self.auto_folder = auto_folder
         self.db_file = os.path.join(self.auto_folder, "summary_history.db")
         self.old_json_file = os.path.join(self.auto_folder, "summary_history.json")
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
         self._init_db()
         with self._lock:
             migrate_json_if_needed(self._get_connection, self.old_json_file)
             migrate_old_csvs_if_needed(self._get_connection, self.auto_folder)
 
+    @contextmanager
     def _get_connection(self):
         conn = sqlite3.connect(self.db_file, timeout=30.0)
-        conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA busy_timeout = 30000;")
         conn.execute("PRAGMA foreign_keys=ON;")
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def _init_db(self):
         with self._lock:
             try:
                 with self._get_connection() as conn:
+                    conn.execute("PRAGMA journal_mode=WAL;")
                     conn.executescript("""
                         CREATE TABLE IF NOT EXISTS snapshots (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,7 +82,6 @@ class HistoryDB:
                         CREATE INDEX IF NOT EXISTS idx_tor_hash ON torrent_snapshots(hash_id);
                         CREATE INDEX IF NOT EXISTS idx_tor_hash_snap ON torrent_snapshots(hash_id, snapshot_id, uploaded);
                     """)
-                    conn.commit()
             except Exception as e:
                 write_error_log("Инициализация SQLite summary_history.db", e)
 
@@ -80,7 +93,6 @@ class HistoryDB:
                         "UPDATE snapshots SET ignore_in_stats = ? WHERE id = ?",
                         (1 if ignored else 0, int(snap_id))
                     )
-                    conn.commit()
                     return cur.rowcount > 0
             except Exception as e:
                 write_error_log("set_snapshot_ignored", e)
@@ -122,7 +134,6 @@ class HistoryDB:
                     ]
                     if tor_rows:
                         cur.executemany("INSERT INTO torrent_snapshots (snapshot_id, hash_id, uploaded) VALUES (?, ?, ?)", tor_rows)
-                    conn.commit()
                     return True
             except Exception as e:
                 write_error_log("Ошибка записи record_snapshot в SQLite", e)
@@ -160,7 +171,6 @@ class HistoryDB:
                             chunk = delete_ids[i:i + 500]
                             placeholders = ','.join('?' for _ in chunk)
                             cur.execute(f"DELETE FROM snapshots WHERE id IN ({placeholders})", chunk)
-                        conn.commit()
                         write_log("summary", f"Даунсэмплинг SQLite: сжато старых снимков: {len(delete_ids)}")
                     return len(delete_ids)
             except Exception as e:
@@ -245,80 +255,22 @@ class HistoryDB:
         return totals
 
     def get_snapshot_range_info(self):
-        with self._lock:
-            with self._get_connection() as conn:
-                return conn.execute("SELECT COUNT(*), MIN(timestamp) FROM snapshots WHERE COALESCE(ignore_in_stats, 0) = 0").fetchone()
+        return query_snapshot_range_info(self)
 
     def get_hist_delta(self, t_start, t_end, is_seedbox, t_hash_lower=''):
-        with self._lock:
-            with self._get_connection() as conn:
-                cur = conn.cursor()
-                cur.execute("SELECT id, total_uploaded FROM snapshots WHERE COALESCE(ignore_in_stats, 0) = 0 ORDER BY ABS(timestamp - ?) ASC LIMIT 1", (t_start,))
-                r1 = cur.fetchone()
-                cur.execute("SELECT id, total_uploaded FROM snapshots WHERE COALESCE(ignore_in_stats, 0) = 0 ORDER BY ABS(timestamp - ?) ASC LIMIT 1", (t_end,))
-                r2 = cur.fetchone()
-                if not r1 or not r2:
-                    return 0
-                if is_seedbox:
-                    return max(0, r2['total_uploaded'] - r1['total_uploaded'])
-                u1_row = cur.execute("SELECT uploaded FROM torrent_snapshots WHERE snapshot_id = ? AND hash_id = ? LIMIT 1", (r1['id'], t_hash_lower)).fetchone()
-                u2_row = cur.execute("SELECT uploaded FROM torrent_snapshots WHERE snapshot_id = ? AND hash_id = ? LIMIT 1", (r2['id'], t_hash_lower)).fetchone()
-                return max(0, (u2_row['uploaded'] if u2_row else 0) - (u1_row['uploaded'] if u1_row else 0))
+        return query_hist_delta(self, t_start, t_end, is_seedbox, t_hash_lower)
 
     def get_torrent_history_rows(self, t_hash, limit_hours=36):
-        t_hash_lower = (t_hash or '').lower()
-        with self._lock:
-            try:
-                with self._get_connection() as conn:
-                    cur = conn.cursor()
-                    if t_hash == 'all':
-                        cur.execute("SELECT datetime, timestamp, total_uploaded AS uploaded FROM snapshots WHERE COALESCE(ignore_in_stats, 0) = 0 ORDER BY timestamp DESC LIMIT ?", (limit_hours,))
-                    else:
-                        cur.execute("SELECT s.datetime, s.timestamp, ts.uploaded FROM snapshots s JOIN torrent_snapshots ts ON s.id = ts.snapshot_id WHERE COALESCE(s.ignore_in_stats, 0) = 0 AND ts.hash_id = ? ORDER BY s.timestamp DESC LIMIT ?", (t_hash_lower, limit_hours))
-                    return [dict(r) for r in cur.fetchall()]
-            except Exception as e:
-                write_error_log("Ошибка get_torrent_history_rows из SQLite", e)
-                return []
+        return query_torrent_history_rows(self, t_hash, limit_hours=limit_hours)
 
     def get_torrent_window_bounds(self, t_hash, since_ts, until_ts):
-        t_hash_lower = (t_hash or '').lower()
-        with self._lock:
-            try:
-                with self._get_connection() as conn:
-                    rows = conn.execute("SELECT s.timestamp, ts.uploaded FROM snapshots s JOIN torrent_snapshots ts ON s.id = ts.snapshot_id WHERE COALESCE(s.ignore_in_stats, 0) = 0 AND ts.hash_id = ? AND s.timestamp BETWEEN ? AND ? ORDER BY s.timestamp ASC", (t_hash_lower, since_ts, until_ts)).fetchall()
-                    if not rows:
-                        return None, None, 0
-                    return (rows[0]['timestamp'], rows[0]['uploaded']), (rows[-1]['timestamp'], rows[-1]['uploaded']), len(rows)
-            except Exception:
-                return None, None, 0
+        return query_torrent_window_bounds(self, t_hash, since_ts, until_ts)
 
     def get_available_snapshot_days(self, limit=90):
-        with self._lock:
-            try:
-                with self._get_connection() as conn:
-                    rows = conn.execute("SELECT DISTINCT substr(datetime, 1, 10) AS day FROM snapshots WHERE length(datetime) >= 10 ORDER BY day DESC LIMIT ?", (int(limit),)).fetchall()
-                    return [r['day'] for r in rows if r['day']]
-            except Exception:
-                return []
+        return query_available_snapshot_days(self, limit=limit)
 
     def get_snapshots_by_day_paginated(self, start_ts, end_ts, page=1, per_page=15):
-        page, per_page = max(1, int(page)), max(1, min(100, int(per_page)))
-        offset = (page - 1) * per_page
-        with self._lock:
-            try:
-                with self._get_connection() as conn:
-                    total = conn.execute("SELECT COUNT(*) FROM snapshots WHERE timestamp BETWEEN ? AND ?", (start_ts, end_ts)).fetchone()[0]
-                    rows = conn.execute("SELECT id, timestamp, datetime, total_uploaded, total_size, count, COALESCE(ignore_in_stats, 0) AS ignore_in_stats FROM snapshots WHERE timestamp BETWEEN ? AND ? ORDER BY timestamp DESC LIMIT ? OFFSET ?", (start_ts, end_ts, per_page, offset)).fetchall()
-                    return {'items': [dict(r) for r in rows], 'total': total, 'page': page, 'per_page': per_page, 'total_pages': max(1, (total + per_page - 1) // per_page)}
-            except Exception as e:
-                write_error_log("Ошибка get_snapshots_by_day_paginated", e)
-                return {'items': [], 'total': 0, 'page': 1, 'per_page': per_page, 'total_pages': 1}
+        return query_snapshots_by_day_paginated(self, start_ts, end_ts, page=page, per_page=per_page)
 
     def get_snapshots_by_day_all(self, start_ts, end_ts):
-        with self._lock:
-            try:
-                with self._get_connection() as conn:
-                    rows = conn.execute("SELECT datetime, total_uploaded, total_size, count FROM snapshots WHERE COALESCE(ignore_in_stats, 0) = 0 AND timestamp BETWEEN ? AND ? ORDER BY timestamp ASC", (start_ts, end_ts)).fetchall()
-                    return [dict(r) for r in rows]
-            except Exception:
-                return []
+        return query_snapshots_by_day_all(self, start_ts, end_ts)

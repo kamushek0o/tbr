@@ -3,6 +3,7 @@ import os
 import time
 import sqlite3
 import threading
+from contextlib import contextmanager
 from utils.config import cfg
 from utils.helpers import APP_DATA_DIR, format_file_size, write_log, write_error_log
 from core.qb_api import (
@@ -10,7 +11,6 @@ from core.qb_api import (
     send_qb_command, add_torrent_tags, remove_torrent_tags
 )
 from core.torrent_parser import get_all_torrents
-from core.summary_tracker import summary_tracker
 from core.notifiers import notify_all, test_notifications
 from core.system_alerts import system_alerts
 from core.app_state_db import app_state_db
@@ -25,40 +25,39 @@ from core.achievements import evaluate_achievements
 from core.autopilot_extras import tick_autopilot_extras
 from core.hdd_smart_queue import tick_recheck_queue
 from core.lineage_notes_events import record_torrent_event
-
-VALID_TIME_MODES = ('seeding_time', 'time_active')
-VALID_SPEED_OPS = ('', '>=', '<')
-
-
-def format_duration_ru(seconds):
-    sec = max(0, int(seconds or 0))
-    if sec >= 86400:
-        return f"{sec // 86400} д {(sec % 86400) // 3600} ч"
-    if sec >= 3600:
-        return f"{sec // 3600} ч"
-    return f"{sec // 60} мин"
+from core.automation_eval import (  # noqa: F401
+    VALID_TIME_MODES, VALID_SPEED_OPS, format_duration_ru, evaluate_rule_match
+)
 
 
 class AutomationEngine:
     def __init__(self):
         self.db_file = os.path.join(APP_DATA_DIR, "automation.db")
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._running = False
         self._thread = None
         self._init_db()
 
+    @contextmanager
     def _get_conn(self):
         conn = sqlite3.connect(self.db_file, timeout=30.0)
-        conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA busy_timeout = 30000;")
         conn.execute("PRAGMA foreign_keys=ON;")
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def _init_db(self):
         with self._lock:
             try:
                 with self._get_conn() as conn:
+                    conn.execute("PRAGMA journal_mode=WAL;")
                     conn.executescript("""
                         CREATE TABLE IF NOT EXISTS rules (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,7 +88,6 @@ class AutomationEngine:
                     ]:
                         if col_name not in cols:
                             cur.execute(f"ALTER TABLE rules ADD COLUMN {col_name} {col_def}")
-                    conn.commit()
             except Exception as e:
                 write_error_log("Инициализация automation.db", e)
 
@@ -118,7 +116,6 @@ class AutomationEngine:
                          s_op, float(speed_bytes), max(1, int(speed_window_min)),
                          1 if action_pause else 0, action_tag.strip(), action_remove_tag.strip(), 1 if notify else 0)
                     )
-                    conn.commit()
                     return cur.lastrowid
             except Exception as e:
                 write_error_log("Ошибка add_rule", e)
@@ -143,7 +140,6 @@ class AutomationEngine:
                     )
                     updated = cur.rowcount > 0
                     cur.execute("DELETE FROM notified_events WHERE rule_id = ?", (int(rule_id),))
-                    conn.commit()
                     return updated
             except Exception as e:
                 write_error_log("Ошибка update_rule", e)
@@ -154,7 +150,6 @@ class AutomationEngine:
             try:
                 with self._get_conn() as conn:
                     conn.execute("UPDATE rules SET enabled = 1 - enabled WHERE id = ?", (int(rule_id),))
-                    conn.commit()
                     return True
             except Exception:
                 return False
@@ -164,7 +159,6 @@ class AutomationEngine:
             try:
                 with self._get_conn() as conn:
                     conn.execute("DELETE FROM rules WHERE id = ?", (int(rule_id),))
-                    conn.commit()
                     return True
             except Exception:
                 return False
@@ -182,57 +176,8 @@ class AutomationEngine:
             try:
                 with self._get_conn() as conn:
                     conn.execute("INSERT OR IGNORE INTO notified_events (rule_id, hash_id, triggered_at) VALUES (?, ?, ?)", (rule_id, t_hash, time.time()))
-                    conn.commit()
             except Exception:
                 pass
-
-    def _evaluate_rule_match(self, r, t_hash, info, now_ts, ignore_history=False):
-        t_mode = r.get('time_mode') if r.get('time_mode') in VALID_TIME_MODES else 'seeding_time'
-        min_r, min_d = float(r.get('min_ratio', 0) or 0), float(r.get('min_seed_days', 0) or 0)
-        min_up = int(r.get('min_uploaded_bytes', 0) or 0)
-        s_op, s_bytes = r.get('speed_op', '') or '', float(r.get('speed_bytes', 0) or 0)
-        w_sec = max(60, int(r.get('speed_window_min', 60) or 60) * 60)
-        use_speed = (s_op in ('>=', '<') and s_bytes > 0)
-        if min_r <= 0 and min_d <= 0 and min_up <= 0 and not use_speed:
-            return None
-
-        ratio, uploaded = float(info.get('ratio', 0) or 0), int(info.get('uploaded', 0) or 0)
-        time_sec = float(info.get(t_mode, 0) or 0)
-        if (min_r > 0 and ratio < min_r) or (min_d > 0 and (time_sec / 86400.0) < min_d) or (min_up > 0 and uploaded < min_up):
-            return None
-
-        v_avg = None
-        if use_speed:
-            first, last, cnt = summary_tracker.db.get_torrent_window_bounds(t_hash, now_ts - w_sec, now_ts)
-            if cnt < 2 or not first or not last or (last[0] - first[0]) < (0.5 * w_sec):
-                return None
-            v_avg = max(0.0, (last[1] - first[1]) / (last[0] - first[0]))
-            if (s_op == '>=' and v_avg < s_bytes) or (s_op == '<' and v_avg >= s_bytes):
-                return None
-
-        if not ignore_history and self._is_triggered(r['id'], t_hash):
-            return None
-
-        cur_tags = {tg.strip().lower() for tg in str(info.get('tags', '') or '').split(',') if tg.strip()}
-        add_tag, rem_tag = str(r.get('action_tag', '') or '').strip(), str(r.get('action_remove_tag', '') or '').strip()
-        want_pause = bool(r.get('action_pause'))
-        planned = []
-        if want_pause:
-            planned.append("⏸️ Пауза")
-        if add_tag and add_tag.lower() not in cur_tags:
-            planned.append(f"🏷️ +Тег: {add_tag}")
-        if rem_tag and rem_tag.lower() in cur_tags:
-            planned.append(f"✂️ -Тег: {rem_tag}")
-
-        return {
-            'rule_id': r['id'], 'rule_name': r['name'], 'hash': t_hash, 'name': info.get('name', t_hash),
-            'ratio': ratio, 'uploaded': uploaded, 'uploaded_fmt': format_file_size(uploaded),
-            'time_mode': t_mode, 'time_sec': time_sec, 'dur_fmt': format_duration_ru(time_sec),
-            'v_avg': v_avg, 'want_pause': want_pause,
-            'add_tag': add_tag if (add_tag and add_tag.lower() not in cur_tags) else '',
-            'rem_tag': rem_tag if (rem_tag and rem_tag.lower() in cur_tags) else '',
-            'planned': planned, 'already_triggered': self._is_triggered(r['id'], t_hash)
-        }
 
     def dry_run(self, rule_id=None):
         ip, port = detect_qbittorrent_port(cfg.config)
@@ -244,7 +189,7 @@ class AutomationEngine:
         now_ts, matches = time.time(), []
         for r in rules:
             for t_hash, info in live.items():
-                m = self._evaluate_rule_match(r, t_hash, info, now_ts, ignore_history=True)
+                m = evaluate_rule_match(self, r, t_hash, info, now_ts, ignore_history=True)
                 if m:
                     matches.append(m)
         return {'success': True, 'matches': matches, 'rules_checked': len(rules), 'torrents_scanned': len(live)}
@@ -290,7 +235,7 @@ class AutomationEngine:
         triggered_count = 0
         for r in rules:
             for t_hash, info in live.items():
-                m = self._evaluate_rule_match(r, t_hash, info, now_ts, ignore_history=False)
+                m = evaluate_rule_match(self, r, t_hash, info, now_ts, ignore_history=False)
                 if not m:
                     continue
                 actions_done = []

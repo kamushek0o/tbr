@@ -16,13 +16,14 @@ except ImportError:
 
 from utils.config import cfg
 from utils.helpers import APP_DATA_DIR, write_error_log
-from core.torrent_parser import get_global_torrent_summaries
+from core.torrent_parser import get_live_merged_summaries
 from core.summary_tracker import summary_tracker
 from core.automation import automation_engine
 from core.batch_relocate import resume_pending_relocate_if_any
 from web.security import register_security
 from web.errors import register_error_handlers
 from web.routes.torrents_bp import torrents_bp
+from web.routes.merger_bp import merger_bp
 from web.routes.analytics_bp import analytics_bp
 from web.routes.automation_bp import automation_bp
 from web.routes.settings_bp import settings_bp
@@ -52,7 +53,8 @@ def _get_or_create_secret_key():
     key_file = os.path.join(APP_DATA_DIR, '.flask_secret')
     try:
         if os.path.isfile(key_file):
-            data = open(key_file, 'rb').read()
+            with open(key_file, 'rb') as f:
+                data = f.read()
             if len(data) >= 24:
                 return data
         new_key = os.urandom(32)
@@ -76,9 +78,9 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 register_error_handlers(app)
 register_security(app)
 for bp in (
-    torrents_bp, analytics_bp, automation_bp, settings_bp, profiles_bp,
-    widget_bp, system_bp, tools_bp, timers_bp, insights_bp, social_bp,
-    safety_bp, hygiene_bp, batch_bp, net_ops_bp, inbox_ops_bp,
+    torrents_bp, merger_bp, analytics_bp, automation_bp, settings_bp,
+    profiles_bp, widget_bp, system_bp, tools_bp, timers_bp, insights_bp,
+    social_bp, safety_bp, hygiene_bp, batch_bp, net_ops_bp, inbox_ops_bp,
     deep_analytics_bp, ux_bp, hardcore_bp
 ):
     app.register_blueprint(bp)
@@ -109,7 +111,7 @@ class WebServerController:
         self.current_host = h
         self.current_port = p
 
-        summary_tracker.start_auto_export(get_global_torrent_summaries)
+        summary_tracker.start_auto_export(get_live_merged_summaries)
         automation_engine.start()
         resume_pending_relocate_if_any()
 

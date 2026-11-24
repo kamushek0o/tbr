@@ -4,27 +4,36 @@ import json
 import time
 import sqlite3
 import threading
+from contextlib import contextmanager
 from utils.helpers import APP_DATA_DIR, write_error_log
 
 
 class AppStateDB:
     def __init__(self):
         self.db_file = os.path.join(APP_DATA_DIR, "app_state.db")
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._init_db()
 
+    @contextmanager
     def _get_conn(self):
         conn = sqlite3.connect(self.db_file, timeout=30.0)
-        conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA busy_timeout = 30000;")
         conn.execute("PRAGMA foreign_keys=ON;")
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def _init_db(self):
         with self._lock:
             try:
                 with self._get_conn() as conn:
+                    conn.execute("PRAGMA journal_mode=WAL;")
                     conn.executescript("""
                         CREATE TABLE IF NOT EXISTS audit_log (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -116,7 +125,6 @@ class AppStateDB:
                            (id, consecutive_restarts, down_since, last_restart_at, halted, recheck_attempts_json)
                            VALUES (1, 0, NULL, NULL, 0, '{}')"""
                     )
-                    conn.commit()
             except Exception as e:
                 write_error_log("Инициализация app_state.db", e)
 
@@ -135,7 +143,6 @@ class AppStateDB:
                            )""",
                         (max(100, int(max_rows)),)
                     )
-                    conn.commit()
             except Exception as e:
                 write_error_log("Ошибка add_audit_event", e)
 
@@ -183,7 +190,6 @@ class AppStateDB:
                 params = list(updates.values())
                 with self._get_conn() as conn:
                     conn.execute(f"UPDATE watchdog_state SET {set_clause} WHERE id = 1", params)
-                    conn.commit()
             except Exception as e:
                 write_error_log("Ошибка update_watchdog_state", e)
 
@@ -209,7 +215,6 @@ class AppStateDB:
                            VALUES (?, ?, ?, ?, ?, ?, ?)""",
                         (src_hash.lower(), dst_hash.lower(), str(mode), int(src_up), int(dst_up), int(final_up), time.time())
                     )
-                    conn.commit()
             except Exception as e:
                 write_error_log("add_merger_record", e)
 
@@ -259,7 +264,6 @@ class AppStateDB:
                         conn.execute("UPDATE torrent_lineage SET torrent_uid = ? WHERE torrent_uid = ?", (uid, r_dst["torrent_uid"]))
                     conn.execute("INSERT OR REPLACE INTO torrent_lineage (torrent_hash, torrent_uid, created_at) VALUES (?, ?, ?)", (sh, uid, now))
                     conn.execute("INSERT OR REPLACE INTO torrent_lineage (torrent_hash, torrent_uid, created_at) VALUES (?, ?, ?)", (dh, uid, now))
-                    conn.commit()
                     return uid
             except Exception as e:
                 write_error_log("link_torrent_lineage", e)

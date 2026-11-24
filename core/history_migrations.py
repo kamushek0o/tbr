@@ -45,7 +45,6 @@ def migrate_json_if_needed(get_conn_fn, old_json_file):
                             rows
                         )
 
-            conn.commit()
             write_log("summary", "Миграция JSON в SQLite успешно завершена.")
 
         bak_file = old_json_file + ".migrated"
@@ -56,6 +55,10 @@ def migrate_json_if_needed(get_conn_fn, old_json_file):
 
 
 def migrate_old_csvs_if_needed(get_conn_fn, auto_folder):
+    marker = os.path.join(auto_folder, ".csv_migrated")
+    if os.path.exists(marker):
+        return
+
     candidates = []
     for folder in (LOG_FOLDER, auto_folder):
         if not os.path.exists(folder):
@@ -66,6 +69,11 @@ def migrate_old_csvs_if_needed(get_conn_fn, auto_folder):
                 candidates.append(os.path.join(folder, fname))
 
     if not candidates:
+        try:
+            with open(marker, 'w', encoding='utf-8') as mf:
+                mf.write("ok")
+        except OSError:
+            pass
         return
 
     imported = 0
@@ -140,7 +148,12 @@ def migrate_old_csvs_if_needed(get_conn_fn, auto_folder):
                     write_error_log(f"Импорт старого CSV {os.path.basename(path)}", e)
 
             if imported > 0:
-                conn.commit()
                 write_log("summary", f"Импортировано старых почасовых CSV-снимков в SQLite: {imported}")
+
+        try:
+            with open(marker, 'w', encoding='utf-8') as mf:
+                mf.write(datetime.datetime.now().isoformat())
+        except OSError:
+            pass
     except Exception as e:
         write_error_log("Ошибка _migrate_old_csvs_if_needed", e)

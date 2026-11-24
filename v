@@ -8,8 +8,10 @@ REQUIRED_FILES = [
     "core/torrent_diff.py", "core/orphan_scanner.py", "core/private_vault.py",
     "core/smart_timers.py", "core/dnd_digest.py", "core/smart_tagging.py",
     "core/torrent_targets.py", "core/tracker_inspector.py", "core/health_score.py",
-    "core/analytics_insights.py", "core/achievements.py", "core/disk_monitor.py",
-    "core/sessions.py", "core/soft_trash.py", "core/config_vault.py", "core/env_doctor.py",
+    "core/analytics_insights.py", "core/records_service.py", "core/achievements.py",
+    "core/disk_monitor.py", "core/sessions.py", "core/soft_trash.py",
+    "core/config_vault.py", "core/env_doctor.py", "core/profiles_auth.py",
+    "core/qb_actions.py", "core/automation_eval.py", "core/history_queries.py",
     "core/hygiene_trackers.py", "core/hygiene_disk.py", "core/torrent_archiver.py",
     "core/tracker_replacer.py", "core/batch_relocate.py", "core/path_remapper.py",
     "core/network_tools.py", "core/webhooks_bundler.py", "core/undo_presets.py",
@@ -22,7 +24,7 @@ REQUIRED_FILES = [
     "web/routes/insights_bp.py", "web/routes/social_bp.py", "web/routes/safety_bp.py",
     "web/routes/hygiene_bp.py", "web/routes/batch_bp.py", "web/routes/net_ops_bp.py",
     "web/routes/inbox_ops_bp.py", "web/routes/deep_analytics_bp.py",
-    "web/routes/ux_bp.py", "web/routes/hardcore_bp.py",
+    "web/routes/ux_bp.py", "web/routes/hardcore_bp.py", "web/routes/merger_bp.py",
     "web/templates/error.html", "web/templates/kiosk.html",
     "web/templates/partials/tab_tools.html", "web/templates/partials/tab_hygiene_cards.html",
     "web/templates/partials/tab_net_ops.html", "web/templates/partials/tab_auto_extras.html",
@@ -31,6 +33,7 @@ REQUIRED_FILES = [
     "web/static/palette_targets.js", "web/static/analytics_insights.js", "web/static/social_ui.js",
     "web/static/smart_calc.js", "web/static/safety_ui.js", "web/static/hygiene_ui.js",
     "web/static/phase3_ui.js", "web/static/phase4_ui.js", "web/static/hardcore_ui.js",
+    "web/static/torrents_merger.js", "web/static/analytics_charts_render.js",
 ]
 
 missing = [f for f in REQUIRED_FILES if not os.path.isfile(f)]

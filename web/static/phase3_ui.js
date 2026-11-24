@@ -79,12 +79,31 @@ async function loadSavedViews() {
         const res = await api('/api/views');
         if (!res.ok) return;
         const views = (await res.json()).views || [];
-        bar.innerHTML = views.map(v => `
-            <span class="badge badge-dl pointer" style="gap:5px;" onclick='applySavedView(${JSON.stringify(v.filters)})'>
-                🔖 ${escapeHtml(v.name)}
-                ${CURRENT_ROLE === 'admin' ? `<b onclick="event.stopPropagation(); deleteSavedView(${v.id})">✕</b>` : ''}
-            </span>
-        `).join('') + (CURRENT_ROLE === 'admin' ? `<button class="btn btn-secondary btn-xs" onclick="saveCurrentView()">+ Вид</button>` : '');
+        bar.innerHTML = '';
+        views.forEach(v => {
+            const sp = document.createElement('span');
+            sp.className = 'badge badge-dl pointer';
+            sp.style.gap = '5px';
+            sp.textContent = `🔖 ${v.name}`;
+            sp.addEventListener('click', () => applySavedView(v.filters));
+            if (typeof CURRENT_ROLE === 'undefined' || CURRENT_ROLE === 'admin') {
+                const del = document.createElement('b');
+                del.textContent = '✕';
+                del.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    deleteSavedView(v.id);
+                });
+                sp.appendChild(del);
+            }
+            bar.appendChild(sp);
+        });
+        if (typeof CURRENT_ROLE === 'undefined' || CURRENT_ROLE === 'admin') {
+            const btn = document.createElement('button');
+            btn.className = 'btn btn-secondary btn-xs';
+            btn.textContent = '+ Вид';
+            btn.addEventListener('click', saveCurrentView);
+            bar.appendChild(btn);
+        }
     } catch (e) {}
 }
 

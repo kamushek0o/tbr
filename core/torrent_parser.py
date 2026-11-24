@@ -179,11 +179,9 @@ def get_all_torrents(use_cache=True):
                 _FILE_CACHE[t_hash] = {'sig': sig, 'data': item}
                 result[t_hash] = item
             except Exception:
-                # Файл в процессе перезаписи клиентом: сохраняем прошлое валидное значение или пропускаем тик
                 if cached:
                     result[t_hash] = cached['data']
 
-        # Авточистка «призраков» (файлы, исчезнувшие из BT_backup)
         ghosts = [h for h in _FILE_CACHE if h not in seen_hashes]
         for g in ghosts:
             del _FILE_CACHE[g]
@@ -193,6 +191,38 @@ def get_all_torrents(use_cache=True):
 
 def get_global_torrent_summaries():
     return list(get_all_torrents(use_cache=True).values())
+
+
+def get_live_merged_summaries():
+    summaries = get_all_torrents(use_cache=True)
+    try:
+        from utils.config import cfg
+        from core.qb_api import detect_qbittorrent_port, get_live_torrent_info
+        ip, port = detect_qbittorrent_port(cfg.config)
+        live = get_live_torrent_info(ip, port) if port else {}
+    except Exception:
+        live = {}
+
+    if not live:
+        return list(summaries.values())
+
+    live_lower = {k.lower(): v for k, v in live.items()}
+    merged = []
+    for h_lower, static in summaries.items():
+        item = dict(static)
+        lv = live_lower.get(h_lower)
+        if lv:
+            sz = int(lv.get('total_size') or item.get('size') or 0)
+            up = int(lv['uploaded']) if lv.get('uploaded') is not None else int(item.get('uploaded', 0) or 0)
+            act = int(lv.get('time_active') or lv.get('seeding_time') or item.get('active_seconds') or 0)
+            item['size'] = sz
+            item['uploaded'] = up
+            item['ratio'] = round(up / sz, 2) if sz > 0 else 0.0
+            item['active_seconds'] = act
+            if lv.get('name'):
+                item['name'] = str(lv['name'])
+        merged.append(item)
+    return merged
 
 
 def copy_torrent_to_watch(t_hash):

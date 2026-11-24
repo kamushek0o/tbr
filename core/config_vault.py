@@ -118,15 +118,21 @@ def _safe_snap_dir(name):
     return None
 
 
+def _read_lines_safe(path):
+    if not os.path.isfile(path):
+        return []
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        return f.readlines()
+
+
 def diff_config_backups(snap_a, snap_b, filename):
     da, db = _safe_snap_dir(snap_a), _safe_snap_dir(snap_b)
     clean_f = os.path.basename(str(filename or ""))
     if not da or not db or clean_f not in TARGET_FILES:
         return False, "Некорректные параметры для сравнения."
 
-    pa, pb = os.path.join(da, clean_f), os.path.join(db, clean_f)
-    la = open(pa, "r", encoding="utf-8", errors="replace").readlines() if os.path.isfile(pa) else []
-    lb = open(pb, "r", encoding="utf-8", errors="replace").readlines() if os.path.isfile(pb) else []
+    la = _read_lines_safe(os.path.join(da, clean_f))
+    lb = _read_lines_safe(os.path.join(db, clean_f))
     diff_txt = "".join(difflib.unified_diff(la, lb, fromfile=snap_a, tofile=snap_b, lineterm="\n"))
     return True, diff_txt or "Различий в файле не найдено."
 

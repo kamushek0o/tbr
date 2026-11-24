@@ -310,60 +310,6 @@ python main.py
 
 
 ================================================================================
-FILE: VREIFY_PROJECT.PY
-================================================================================
-# VREIFY_PROJECT.PY
-import os
-import sys
-
-REQUIRED_FILES = [
-    "core/version.py", "core/ui_defaults.py", "core/app_state_db.py", "core/updater.py",
-    "core/keep_awake.py", "core/reliability.py", "core/disaster_recovery.py",
-    "core/torrent_diff.py", "core/orphan_scanner.py", "core/private_vault.py",
-    "core/smart_timers.py", "core/dnd_digest.py", "core/smart_tagging.py",
-    "core/torrent_targets.py", "core/tracker_inspector.py", "core/health_score.py",
-    "core/analytics_insights.py", "core/achievements.py", "core/disk_monitor.py",
-    "core/sessions.py", "core/soft_trash.py", "core/config_vault.py", "core/env_doctor.py",
-    "core/hygiene_trackers.py", "core/hygiene_disk.py", "core/torrent_archiver.py",
-    "core/tracker_replacer.py", "core/batch_relocate.py", "core/path_remapper.py",
-    "core/network_tools.py", "core/webhooks_bundler.py", "core/undo_presets.py",
-    "core/preflight_inbox.py", "core/autopilot_extras.py", "core/saved_views.py",
-    "core/deep_analytics.py", "core/swarm_analytics.py", "core/wrapped_service.py",
-    "core/lineage_notes_events.py", "core/file_fts_index.py",
-    "core/hdd_smart_queue.py", "core/rss_dedup.py", "core/mediainfo_lite.py",
-    "web/errors.py",
-    "web/routes/system_bp.py", "web/routes/tools_bp.py", "web/routes/timers_bp.py",
-    "web/routes/insights_bp.py", "web/routes/social_bp.py", "web/routes/safety_bp.py",
-    "web/routes/hygiene_bp.py", "web/routes/batch_bp.py", "web/routes/net_ops_bp.py",
-    "web/routes/inbox_ops_bp.py", "web/routes/deep_analytics_bp.py",
-    "web/routes/ux_bp.py", "web/routes/hardcore_bp.py",
-    "web/templates/error.html", "web/templates/kiosk.html",
-    "web/templates/partials/tab_tools.html", "web/templates/partials/tab_hygiene_cards.html",
-    "web/templates/partials/tab_net_ops.html", "web/templates/partials/tab_auto_extras.html",
-    "web/templates/partials/tab_analytics_deep.html", "web/templates/partials/modal_system.html",
-    "web/static/system_tools.js", "web/static/merger_tools.js", "web/static/timers_ui.js",
-    "web/static/palette_targets.js", "web/static/analytics_insights.js", "web/static/social_ui.js",
-    "web/static/smart_calc.js", "web/static/safety_ui.js", "web/static/hygiene_ui.js",
-    "web/static/phase3_ui.js", "web/static/phase4_ui.js", "web/static/hardcore_ui.js",
-]
-
-missing = [f for f in REQUIRED_FILES if not os.path.isfile(f)]
-if missing:
-    print("❌ НЕ ХВАТАЕТ ФАЙЛОВ:")
-    for f in missing:
-        print("  -", f)
-    sys.exit(1)
-
-print(f"✅ Все {len(REQUIRED_FILES)} файлов на месте!")
-try:
-    import web.app  # noqa: F401
-    import main     # noqa: F401
-    print("✅ Тестовый импорт web.app и main прошёл успешно! Можно собирать .exe через build.bat.")
-except Exception as e:
-    print(f"❌ Ошибка импорта: {e}")
-    sys.exit(1)
-
-================================================================================
 FILE: build.bat
 ================================================================================
 @echo off
@@ -1616,7 +1562,6 @@ automation_engine = AutomationEngine()
 FILE: core/autopilot_extras.py
 ================================================================================
 # core/autopilot_extras.py
-import os
 import json
 import time
 import datetime
@@ -1748,19 +1693,55 @@ def get_conductor_config():
     }
 
 
+def _hour_in_block(hr, start_h, end_h):
+    if start_h == end_h:
+        return True
+    if start_h < end_h:
+        return start_h <= hr < end_h
+    return hr >= start_h or hr < end_h
+
+
 def _tick_conductor(ip, port):
     c = get_conductor_config()
     now = time.time()
+    last_applied = cfg.getint('Conductor_Last_Applied_Up', -1)
+
     if not c['enabled'] or not c['blocks'] or now < c['override_until']:
+        if last_applied > 0:
+            set_global_speed_limits(ip, port, 0, 0)
+            cfg.set('Conductor_Last_Applied_Up', '0')
+            cfg.save()
         return
+
     hr = datetime.datetime.now().hour
-    matched = next((b for b in c['blocks'] if int(b.get('start_h', 0)) <= hr < int(b.get('end_h', 24))), None)
+    matched = None
+    for b in c['blocks']:
+        if not isinstance(b, dict):
+            continue
+        try:
+            sh = int(b.get('start_h', 0)) % 24
+            eh = int(b.get('end_h', 24))
+            eh = 24 if eh == 24 else (eh % 24)
+        except (ValueError, TypeError):
+            continue
+        if _hour_in_block(hr, sh, eh):
+            matched = b
+            break
+
     if not matched:
+        if last_applied > 0:
+            set_global_speed_limits(ip, port, 0, 0)
+            cfg.set('Conductor_Last_Applied_Up', '0')
+            cfg.save()
         return
-    pct = max(0, min(100, int(matched.get('pct_limit', 100))))
+
+    try:
+        pct = max(0, min(100, int(matched.get('pct_limit', 100))))
+    except (ValueError, TypeError):
+        pct = 100
     max_mbps = max(10, cfg.getint('Max_Channel_Mbps', 1000))
     up_bps = 0 if pct >= 100 else max(1024, int(((max_mbps * 1_000_000) / 8.0) * (pct / 100.0)))
-    if cfg.getint('Conductor_Last_Applied_Up', -1) != up_bps:
+    if last_applied != up_bps:
         set_global_speed_limits(ip, port, 0, up_bps)
         cfg.set('Conductor_Last_Applied_Up', str(up_bps))
         cfg.save()
@@ -1786,8 +1767,20 @@ def _tick_auto_router(ip, port, live):
         nm = str(info.get('name') or '').lower()
 
         for r in rules:
-            fld, pat = r['match_field'], str(r['pattern'] or '').lower().strip()
-            hit = (fld == 'tracker' and pat in tr) or (fld == 'ext' and pat in nm) or (fld == 'min_gib' and sz_gib >= float(pat or 0))
+            fld = r['match_field']
+            pat = str(r['pattern'] or '').lower().strip()
+            if not pat:
+                continue
+            hit = False
+            if fld == 'tracker':
+                hit = pat in tr
+            elif fld == 'ext':
+                hit = pat in nm
+            elif fld == 'min_gib':
+                try:
+                    hit = sz_gib >= float(pat)
+                except (ValueError, TypeError):
+                    hit = False
             if hit:
                 if r['target_category']:
                     _post_qb_api(ip, port, 'torrents/setCategory', {'hashes': raw_h, 'category': r['target_category']})
@@ -2379,7 +2372,7 @@ def get_rhythm_7x24(db):
     """#14 Ритм канала 7x24: медиана часовых скоростей за последние 45 дней."""
     since_ts = time.time() - (45 * 86400)
     rows = db.get_snapshots_since(since_ts)
-    hour_buckets = {}  # (date_str, weekday, hour) -> {'bytes': float, 'sec': float}
+    hour_buckets = {}
     prev = None
 
     for r in rows:
@@ -2404,7 +2397,7 @@ def get_rhythm_7x24(db):
     samples = {(wd, hr): [] for wd in range(7) for hr in range(24)}
     for (_, wd, hr), b in hour_buckets.items():
         if b['sec'] >= 60:
-            samples[(wd, hr)].append((b['bytes'] / b['sec']) / (1024 * 1024))  # MiB/s
+            samples[(wd, hr)].append((b['bytes'] / b['sec']) / (1024 * 1024))
 
     matrix = []
     max_med = 0.0
@@ -2525,15 +2518,18 @@ def _calc_period_metrics(db, start_ts, end_ts):
 def compare_periods_ab(db, start_a_str, end_a_str, start_b_str, end_b_str, same_n_days=True):
     """#33 Машина времени: сравнение двух диапазонов дат."""
     try:
-        da1 = datetime.datetime.strptime(start_a_str, '%Y-%m-%d')
-        da2 = datetime.datetime.strptime(end_a_str, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
-        db1 = datetime.datetime.strptime(start_b_str, '%Y-%m-%d')
-        db2 = datetime.datetime.strptime(end_b_str, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
+        da1 = datetime.datetime.strptime(str(start_a_str).strip(), '%Y-%m-%d')
+        da2 = datetime.datetime.strptime(str(end_a_str).strip(), '%Y-%m-%d').replace(hour=23, minute=59, second=59)
+        db1 = datetime.datetime.strptime(str(start_b_str).strip(), '%Y-%m-%d')
+        db2 = datetime.datetime.strptime(str(end_b_str).strip(), '%Y-%m-%d').replace(hour=23, minute=59, second=59)
     except ValueError:
         return {'success': False, 'error': 'Укажите даты в формате YYYY-MM-DD'}
 
+    if da2 < da1 or db2 < db1:
+        return {'success': False, 'error': 'Дата окончания не может быть раньше даты начала'}
+
     if same_n_days:
-        days_span = min((da2 - da1).days, (db2 - db1).days)
+        days_span = max(0, min((da2 - da1).days, (db2 - db1).days))
         da2 = (da1 + datetime.timedelta(days=days_span)).replace(hour=23, minute=59, second=59)
         db2 = (db1 + datetime.timedelta(days=days_span)).replace(hour=23, minute=59, second=59)
 
@@ -3082,7 +3078,7 @@ import urllib.request
 from utils.config import cfg
 from utils.helpers import APP_DATA_DIR, BT_BACKUP_PATH, LOG_FOLDER
 from core.version import APP_VERSION
-from core.qb_api import detect_qbittorrent_port, check_qb_api_alive, _get_qb_json, is_qb_running
+from core.qb_api import detect_qbittorrent_port, check_qb_api_alive, get_qb_version, is_qb_running
 from core.disk_monitor import list_active_disks
 from core.config_vault import detect_qb_config_dir
 
@@ -3112,7 +3108,7 @@ def _check_time_skew():
 def run_environment_doctor():
     ip, port = detect_qbittorrent_port(cfg.config)
     api_ok = check_qb_api_alive(ip, port) if port else False
-    qb_ver = _get_qb_json(ip, port, "app/version", timeout=2.0) if api_ok else None
+    qb_ver = get_qb_version(ip, port, timeout=2.0) if api_ok else None
 
     bt_exists = os.path.isdir(BT_BACKUP_PATH)
     bt_rw = False
@@ -4612,7 +4608,7 @@ _SUB_EXTS = {'.srt', '.ass', '.ssa', '.vtt', '.sub'}
 
 
 def scan_bt_backup_garbage():
-    """#31 Санитар BT_backup: безпарные, 0-байтные и призраки старше 24ч, отсутствующие в API qB."""
+    """Санитар BT_backup: безпарные, 0-байтные и призраки старше 24ч, отсутствующие в API qB."""
     ip, port = detect_qbittorrent_port(cfg.config)
     live = get_live_torrent_info(ip, port) if port else {}
     if not live:
@@ -4622,7 +4618,7 @@ def scan_bt_backup_garbage():
 
     live_hashes = {h.lower() for h in live.keys()}
     now = time.time()
-    min_age = 86400.0  # 24 часа
+    min_age = 86400.0
 
     by_hash = {}
     for ent in os.scandir(BT_BACKUP_PATH):
@@ -4649,11 +4645,12 @@ def scan_bt_backup_garbage():
             elif h not in live_hashes:
                 reason = 'Призрак (нет в qBittorrent)'
             elif len(pair) == 1:
-                reason = f"Без пары (нет .{ 'torrent' if kind == 'fastresume' else 'fastresume' })"
+                reason = f"Без пары (нет .{'torrent' if kind == 'fastresume' else 'fastresume'})"
             if reason:
                 items.append({
                     'path': info['path'], 'name': info['name'], 'hash': h,
                     'reason': reason, 'size': info['size'], 'size_fmt': format_file_size(info['size']),
+                    'mtime': info['mtime'],
                     'date': datetime.datetime.fromtimestamp(info['mtime']).strftime('%Y-%m-%d %H:%M')
                 })
 
@@ -4665,6 +4662,8 @@ def _classify_inner_file(fname, progress):
     low = fname.lower()
     if low.endswith('.!qb'):
         return 'junk' if progress >= 0.9999 else 'active_part'
+    if low.endswith('.parts'):
+        return 'active_part'
     _, ext = os.path.splitext(low)
     if ext in _JUNK_EXTS:
         return 'junk'
@@ -4676,13 +4675,13 @@ def _classify_inner_file(fname, progress):
 
 
 def scan_inner_content_junk(limit_torrents=80):
-    """#51 Пылесос мусора внутри content_path живых раздач (без авто-удаления)."""
+    """Пылесос мусора внутри content_path живых раздач с защитой кросс-сида в общей папке."""
     ip, port = detect_qbittorrent_port(cfg.config)
     live = get_live_torrent_info(ip, port) if port else {}
     if not live:
         return {'success': False, 'error': 'qBittorrent недоступен', 'items': []}
 
-    found = []
+    dir_groups = {}
     scanned = 0
     for t_hash, info in live.items():
         cp = str(info.get('content_path') or '').strip()
@@ -4698,20 +4697,34 @@ def scan_inner_content_junk(limit_torrents=80):
         files = get_torrent_files(ip, port, t_hash)
         if not files:
             continue
-        expected = set()
+
+        cp_abs = os.path.abspath(cp)
+        cp_key = os.path.normcase(cp_abs)
+        grp = dir_groups.setdefault(cp_key, {'cp_abs': cp_abs, 'names': [], 'expected': set(), 'min_prog': 1.0})
+        grp['names'].append(info.get('name', t_hash))
+        grp['min_prog'] = min(grp['min_prog'], float(info.get('progress', 0.0) or 0.0))
+
         for f in files:
             rel = str(f.get('name', '')).replace('\\', '/').strip('/')
-            # Убираем общую корневую папку, если content_path уже указывает на неё
             parts = rel.split('/', 1)
             rel_inner = parts[1] if len(parts) > 1 else parts[0]
-            expected.add(os.path.normcase(rel_inner.replace('/', os.sep)))
+            grp['expected'].add(os.path.normcase(rel_inner.replace('/', os.sep)))
 
-        prog = float(info.get('progress', 0.0) or 0.0)
-        cp_abs = os.path.abspath(cp)
+    found = []
+    seen_paths = set()
+    for grp in dir_groups.values():
+        cp_abs = grp['cp_abs']
+        expected = grp['expected']
+        prog = grp['min_prog']
+        t_label = grp['names'][0] if len(grp['names']) == 1 else f"{grp['names'][0]} (+{len(grp['names']) - 1})"
         try:
-            for root, _, fnames in os.walk(cp_abs):
+            for root, dirs, fnames in os.walk(cp_abs):
+                dirs[:] = [d for d in dirs if d.lower() != '.unwanted']
                 for fn in fnames:
                     full_p = os.path.join(root, fn)
+                    norm_fp = os.path.normcase(full_p)
+                    if norm_fp in seen_paths:
+                        continue
                     rel_disk = os.path.relpath(full_p, cp_abs)
                     rel_check = rel_disk[:-4] if (prog < 0.9999 and rel_disk.lower().endswith('.!qb')) else rel_disk
                     if os.path.normcase(rel_check) in expected or os.path.normcase(rel_disk) in expected:
@@ -4719,13 +4732,14 @@ def scan_inner_content_junk(limit_torrents=80):
                     cat = _classify_inner_file(fn, prog)
                     if cat == 'active_part':
                         continue
+                    seen_paths.add(norm_fp)
                     try:
                         sz = os.path.getsize(full_p)
                     except OSError:
                         sz = 0
                     found.append({
                         'path': full_p, 'name': fn, 'rel_path': rel_disk,
-                        'torrent_name': info.get('name', t_hash), 'category': cat,
+                        'torrent_name': t_label, 'category': cat,
                         'size': sz, 'size_fmt': format_file_size(sz)
                     })
         except Exception as e:
@@ -5395,7 +5409,7 @@ from core.notifiers import notify_all
 
 
 def diagnose_bottleneck(db):
-    """#9 «Почему всё тормозит?» — диагностика узких горлышек в реальном времени."""
+    """«Почему всё тормозит?» — диагностика узких горлышек в реальном времени."""
     ip, port = detect_qbittorrent_port(cfg.config)
     if not port:
         return {'success': False, 'issues': ['qBittorrent WebUI недоступен']}
@@ -5433,7 +5447,7 @@ def diagnose_bottleneck(db):
 
 
 def ping_trackers_dns_tcp(max_hosts=25):
-    """#46 Пингер трекеров: только DNS + TCP handshake (без HTTP GET к announce URL)."""
+    """Пингер трекеров: только DNS + TCP handshake (без HTTP GET к announce URL)."""
     ip, port = detect_qbittorrent_port(cfg.config)
     live = get_live_torrent_info(ip, port) if port else {}
     hosts = {}
@@ -5472,23 +5486,21 @@ def ping_trackers_dns_tcp(max_hosts=25):
 
 
 def check_network_interface_guard():
-    """#23 Страж сетевого интерфейса qBittorrent."""
-    if not cfg.getboolean('Interface_Guard_Enabled', False):
-        return {'enabled': False, 'ok': True}
+    """Страж сетевого интерфейса qBittorrent."""
+    enabled = cfg.getboolean('Interface_Guard_Enabled', False)
     ip, port = detect_qbittorrent_port(cfg.config)
-    if not port:
-        return {'enabled': True, 'ok': True, 'reason': 'qb_down'}
-    prefs = _get_qb_json(ip, port, "app/preferences", timeout=2.0)
+    prefs = _get_qb_json(ip, port, "app/preferences", timeout=2.0) if port else None
     if not isinstance(prefs, dict):
-        return {'enabled': True, 'ok': True, 'reason': 'no_prefs'}
+        return {'enabled': enabled, 'ok': True, 'reason': 'qb_down', 'current': '', 'current_name': ''}
 
     cur_iface = str(prefs.get('current_network_interface') or '').strip()
+    cur_name = str(prefs.get('current_network_interface_name') or cur_iface).strip()
     expected = cfg.get('Expected_Net_Interface', '').strip()
-    if not expected:
-        return {'enabled': True, 'ok': True, 'current': cur_iface}
+    if not enabled or not expected:
+        return {'enabled': enabled, 'ok': True, 'current': cur_iface, 'current_name': cur_name}
 
-    if cur_iface != expected:
-        msg = f"Сетевой интерфейс qB изменился: '{expected}' → '{cur_iface or 'Any'}'!"
+    if cur_iface != expected and cur_name != expected:
+        msg = f"Сетевой интерфейс qB изменился: '{expected}' → '{cur_name or cur_iface or 'Any'}'!"
         last_alert = cfg.getint('Interface_Last_Alert_Ts', 0)
         if (time.time() - last_alert) >= 300:
             cfg.set('Interface_Last_Alert_Ts', str(int(time.time())))
@@ -5497,8 +5509,8 @@ def check_network_interface_guard():
             notify_all("🛡️ Страж интерфейса qBittorrent", [msg], critical=True)
             if cfg.getboolean('Interface_Guard_Panic', False):
                 execute_panic_killswitch(kill_qb=False, actor='interface_guard')
-        return {'enabled': True, 'ok': False, 'expected': expected, 'current': cur_iface, 'message': msg}
-    return {'enabled': True, 'ok': True, 'expected': expected, 'current': cur_iface}
+        return {'enabled': True, 'ok': False, 'expected': expected, 'current': cur_iface, 'current_name': cur_name, 'message': msg}
+    return {'enabled': True, 'ok': True, 'expected': expected, 'current': cur_iface, 'current_name': cur_name}
 
 
 def _find_qb_log_path():
@@ -5516,7 +5528,7 @@ def _find_qb_log_path():
 
 
 def read_sanitized_qb_log(lines_count=80):
-    """#17 Безопасное чтение последних N строк qbittorrent.log с маскировкой IP и пасскеев."""
+    """Безопасное чтение последних N строк qbittorrent.log с маскировкой IP и пасскеев."""
     path = _find_qb_log_path()
     if not path:
         return False, "Файл qbittorrent.log не найден"
@@ -5531,12 +5543,13 @@ def read_sanitized_qb_log(lines_count=80):
 
 
 def reanimate_qb(force_kill=False):
-    """#17 Удалённый реаниматор qB: сначала мягко (до 20с), при необходимости принудительно."""
+    """Удалённый реаниматор qB: мягкий или быстрый перезапуск."""
     if os.name != 'nt':
         return False, "Локальное управление процессом доступно только на Windows"
     write_log('system', f"Реаниматор qBittorrent (force={force_kill})")
     if is_qb_running():
-        closed = close_qbittorrent(max_wait_sec=20.0)
+        wait_sec = 2.0 if force_kill else 20.0
+        closed = close_qbittorrent(max_wait_sec=wait_sec)
         if not closed and not force_kill:
             return False, "qBittorrent не завершился мягко за 20с. Используйте принудительный перезапуск."
     time.sleep(1.5)
@@ -5659,7 +5672,7 @@ import datetime
 from utils.config import cfg
 from utils.helpers import format_file_size, write_error_log
 from core.torrent_parser import get_all_torrents
-from core.qb_api import detect_qbittorrent_port, get_live_torrent_info, _qb_config_candidates
+from core.qb_api import detect_qbittorrent_port, get_live_torrent_info, get_torrent_files, _qb_config_candidates
 from core.app_state_db import app_state_db
 from core.soft_trash import move_to_trash
 
@@ -5714,7 +5727,9 @@ def get_download_roots():
 
 
 def _collect_active_paths():
-    active = set()
+    """Разделяет save_paths (защита вверх) и content_paths (защита данных торрентов)."""
+    save_paths = set()
+    content_paths = set()
     parsed = get_all_torrents(use_cache=True)
     ip, port = detect_qbittorrent_port(cfg.config)
     live = get_live_torrent_info(ip, port) if port else {}
@@ -5723,21 +5738,33 @@ def _collect_active_paths():
         sp = str(t.get('save_path') or '').strip()
         nm = str(t.get('name') or '').strip()
         if sp:
-            active.add(_norm(sp))
+            save_paths.add(_norm(sp))
             if nm:
-                active.add(_norm(os.path.join(sp, nm)))
+                content_paths.add(_norm(os.path.join(sp, nm)))
 
-    for t in live.values():
+    for h, t in live.items():
         sp = str(t.get('save_path') or '').strip()
         cp = str(t.get('content_path') or '').strip()
         nm = str(t.get('name') or '').strip()
         if sp:
-            active.add(_norm(sp))
+            save_paths.add(_norm(sp))
         if cp:
-            active.add(_norm(cp))
-        if sp and nm:
-            active.add(_norm(os.path.join(sp, nm)))
-    return active
+            cp_n = _norm(cp)
+            sp_n = _norm(sp) if sp else ''
+            if sp_n and cp_n == sp_n:
+                files = get_torrent_files(ip, port, h) if port else []
+                if files:
+                    for f in files:
+                        top = str(f.get('name', '')).replace('\\', '/').strip('/').split('/', 1)[0]
+                        if top:
+                            content_paths.add(_norm(os.path.join(sp, top)))
+                elif nm:
+                    content_paths.add(_norm(os.path.join(sp, nm)))
+            else:
+                content_paths.add(cp_n)
+        elif sp and nm:
+            content_paths.add(_norm(os.path.join(sp, nm)))
+    return save_paths, content_paths
 
 
 def _entry_size(path):
@@ -5756,11 +5783,17 @@ def _entry_size(path):
     return total
 
 
-def _is_path_protected(entry_norm, active_paths):
-    for ap in active_paths:
+def _is_path_protected(entry_norm, save_paths, content_paths):
+    for cp in content_paths:
         try:
-            common = os.path.commonpath([entry_norm, ap])
-            if common == entry_norm or common == ap:
+            common = os.path.commonpath([entry_norm, cp])
+            if common == entry_norm or common == cp:
+                return True
+        except ValueError:
+            continue
+    for sp in save_paths:
+        try:
+            if os.path.commonpath([entry_norm, sp]) == entry_norm:
                 return True
         except ValueError:
             continue
@@ -5770,7 +5803,7 @@ def _is_path_protected(entry_norm, active_paths):
 def scan_orphan_entries(custom_roots=None):
     valid_roots = get_download_roots()
     roots = [os.path.abspath(str(r).strip()) for r in custom_roots if r and os.path.isdir(str(r).strip())] if custom_roots else valid_roots
-    active_paths = _collect_active_paths()
+    save_paths, content_paths = _collect_active_paths()
     orphans, total_bytes = [], 0
 
     for root_dir in roots:
@@ -5780,7 +5813,7 @@ def scan_orphan_entries(custom_roots=None):
                     if ent.name.startswith('.') or ent.name in ('$RECYCLE.BIN', 'System Volume Information', '_tbr_trash'):
                         continue
                     ent_abs = os.path.abspath(ent.path)
-                    if _is_path_protected(_norm(ent_abs), active_paths):
+                    if _is_path_protected(_norm(ent_abs), save_paths, content_paths):
                         continue
                     sz = _entry_size(ent_abs)
                     try:
@@ -5808,7 +5841,7 @@ def delete_orphan_entries(paths, actor='admin', use_trash=True, custom_roots=Non
             if cr and os.path.isdir(str(cr).strip()):
                 raw_roots.append(os.path.abspath(str(cr).strip()))
     allowed_roots = [_norm(r) for r in raw_roots]
-    active_paths = _collect_active_paths()
+    save_paths, content_paths = _collect_active_paths()
     deleted, errors = [], []
 
     for raw_p in paths:
@@ -5829,7 +5862,7 @@ def delete_orphan_entries(paths, actor='admin', use_trash=True, custom_roots=Non
         if not inside_allowed:
             errors.append(f"Отклонено (вне разрешённых корневых папок): {raw_p}")
             continue
-        if _is_path_protected(target_norm, active_paths):
+        if _is_path_protected(target_norm, save_paths, content_paths):
             errors.append(f"Отклонено (путь используется активным торрентом): {raw_p}")
             continue
 
@@ -5992,8 +6025,8 @@ import urllib.request
 from difflib import SequenceMatcher
 from utils.config import cfg
 from utils.bencode import decode_bencode
-from utils.helpers import APP_DATA_DIR, format_file_size, write_error_log
-from core.qb_api import detect_qbittorrent_port, get_live_torrent_info, add_torrent_url, opener, qb_login
+from utils.helpers import APP_DATA_DIR, format_file_size
+from core.qb_api import detect_qbittorrent_port, get_live_torrent_info, add_torrent_url, opener, qb_login, _norm_ip
 from core.torrent_parser import get_all_torrents
 from core.torrent_diff import _clean_title
 from core.disk_monitor import get_monitored_disk_info
@@ -6006,7 +6039,7 @@ _RADAR_CACHE = {'ts': 0.0, 'qb_latest': '', 'qb_url': ''}
 
 
 def preflight_analyze(magnet_or_url='', torrent_bytes=None, save_path=''):
-    """#5 Pre-Flight проверка перед добавлением раздачи."""
+    """Pre-Flight проверка перед добавлением раздачи."""
     ip, port = detect_qbittorrent_port(cfg.config)
     live = get_live_torrent_info(ip, port) if port else {}
     queue_left = sum(int(v.get('amount_left', 0) or 0) for v in live.values() if int(v.get('amount_left', 0) or 0) > 0)
@@ -6049,7 +6082,6 @@ def preflight_analyze(magnet_or_url='', torrent_bytes=None, save_path=''):
         else:
             name = raw_u[:60]
 
-    # Smart Match проверка на дубликаты в библиотеке
     similar = []
     if name:
         clean_new = _clean_title(name)
@@ -6094,6 +6126,7 @@ def add_torrent_to_qb(magnet_or_url='', torrent_bytes=None, filename='upload.tor
         fields['tags'] = tags
     if paused:
         fields['paused'] = 'true'
+        fields['stopped'] = 'true'
 
     for k, v in fields.items():
         parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n".encode('utf-8'))
@@ -6105,7 +6138,7 @@ def add_torrent_to_qb(magnet_or_url='', torrent_bytes=None, filename='upload.tor
     parts.append(f"--{boundary}--\r\n".encode('utf-8'))
     body = b"".join(parts)
 
-    base_url = f"http://{ip}:{port}"
+    base_url = f"http://{_norm_ip(ip)}:{port}"
     req = urllib.request.Request(
         f"{base_url}/api/v2/torrents/add",
         data=body, method='POST',
@@ -6114,7 +6147,8 @@ def add_torrent_to_qb(magnet_or_url='', torrent_bytes=None, filename='upload.tor
     for attempt in range(2):
         try:
             with opener.open(req, timeout=8) as resp:
-                return resp.getcode() == 200, 'Файл .torrent отправлен в qBittorrent'
+                ok = 200 <= resp.getcode() < 300
+                return ok, 'Файл .torrent отправлен в qBittorrent' if ok else f'HTTP {resp.getcode()}'
         except urllib.error.HTTPError as e:
             if e.code in (401, 403) and attempt == 0 and qb_login(ip, port):
                 continue
@@ -6125,14 +6159,14 @@ def add_torrent_to_qb(magnet_or_url='', torrent_bytes=None, filename='upload.tor
 
 
 def get_update_radar(force=False):
-    """#48 Радар обновлений tbr PRO + qBittorrent (кэш 12 часов)."""
+    """Радар обновлений tbr PRO + qBittorrent (кэш 12 часов)."""
     tbr_upd = check_for_updates(force=force)
     now = time.time()
     if force or not _RADAR_CACHE['qb_latest'] or (now - _RADAR_CACHE['ts']) >= 43200:
         try:
             req = urllib.request.Request(
                 "https://api.github.com/repos/qbittorrent/qBittorrent/releases/latest",
-                headers={"User-Agent": "tbr-pro-radar/3.2", "Accept": "application/vnd.github+json"}
+                headers={"User-Agent": "tbr-pro-radar/4.0", "Accept": "application/vnd.github+json"}
             )
             with urllib.request.urlopen(req, timeout=6.0) as resp:
                 rel = json.loads(resp.read().decode('utf-8'))
@@ -6145,7 +6179,7 @@ def get_update_radar(force=False):
 
 
 def prepare_qb_update_safe():
-    """#48 Подготовка к обновлению qB: Config Vault (#11) + ZIP БД + Архивариус (#32)."""
+    """Подготовка к обновлению qB: Config Vault + ZIP БД + Архивариус .torrent."""
     ok_cfg, res_cfg = create_config_backup(reason='pre_update')
     res_arch = sync_torrent_archive()
     os.makedirs(os.path.join(APP_DATA_DIR, 'pre_update_backups'), exist_ok=True)
@@ -6637,6 +6671,7 @@ FILE: core/qb_api.py
 import os
 import re
 import json
+import threading
 import urllib.request
 import urllib.parse
 import http.cookiejar
@@ -6649,14 +6684,16 @@ from core.qb_process import (
 
 cookie_jar = http.cookiejar.CookieJar()
 opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
+_AUTH_LOCK = threading.Lock()
 
 
 def reset_qb_session():
-    cookie_jar.clear()
+    with _AUTH_LOCK:
+        cookie_jar.clear()
 
 
 def _norm_ip(qb_ip):
-    return '127.0.0.1' if qb_ip in ('*', '0.0.0.0') else qb_ip
+    return '127.0.0.1' if qb_ip in ('*', '0.0.0.0', '') else qb_ip
 
 
 def qb_login(qb_ip, qb_port, username=None, password=None):
@@ -6671,11 +6708,12 @@ def qb_login(qb_ip, qb_port, username=None, password=None):
         data=data,
         headers={'Referer': base_url, 'Origin': base_url, 'User-Agent': 'Mozilla/5.0'}
     )
-    try:
-        with opener.open(req, timeout=2.0) as resp:
-            return "Ok." in resp.read().decode('utf-8', errors='ignore')
-    except Exception:
-        return False
+    with _AUTH_LOCK:
+        try:
+            with opener.open(req, timeout=2.5) as resp:
+                return "Ok." in resp.read().decode('utf-8', errors='ignore')
+        except Exception:
+            return False
 
 
 def _qb_config_candidates():
@@ -6692,109 +6730,116 @@ def _qb_config_candidates():
     ]
 
 
+def _parse_qb_conf_file(content):
+    m_port = re.search(r'(?im)^WebUI\\Port=(\d+)\s*$', content) or re.search(r'(?im)^Port=(\d+)\s*$', content)
+    m_addr = re.search(r'(?im)^WebUI\\Address=([^\s\r\n]+)\s*$', content) or re.search(r'(?im)^Address=([^\s\r\n]+)\s*$', content)
+    port = int(m_port.group(1)) if m_port else None
+    addr = m_addr.group(1).strip() if m_addr else ''
+    if addr in ('*', '0.0.0.0'):
+        addr = ''
+    return addr, port
+
+
 def detect_qbittorrent_port(config=None):
     env_ip = os.environ.get('TBR_QB_HOST', '').strip()
     env_port = os.environ.get('TBR_QB_PORT', '').strip()
     if env_ip and env_port.isdigit():
         return env_ip, int(env_port)
 
+    cfg_addr, cfg_port = '', None
     if config:
         try:
-            address = config.get('Settings', 'WebUI_Address', fallback='').strip()
+            cfg_addr = config.get('Settings', 'WebUI_Address', fallback='').strip()
             raw_port = config.get('Settings', 'WebUI_Port', fallback='').strip()
-            port = int(raw_port) if raw_port.isdigit() else None
-            if address and port:
-                return address, port
+            cfg_port = int(raw_port) if raw_port.isdigit() else None
+            if cfg_addr and cfg_port:
+                return cfg_addr, cfg_port
         except Exception:
             pass
 
-    port_from_conf, address_from_conf = None, '127.0.0.1'
+    port_from_conf, address_from_conf = None, ''
     for config_path in _qb_config_candidates():
         if not config_path or not os.path.exists(config_path):
             continue
         try:
             with open(config_path, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read()
-            m_port = re.search(r'(?:WebUI\\Port|Port)=(\d+)', content, re.IGNORECASE)
-            if m_port:
-                port_from_conf = int(m_port.group(1))
-            m_addr = re.search(r'(?:WebUI\\Address|Address)=([^\s\r\n]+)', content, re.IGNORECASE)
-            if m_addr:
-                addr = m_addr.group(1).strip()
-                if addr not in ('*', '0.0.0.0', ''):
-                    address_from_conf = addr
-            if port_from_conf:
-                return address_from_conf, port_from_conf
+                address_from_conf, port_from_conf = _parse_qb_conf_file(f.read())
+            if port_from_conf or address_from_conf:
+                break
         except Exception:
             pass
 
-    for port in ([port_from_conf] if port_from_conf else [8080, 8081, 1488, 8888]):
-        if not port:
-            continue
-        for ip in ['127.0.0.1', 'localhost']:
-            try:
-                base_url = f"http://{ip}:{port}"
-                req = urllib.request.Request(f"{base_url}/api/v2/app/version", headers={'Referer': base_url})
-                with opener.open(req, timeout=0.8) as resp:
-                    if resp.getcode() == 200:
-                        return ip, port
-            except urllib.error.HTTPError as e:
-                if e.code in (401, 403):
-                    qb_login(ip, port)
-                    return ip, port
-            except Exception:
-                continue
+    if cfg_addr or cfg_port:
+        return (cfg_addr or address_from_conf or '127.0.0.1'), (cfg_port or port_from_conf or 8080)
 
-    return '127.0.0.1', (port_from_conf or 8080)
+    if port_from_conf:
+        cand_ip = address_from_conf or '127.0.0.1'
+        if cand_ip != '127.0.0.1' and not check_qb_api_alive(cand_ip, port_from_conf, timeout=0.6):
+            if check_qb_api_alive('127.0.0.1', port_from_conf, timeout=0.6):
+                return '127.0.0.1', port_from_conf
+        return cand_ip, port_from_conf
+
+    for port in (8080, 8081, 1488, 8888):
+        for ip in ('127.0.0.1', 'localhost'):
+            if check_qb_api_alive(ip, port, timeout=0.8):
+                return ip, port
+
+    return address_from_conf or '127.0.0.1', 8080
 
 
-def check_qb_api_alive(qb_ip, qb_port, timeout=1.5):
-    """Пингует API qBittorrent (отличает 0 раздач от реально упавшего клиента)."""
-    if not qb_ip or not qb_port:
-        return False
+def _open_qb_raw(qb_ip, qb_port, path, timeout=2.0):
     ip = _norm_ip(qb_ip)
     base_url = f"http://{ip}:{qb_port}"
-    req = urllib.request.Request(f"{base_url}/api/v2/app/version", headers={'Referer': base_url})
-    try:
-        with opener.open(req, timeout=timeout) as resp:
-            return resp.getcode() == 200
-    except urllib.error.HTTPError as e:
-        if e.code in (401, 403):
-            return qb_login(ip, qb_port)
-        return False
-    except Exception:
-        return False
-
-
-def _get_qb_json(qb_ip, qb_port, path, timeout=1.8):
-    if not qb_ip or not qb_port:
-        return None
-    qb_ip = _norm_ip(qb_ip)
-    base_url = f"http://{qb_ip}:{qb_port}"
     req = urllib.request.Request(
         f"{base_url}/api/v2/{path}",
         headers={'Referer': base_url, 'Origin': base_url, 'User-Agent': 'Mozilla/5.0'}
     )
     try:
         with opener.open(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode('utf-8'))
+            return resp.getcode(), resp.read().decode('utf-8', errors='replace')
     except urllib.error.HTTPError as e:
-        if e.code in (401, 403) and qb_login(qb_ip, qb_port):
+        if e.code in (401, 403) and qb_login(ip, qb_port):
             try:
                 with opener.open(req, timeout=timeout) as resp2:
-                    return json.loads(resp2.read().decode('utf-8'))
+                    return resp2.getcode(), resp2.read().decode('utf-8', errors='replace')
             except Exception:
-                pass
-        return None
+                return None, None
+        return e.code, None
     except Exception:
-        return None
+        return None, None
 
 
-def _post_qb_api(qb_ip, qb_port, path, payload=None):
+def check_qb_api_alive(qb_ip, qb_port, timeout=1.5):
     if not qb_ip or not qb_port:
         return False
-    qb_ip = _norm_ip(qb_ip)
-    base_url = f"http://{qb_ip}:{qb_port}"
+    code, _ = _open_qb_raw(qb_ip, qb_port, "app/version", timeout=timeout)
+    return code == 200
+
+
+def get_qb_version(qb_ip, qb_port, timeout=2.0):
+    if not qb_ip or not qb_port:
+        return None
+    code, body = _open_qb_raw(qb_ip, qb_port, "app/version", timeout=timeout)
+    return body.strip() if (code == 200 and body) else None
+
+
+def _get_qb_json(qb_ip, qb_port, path, timeout=1.8):
+    if not qb_ip or not qb_port:
+        return None
+    code, body = _open_qb_raw(qb_ip, qb_port, path, timeout=timeout)
+    if code == 200 and body is not None:
+        try:
+            return json.loads(body)
+        except Exception:
+            return None
+    return None
+
+
+def _post_qb_api_code(qb_ip, qb_port, path, payload=None):
+    if not qb_ip or not qb_port:
+        return 0
+    ip = _norm_ip(qb_ip)
+    base_url = f"http://{ip}:{qb_port}"
     body = urllib.parse.urlencode(payload or {}).encode('utf-8')
     req = urllib.request.Request(
         f"{base_url}/api/v2/{path}",
@@ -6804,17 +6849,24 @@ def _post_qb_api(qb_ip, qb_port, path, payload=None):
     )
     try:
         with opener.open(req, timeout=3) as resp:
-            return resp.getcode() == 200
+            return resp.getcode()
     except urllib.error.HTTPError as e:
-        if e.code in (401, 403) and qb_login(qb_ip, qb_port):
+        if e.code in (401, 403) and qb_login(ip, qb_port):
             try:
                 with opener.open(req, timeout=3) as resp2:
-                    return resp2.getcode() == 200
+                    return resp2.getcode()
+            except urllib.error.HTTPError as e2:
+                return e2.code
             except Exception:
-                pass
-        return False
+                return 0
+        return e.code
     except Exception:
-        return False
+        return 0
+
+
+def _post_qb_api(qb_ip, qb_port, path, payload=None):
+    code = _post_qb_api_code(qb_ip, qb_port, path, payload)
+    return 200 <= code < 300
 
 
 def get_live_torrent_info(qb_ip, qb_port):
@@ -6918,6 +6970,7 @@ def add_torrent_url(qb_ip, qb_port, urls, savepath='', tags='', paused=False):
         payload['tags'] = tags
     if paused:
         payload['paused'] = 'true'
+        payload['stopped'] = 'true'
     return _post_qb_api(qb_ip, qb_port, 'torrents/add', payload)
 
 
@@ -6936,7 +6989,13 @@ def send_qb_command(qb_ip, qb_port, action, hash_val):
     payload = {'hashes': hash_val}
     if action == 'setForceStart':
         payload['value'] = 'true'
-    return _post_qb_api(qb_ip, qb_port, f'torrents/{action}', payload)
+    code = _post_qb_api_code(qb_ip, qb_port, f'torrents/{action}', payload)
+    if 200 <= code < 300:
+        return True
+    if code == 404 and action in ('stop', 'start'):
+        legacy = 'pause' if action == 'stop' else 'resume'
+        return _post_qb_api(qb_ip, qb_port, f'torrents/{legacy}', payload)
+    return False
 
 ================================================================================
 FILE: core/qb_process.py
@@ -7034,7 +7093,8 @@ def _is_qb_running_windows():
         try:
             if kernel32.Process32FirstW(h_snap, ctypes.byref(entry)):
                 while True:
-                    if entry.szExeFile.lower() == 'qbittorrent.exe':
+                    exe_low = entry.szExeFile.lower()
+                    if exe_low in ('qbittorrent.exe', 'qbittorrent-nox.exe'):
                         return True
                     if not kernel32.Process32NextW(h_snap, ctypes.byref(entry)):
                         break
@@ -7049,17 +7109,23 @@ def _is_qb_running_windows():
             return False
 
 
+def _is_qb_port_reachable():
+    try:
+        from core.qb_api import detect_qbittorrent_port
+        ip, port = detect_qbittorrent_port(cfg.config)
+        check_ip = '127.0.0.1' if ip in ('*', '0.0.0.0', '') else ip
+        with socket.create_connection((check_ip, int(port)), timeout=0.6):
+            return True
+    except Exception:
+        return False
+
+
 def is_qb_running():
     if os.name != 'nt':
-        try:
-            from core.qb_api import detect_qbittorrent_port
-            ip, port = detect_qbittorrent_port(cfg.config)
-            check_ip = '127.0.0.1' if ip in ('*', '0.0.0.0') else ip
-            with socket.create_connection((check_ip, int(port)), timeout=0.6):
-                return True
-        except Exception:
-            return False
-    return _is_qb_running_windows()
+        return _is_qb_port_reachable()
+    if _is_qb_running_windows():
+        return True
+    return _is_qb_port_reachable()
 
 
 def close_qbittorrent(max_wait_sec=30.0):
@@ -9180,6 +9246,8 @@ def _extract_season_sig(name):
 def _extract_sequel_numbers(name):
     base = re.sub(r'\.[a-z0-9]{2,4}$', '', str(name or ''))
     base = _JUNK_TAGS_RE.sub(' ', base)
+    base = _VERSION_EXPLICIT_RE.sub(' ', base)
+    base = _VERSION_NUMERIC_RE.sub(' ', base)
     nums = []
     for m in _ROMAN_MULTI_RE.finditer(base):
         val = _ROMAN_MAP.get(m.group(1).upper())
@@ -9236,6 +9304,7 @@ def _clean_title(name):
     s = re.sub(r'\.[a-z0-9]{2,4}$', '', str(name or '').lower())
     s = _JUNK_TAGS_RE.sub(' ', s)
     s = _VERSION_EXPLICIT_RE.sub(' ', s)
+    s = _VERSION_NUMERIC_RE.sub(' ', s)
     s = re.sub(r'[._\-]+', ' ', s)
     return ' '.join(s.split())
 
@@ -9289,7 +9358,6 @@ def find_smart_merge_candidates(items, max_results=20):
             if not ((same_content_dir and sim >= 0.55) or sim >= 0.78):
                 continue
 
-            # Приоритет №1: сравнение версий в названии (меньшая -> большая)
             ver_cmp = _compare_version_tuples(a['version'], b['version'])
             if ver_cmp != 0:
                 old_it, new_it = (a['item'], b['item']) if ver_cmp < 0 else (b['item'], a['item'])
@@ -9297,7 +9365,6 @@ def find_smart_merge_candidates(items, max_results=20):
                 v_new = b['version'] if ver_cmp < 0 else a['version']
                 reason = f"Обновление версии: v{'.'.join(map(str, v_old))} → v{'.'.join(map(str, v_new))}"
             else:
-                # Приоритет №2: сравнение даты добавления (раньше -> позже)
                 ta, tb = a['added_on'], b['added_on']
                 if ta > 0 and tb > 0 and ta != tb:
                     old_it, new_it = (a['item'], b['item']) if ta < tb else (b['item'], a['item'])
@@ -10803,7 +10870,7 @@ def export_full_inventory(summaries, live, lineage_map, notes_map, fmt='json', h
     return buf.getvalue().encode('utf-8-sig'), 'text/csv', 'tbr_inventory.csv'
 
 ================================================================================
-FILE: dump_project
+FILE: d
 ================================================================================
 #!/usr/bin/env python3
 """
@@ -11728,6 +11795,60 @@ def parse_speed(text, default_bytes_sec=0):
     return int(val * multipliers[unit])
 
 ================================================================================
+FILE: v
+================================================================================
+# VREIFY_PROJECT.PY
+import os
+import sys
+
+REQUIRED_FILES = [
+    "core/version.py", "core/ui_defaults.py", "core/app_state_db.py", "core/updater.py",
+    "core/keep_awake.py", "core/reliability.py", "core/disaster_recovery.py",
+    "core/torrent_diff.py", "core/orphan_scanner.py", "core/private_vault.py",
+    "core/smart_timers.py", "core/dnd_digest.py", "core/smart_tagging.py",
+    "core/torrent_targets.py", "core/tracker_inspector.py", "core/health_score.py",
+    "core/analytics_insights.py", "core/achievements.py", "core/disk_monitor.py",
+    "core/sessions.py", "core/soft_trash.py", "core/config_vault.py", "core/env_doctor.py",
+    "core/hygiene_trackers.py", "core/hygiene_disk.py", "core/torrent_archiver.py",
+    "core/tracker_replacer.py", "core/batch_relocate.py", "core/path_remapper.py",
+    "core/network_tools.py", "core/webhooks_bundler.py", "core/undo_presets.py",
+    "core/preflight_inbox.py", "core/autopilot_extras.py", "core/saved_views.py",
+    "core/deep_analytics.py", "core/swarm_analytics.py", "core/wrapped_service.py",
+    "core/lineage_notes_events.py", "core/file_fts_index.py",
+    "core/hdd_smart_queue.py", "core/rss_dedup.py", "core/mediainfo_lite.py",
+    "web/errors.py",
+    "web/routes/system_bp.py", "web/routes/tools_bp.py", "web/routes/timers_bp.py",
+    "web/routes/insights_bp.py", "web/routes/social_bp.py", "web/routes/safety_bp.py",
+    "web/routes/hygiene_bp.py", "web/routes/batch_bp.py", "web/routes/net_ops_bp.py",
+    "web/routes/inbox_ops_bp.py", "web/routes/deep_analytics_bp.py",
+    "web/routes/ux_bp.py", "web/routes/hardcore_bp.py",
+    "web/templates/error.html", "web/templates/kiosk.html",
+    "web/templates/partials/tab_tools.html", "web/templates/partials/tab_hygiene_cards.html",
+    "web/templates/partials/tab_net_ops.html", "web/templates/partials/tab_auto_extras.html",
+    "web/templates/partials/tab_analytics_deep.html", "web/templates/partials/modal_system.html",
+    "web/static/system_tools.js", "web/static/merger_tools.js", "web/static/timers_ui.js",
+    "web/static/palette_targets.js", "web/static/analytics_insights.js", "web/static/social_ui.js",
+    "web/static/smart_calc.js", "web/static/safety_ui.js", "web/static/hygiene_ui.js",
+    "web/static/phase3_ui.js", "web/static/phase4_ui.js", "web/static/hardcore_ui.js",
+]
+
+missing = [f for f in REQUIRED_FILES if not os.path.isfile(f)]
+if missing:
+    print("❌ НЕ ХВАТАЕТ ФАЙЛОВ:")
+    for f in missing:
+        print("  -", f)
+    sys.exit(1)
+
+print(f"✅ Все {len(REQUIRED_FILES)} файлов на месте!")
+try:
+    import web.app  # noqa: F401
+    import main     # noqa: F401
+    print("✅ Тестовый импорт web.app и main прошёл успешно! Можно собирать .exe через build.bat.")
+except Exception as e:
+    print(f"❌ Ошибка импорта: {e}")
+    sys.exit(1)
+
+================================================================================
 FILE: web/app.py
 ================================================================================
 # web/app.py
@@ -12531,7 +12652,8 @@ def api_title_groups():
 def api_wrapped():
     period = 'year' if request.args.get('period') == 'year' else 'month'
     _, _, live, hidden = _live_and_hidden()
-    return jsonify(build_wrapped_summary(summary_tracker.db, get_global_torrent_summaries(), live, period=period, hidden_hashes=hidden))
+    hid = hidden if g.get('role') != 'admin' else set()
+    return jsonify(build_wrapped_summary(summary_tracker.db, get_global_torrent_summaries(), live, period=period, hidden_hashes=hid))
 
 
 @deep_analytics_bp.route('/api/inventory/export')
@@ -12573,6 +12695,11 @@ from web.security import HASH_RE
 hardcore_bp = Blueprint('hardcore_bp', __name__)
 
 
+def _find_live_ci(live, t_hash):
+    hl = str(t_hash or '').lower()
+    return next((v for k, v in (live or {}).items() if k.lower() == hl), {})
+
+
 @hardcore_bp.route('/api/hdd/smart')
 def api_hdd_smart():
     if g.get('role') != 'admin':
@@ -12590,7 +12717,7 @@ def api_recheck_queue():
         h = str((request.get_json(silent=True) or {}).get('hash', '')).strip()
         if not HASH_RE.fullmatch(h):
             return jsonify({'success': False, 'error': 'Некорректный хэш'}), 400
-        info = live.get(h) or {}
+        info = _find_live_ci(live, h)
         enqueue_recheck(h, save_path=info.get('save_path', ''), name=info.get('name', h))
         tick_recheck_queue(ip, port, live)
     return jsonify({'queue': list_recheck_queue()})
@@ -12612,7 +12739,7 @@ def api_torrents_mediainfo():
     live = get_live_torrent_info(ip, port) if port else {}
     if g.get('role') != 'admin' and h.lower() in get_hidden_hashes(live):
         return jsonify({'success': False, 'error': 'Доступ запрещён'}), 403
-    info = live.get(h) or {}
+    info = _find_live_ci(live, h)
     return jsonify(inspect_torrent_media(info.get('content_path') or info.get('save_path') or ''))
 
 ================================================================================
@@ -12620,9 +12747,11 @@ FILE: web/routes/hygiene_bp.py
 ================================================================================
 # web/routes/hygiene_bp.py
 import os
+import json
 import urllib.parse
 from flask import Blueprint, request, jsonify, Response, g
 from utils.config import cfg
+from utils.helpers import BT_BACKUP_PATH
 from core.qb_api import detect_qbittorrent_port, get_live_torrent_info, delete_torrents
 from core.hygiene_trackers import scan_quarantine, scan_stalled_incompletes, scan_dead_weight
 from core.hygiene_disk import scan_bt_backup_garbage, scan_inner_content_junk, trash_paths_list
@@ -12637,6 +12766,20 @@ hygiene_bp = Blueprint('hygiene_bp', __name__)
 
 def _not_admin():
     return g.get('role') != 'admin'
+
+
+def _read_bt_torrent_bytes(t_hash):
+    if not t_hash or not os.path.isdir(BT_BACKUP_PATH):
+        return None
+    target = t_hash.lower() + '.torrent'
+    for fname in os.listdir(BT_BACKUP_PATH):
+        if fname.lower() == target:
+            try:
+                with open(os.path.join(BT_BACKUP_PATH, fname), 'rb') as f:
+                    return f.read()
+            except OSError:
+                return None
+    return None
 
 
 @hygiene_bp.route('/api/hygiene/quarantine')
@@ -12667,7 +12810,7 @@ def api_hygiene_dead_weight():
 
 @hygiene_bp.route('/api/hygiene/delete_torrents_soft', methods=['POST'])
 def api_hygiene_delete_torrents_soft():
-    """Удаляет торренты из qB и переносит файлы в _tbr_trash с защитой общих папок и save_path."""
+    """Удаляет торренты из qB и переносит файлы в _tbr_trash с защитой общих папок и сохранением .torrent."""
     if _not_admin():
         return jsonify({'success': False, 'error': 'Только для Admin'}), 403
     data = request.get_json(silent=True) or {}
@@ -12697,19 +12840,30 @@ def api_hygiene_delete_torrents_soft():
         cp = str(lv.get('content_path') or it.get('content_path') or '').strip()
         nm = str(lv.get('name') or it.get('name') or h)
 
+        # Копируем .torrent до удаления из qB, иначе клиент сразу сотрёт его из BT_backup
+        tor_bytes = _read_bt_torrent_bytes(h)
+
         if delete_torrents(ip, port, h, delete_files=False):
             removed += 1
             if cp:
-                # Защита 1: никогда не сносим корень save_path
                 is_root = bool(sp and os.path.normcase(os.path.abspath(cp)) == os.path.normcase(os.path.abspath(sp)))
-                # Защита 2: проверяем пересечение путей с оставшимися раздачами (кросс-сид / мердж)
                 is_shared = any(paths_overlap(cp, op) for op in other_paths)
                 if is_root or is_shared:
                     skipped_shared += 1
                 else:
-                    ok, _ = move_to_trash(cp, name=nm, t_hash=h, actor='admin')
+                    ok, meta = move_to_trash(cp, name=nm, t_hash=h, actor='admin')
                     if ok:
                         trashed += 1
+                        if tor_bytes and isinstance(meta, dict) and not meta.get('has_torrent'):
+                            try:
+                                item_dir = os.path.join(meta['trash_root'], meta['id'])
+                                with open(os.path.join(item_dir, 'backup.torrent'), 'wb') as tf:
+                                    tf.write(tor_bytes)
+                                meta['has_torrent'] = True
+                                with open(os.path.join(item_dir, 'meta.json'), 'w', encoding='utf-8') as mf:
+                                    json.dump(meta, mf, ensure_ascii=False, indent=2)
+                            except OSError:
+                                pass
 
     if removed:
         app_state_db.add_audit_event('system', 'Гигиена -> _tbr_trash', f'Удалено: {removed}, в корзину: {trashed}, защищено общих: {skipped_shared}', actor='admin')
@@ -12781,10 +12935,10 @@ FILE: web/routes/inbox_ops_bp.py
 ================================================================================
 # web/routes/inbox_ops_bp.py
 import json
-import time
 import datetime
 from flask import Blueprint, request, jsonify, g
 from utils.config import cfg
+from core.qb_api import detect_qbittorrent_port, set_global_speed_limits
 from core.preflight_inbox import preflight_analyze, add_torrent_to_qb, get_update_radar, prepare_qb_update_safe
 from core.autopilot_extras import toggle_sniper, list_snipers, get_conductor_config
 from core.saved_views import list_saved_views, add_saved_view, delete_saved_view
@@ -12792,6 +12946,7 @@ from core.app_state_db import app_state_db
 from web.security import HASH_RE
 
 inbox_ops_bp = Blueprint('inbox_ops_bp', __name__)
+_VALID_ROUTER_FIELDS = {'tracker', 'ext', 'min_gib'}
 
 
 def _not_admin():
@@ -12840,7 +12995,11 @@ def api_snipers():
     h = str(d.get('hash', '')).strip()
     if not HASH_RE.fullmatch(h):
         return jsonify({'success': False, 'error': 'Некорректный хэш'}), 400
-    ok, active = toggle_sniper(h, idle_hours=float(d.get('idle_hours') or 4.0))
+    try:
+        idle_h = max(0.5, float(d.get('idle_hours') or 4.0))
+    except (ValueError, TypeError):
+        idle_h = 4.0
+    ok, active = toggle_sniper(h, idle_hours=idle_h)
     return jsonify({'success': ok, 'active': active})
 
 
@@ -12860,7 +13019,11 @@ def api_views_delete():
     if _not_admin():
         return jsonify({'success': False}), 403
     vid = (request.get_json(silent=True) or {}).get('id')
-    return jsonify({'success': bool(vid and delete_saved_view(vid))})
+    try:
+        vid_i = int(vid)
+    except (ValueError, TypeError):
+        return jsonify({'success': False}), 400
+    return jsonify({'success': delete_saved_view(vid_i)})
 
 
 @inbox_ops_bp.route('/api/conductor', methods=['GET', 'POST'])
@@ -12873,13 +13036,19 @@ def api_conductor():
         c['smart_reannounce'] = cfg.getboolean('Smart_Reannounce_Enabled', False)
         return jsonify(c)
     d = request.get_json(silent=True) or {}
-    cfg.set('Conductor_Enabled', str(bool(d.get('enabled', False))))
+    enabled = bool(d.get('enabled', False))
+    cfg.set('Conductor_Enabled', str(enabled))
     if isinstance(d.get('blocks'), list):
         cfg.set('Conductor_Blocks_JSON', json.dumps(d['blocks'], ensure_ascii=False))
     if 'smart_queue' in d:
-        cfg.set('Smart_Queue_Enabled', str(bool(d['smart_queue'])))
+        cfg.set('Smart_Queue_Enabled', str(bool(d.get('smart_queue'))))
     if 'smart_reannounce' in d:
-        cfg.set('Smart_Reannounce_Enabled', str(bool(d['smart_reannounce'])))
+        cfg.set('Smart_Reannounce_Enabled', str(bool(d.get('smart_reannounce'))))
+    if not enabled and cfg.getint('Conductor_Last_Applied_Up', 0) > 0:
+        ip, port = detect_qbittorrent_port(cfg.config)
+        if port:
+            set_global_speed_limits(ip, port, 0, 0)
+        cfg.set('Conductor_Last_Applied_Up', '0')
     cfg.save()
     return jsonify({'success': True})
 
@@ -12891,6 +13060,11 @@ def api_conductor_override():
     now_dt = datetime.datetime.now()
     next_hr = (now_dt.replace(minute=0, second=0, microsecond=0) + datetime.timedelta(hours=1)).timestamp()
     cfg.set('Conductor_Override_Until', str(int(next_hr)))
+    if cfg.getint('Conductor_Last_Applied_Up', 0) > 0:
+        ip, port = detect_qbittorrent_port(cfg.config)
+        if port:
+            set_global_speed_limits(ip, port, 0, 0)
+        cfg.set('Conductor_Last_Applied_Up', '0')
     cfg.save()
     return jsonify({'success': True, 'until': int(next_hr)})
 
@@ -12904,11 +13078,32 @@ def api_router_rules():
             with app_state_db._get_conn() as conn:
                 return jsonify({'rules': [dict(r) for r in conn.execute("SELECT * FROM auto_router_rules ORDER BY priority ASC, id ASC").fetchall()]})
     d = request.get_json(silent=True) or {}
+    fld = str(d.get('match_field', 'tracker')).strip()
+    if fld not in _VALID_ROUTER_FIELDS:
+        return jsonify({'success': False, 'error': 'Некорректное поле условия'}), 400
+    pat = str(d.get('pattern', '')).strip()
+    if not pat:
+        return jsonify({'success': False, 'error': 'Укажите непустой паттерн'}), 400
+    if fld == 'min_gib':
+        try:
+            if float(pat) <= 0:
+                raise ValueError
+        except (ValueError, TypeError):
+            return jsonify({'success': False, 'error': 'Для min_gib укажите число > 0'}), 400
+    cat = str(d.get('category', '')).strip()
+    path = str(d.get('path', '')).strip()
+    if not cat and not path:
+        return jsonify({'success': False, 'error': 'Укажите категорию или путь назначения'}), 400
+    try:
+        prio = int(d.get('priority', 10) or 10)
+    except (ValueError, TypeError):
+        prio = 10
+
     with app_state_db._lock:
         with app_state_db._get_conn() as conn:
             cur = conn.execute(
                 "INSERT INTO auto_router_rules (priority, match_field, pattern, target_category, target_path) VALUES (?, ?, ?, ?, ?)",
-                (int(d.get('priority', 10)), str(d.get('match_field', 'tracker')), str(d.get('pattern', '')).strip(), str(d.get('category', '')).strip(), str(d.get('path', '')).strip())
+                (prio, fld, pat, cat, path)
             )
             conn.commit()
             return jsonify({'success': True, 'id': cur.lastrowid})
@@ -12919,9 +13114,13 @@ def api_router_delete():
     if _not_admin():
         return jsonify({'success': False}), 403
     rid = (request.get_json(silent=True) or {}).get('id')
+    try:
+        rid_i = int(rid)
+    except (ValueError, TypeError):
+        return jsonify({'success': False, 'error': 'Некорректный ID'}), 400
     with app_state_db._lock:
         with app_state_db._get_conn() as conn:
-            conn.execute("DELETE FROM auto_router_rules WHERE id = ?", (int(rid),))
+            conn.execute("DELETE FROM auto_router_rules WHERE id = ?", (rid_i,))
             conn.commit()
     return jsonify({'success': True})
 
@@ -13517,7 +13716,7 @@ from core.backup_manager import create_backup_zip, stage_restore_zip
 from core.keep_awake import keep_awake
 from core.app_state_db import app_state_db
 from core.disk_monitor import list_active_disks
-from core.analytics_insights import invalidate_insights_cache
+from core.analytics_insights import invalidate_insights_cache, get_records_and_comparisons
 from web.security import get_csrf_token, is_allowed_qb_ip, get_client_ip
 
 settings_bp = Blueprint('settings_bp', __name__)
@@ -13718,6 +13917,7 @@ def api_settings():
         summary_tracker.notify_interval_changed()
     if cfg.getint('Max_Channel_Mbps', 1000) != old_mbps:
         invalidate_insights_cache()
+        get_records_and_comparisons(summary_tracker.db, force_recalc=True)
 
     app_state_db.add_audit_event('system', 'Изменение настроек', f'host={new_host}:{new_p}', actor='admin')
     net_changed = (old_p != new_p) or (old_h != new_host)
@@ -13875,6 +14075,7 @@ FILE: web/routes/timers_bp.py
 from flask import Blueprint, request, jsonify, g
 from utils.config import cfg
 from core.qb_api import detect_qbittorrent_port, get_live_torrent_info
+from core.private_vault import get_hidden_hashes
 from core.smart_timers import (
     get_freeze_status, freeze_active_torrents, unfreeze_torrents,
     get_snooze_status, start_snooze, cancel_snooze,
@@ -13990,7 +14191,14 @@ def api_expirations_delete():
 
 @timers_bp.route('/api/targets')
 def api_targets_list():
-    return jsonify({'targets': list_targets()})
+    targets = list_targets()
+    if g.get('role') != 'admin':
+        ip, port = detect_qbittorrent_port(cfg.config)
+        live = get_live_torrent_info(ip, port) if port else {}
+        hidden = get_hidden_hashes(live)
+        if hidden:
+            targets = {k: v for k, v in targets.items() if k.lower() not in hidden}
+    return jsonify({'targets': targets})
 
 
 @timers_bp.route('/api/targets/set', methods=['POST'])
@@ -14088,6 +14296,7 @@ def api_notifications_schedule():
 FILE: web/routes/tools_bp.py
 ================================================================================
 # web/routes/tools_bp.py
+import os
 from flask import Blueprint, request, jsonify, g
 from core.orphan_scanner import get_download_roots, scan_orphan_entries, delete_orphan_entries
 from core.private_vault import get_vault_settings, save_vault_settings
@@ -14099,6 +14308,20 @@ tools_bp = Blueprint('tools_bp', __name__)
 def _actor_name():
     prof = g.get('profile')
     return (prof.get('login') or prof.get('name') or 'admin') if prof else 'admin'
+
+
+def _sanitize_custom_roots(raw_roots):
+    if raw_roots is None:
+        return None, None
+    if not isinstance(raw_roots, list) or not all(isinstance(x, str) for x in raw_roots):
+        return None, 'Ожидался список строковых путей'
+    clean = []
+    for r in raw_roots:
+        ap = os.path.abspath(r.strip())
+        if not ap or os.path.dirname(ap) == ap:
+            return None, f'Запрещено указывать корень диска/ФС: {r}'
+        clean.append(ap)
+    return clean, None
 
 
 @tools_bp.route('/api/tools/orphans/roots')
@@ -14113,9 +14336,9 @@ def api_orphans_scan():
     if g.get('role') != 'admin':
         return jsonify({'success': False, 'error': 'Только для Admin'}), 403
     data = request.get_json(silent=True) or {}
-    custom_roots = data.get('roots')
-    if custom_roots is not None and not isinstance(custom_roots, list):
-        return jsonify({'success': False, 'error': 'Ожидался список папок'}), 400
+    custom_roots, err = _sanitize_custom_roots(data.get('roots'))
+    if err:
+        return jsonify({'success': False, 'error': err}), 400
     res = scan_orphan_entries(custom_roots=custom_roots)
     return jsonify({'success': True, **res})
 
@@ -14130,7 +14353,10 @@ def api_orphans_delete():
     use_trash = bool(data.get('use_trash', True))
     if not confirmed or not isinstance(paths, list) or not paths:
         return jsonify({'success': False, 'error': 'Требуется явное подтверждение и непустой список путей'}), 400
-    ok, deleted, errors = delete_orphan_entries(paths, actor=_actor_name(), use_trash=use_trash)
+    custom_roots, err = _sanitize_custom_roots(data.get('custom_roots'))
+    if err:
+        return jsonify({'success': False, 'error': err}), 400
+    ok, deleted, errors = delete_orphan_entries(paths, actor=_actor_name(), use_trash=use_trash, custom_roots=custom_roots)
     return jsonify({'success': ok, 'deleted': deleted, 'errors': errors, 'use_trash': use_trash}), (200 if deleted or ok else 400)
 
 
@@ -14172,6 +14398,8 @@ from core.torrent_targets import list_targets
 from core.health_score import enrich_live_metrics
 from core.tracker_inspector import inspect_tracker_errors
 from core.app_state_db import app_state_db
+from core.tracker_replacer import push_undo_record
+from core.lineage_notes_events import record_torrent_event, push_activity
 from web.security import HASH_RE
 
 torrents_bp = Blueprint('torrents_bp', __name__)
@@ -14319,11 +14547,29 @@ def api_torrent_action():
         return jsonify({'success': False, 'error': 'qBittorrent недоступен'}), 400
 
     joined = '|'.join(hashes)
-    if action == 'addTags':
-        return jsonify({'success': add_torrent_tags(ip, port, joined, tag)})
-    if action == 'removeTags':
-        return jsonify({'success': remove_torrent_tags(ip, port, joined, tag)})
-    return jsonify({'success': send_qb_command(ip, port, action, joined)})
+    if action in ('addTags', 'removeTags'):
+        ok = add_torrent_tags(ip, port, joined, tag) if action == 'addTags' else remove_torrent_tags(ip, port, joined, tag)
+        if ok:
+            lbl = f"{'+Тег' if action == 'addTags' else '-Тег'} '{tag}' ({len(hashes)} шт.)"
+            push_undo_record('tags_bulk', lbl, {'action': action, 'hashes': joined, 'tag': tag})
+            if len(hashes) == 1:
+                record_torrent_event(hashes[0], 'tag', lbl)
+            else:
+                push_activity('tag', lbl)
+        return jsonify({'success': ok})
+
+    ok = send_qb_command(ip, port, action, joined)
+    if ok:
+        if action in ('stop', 'start'):
+            lbl = f"{'Пауза' if action == 'stop' else 'Пуск'} ({len(hashes)} шт.)"
+            if len(hashes) > 1:
+                push_undo_record('pause_start_bulk', lbl, {'action': action, 'hashes': joined})
+                push_activity('control', lbl)
+            else:
+                record_torrent_event(hashes[0], 'control', 'Поставлено на паузу' if action == 'stop' else 'Возобновлено')
+        elif action == 'setForceStart' and len(hashes) == 1:
+            record_torrent_event(hashes[0], 'control', 'Включён форсированный старт')
+    return jsonify({'success': ok})
 
 
 @torrents_bp.route('/api/torrents/delete', methods=['POST'])
@@ -14343,6 +14589,7 @@ def api_torrents_delete():
     if ok:
         force_clear_cache()
         app_state_db.add_audit_event('system', 'Удаление торрента', f'count={len(hashes)}, files={delete_files}', actor='admin')
+        push_activity('delete', f"Удалено раздач: {len(hashes)} (файлы={delete_files})", t_hash=hashes[0] if len(hashes) == 1 else '')
     return jsonify({'success': ok})
 
 
@@ -14357,6 +14604,8 @@ def api_torrents_action_all():
         return jsonify({'success': False, 'error': 'qBittorrent не запущен'}), 400
     ok = send_qb_command(ip, port, action, 'all')
     msg = "Все раздачи поставлены на паузу" if action == 'stop' else "Все раздачи возобновлены"
+    if ok:
+        push_activity('control', msg)
     return jsonify({'success': ok, 'message': msg})
 
 
@@ -14471,6 +14720,7 @@ from core.file_fts_index import reindex_torrent_files, search_files_fts, build_t
 from web.security import HASH_RE
 
 ux_bp = Blueprint('ux_bp', __name__)
+_VALID_FILE_PRIOS = {0, 1, 6, 7}
 
 
 def _hidden_for_role():
@@ -14478,6 +14728,11 @@ def _hidden_for_role():
     live = get_live_torrent_info(ip, port) if port else {}
     hidden = get_hidden_hashes(live)
     return ip, port, live, (hidden if g.get('role') != 'admin' else set())
+
+
+def _find_live_ci(live, t_hash):
+    hl = str(t_hash or '').lower()
+    return next((v for k, v in (live or {}).items() if k.lower() == hl), {})
 
 
 @ux_bp.route('/api/torrent/timeline')
@@ -14504,7 +14759,7 @@ def api_torrent_notes():
     if g.get('role') != 'admin':
         return jsonify({'success': False, 'error': 'Только для Admin'}), 403
     d = request.get_json(silent=True) or {}
-    nm = (live.get(h) or {}).get('name', '')
+    nm = _find_live_ci(live, h).get('name', '')
     ok = set_torrent_note(h, d.get('note', ''), last_name=nm)
     return jsonify({'success': ok})
 
@@ -14563,9 +14818,16 @@ def api_torrents_file_prio():
     d = request.get_json(silent=True) or {}
     h = str(d.get('hash', '')).strip()
     if not HASH_RE.fullmatch(h):
-        return jsonify({'success': False}), 400
+        return jsonify({'success': False, 'error': 'Некорректный хэш'}), 400
+    try:
+        fid = int(d.get('id', 0))
+        prio = int(d.get('priority', 1))
+        if fid < 0 or prio not in _VALID_FILE_PRIOS:
+            raise ValueError
+    except (ValueError, TypeError):
+        return jsonify({'success': False, 'error': 'Некорректные id или priority'}), 400
     ip, port = detect_qbittorrent_port(cfg.config)
-    ok = set_torrent_file_prio(ip, port, h, d.get('id', 0), d.get('priority', 1))
+    ok = set_torrent_file_prio(ip, port, h, fid, prio)
     return jsonify({'success': ok})
 
 ================================================================================
@@ -15878,19 +16140,37 @@ function switchTab(name, updateHash = true) {
     if (name === 'torrents') loadTorrents();
     if (name === 'merger') loadMergerLists();
     if (name === 'summary') loadSummary();
-    if (name === 'analytics') loadAnalyticsTab();
-    if (name === 'automation') loadAutomation();
-    if (name === 'tools' && typeof loadToolsTab === 'function') loadToolsTab();
+    if (name === 'analytics') {
+        loadAnalyticsTab();
+        if (typeof loadDeepAnalyticsWidgets === 'function') loadDeepAnalyticsWidgets();
+    }
+    if (name === 'automation') {
+        loadAutomation();
+        if (typeof loadAutoExtrasTab === 'function') loadAutoExtrasTab();
+    }
+    if (name === 'tools') {
+        if (typeof loadToolsTab === 'function') loadToolsTab();
+        if (typeof loadSafetyToolsTab === 'function') loadSafetyToolsTab();
+        if (typeof loadNetOpsTab === 'function') loadNetOpsTab();
+    }
 }
 
 function refreshActiveTab() {
     const active = document.querySelector('.tab-btn.active')?.dataset.tab || 'torrents';
     if (active === 'torrents') loadTorrents(true);
     else if (active === 'summary') loadSummary(true);
-    else if (active === 'analytics') loadAnalyticsTab();
-    else if (active === 'automation') loadAutomation();
-    else if (active === 'merger') loadTorrents(true);
-    else if (active === 'tools' && typeof loadToolsTab === 'function') loadToolsTab();
+    else if (active === 'analytics') {
+        loadAnalyticsTab();
+        if (typeof loadDeepAnalyticsWidgets === 'function') loadDeepAnalyticsWidgets();
+    } else if (active === 'automation') {
+        loadAutomation();
+        if (typeof loadAutoExtrasTab === 'function') loadAutoExtrasTab();
+    } else if (active === 'merger') loadTorrents(true);
+    else if (active === 'tools') {
+        if (typeof loadToolsTab === 'function') loadToolsTab();
+        if (typeof loadSafetyToolsTab === 'function') loadSafetyToolsTab();
+        if (typeof loadNetOpsTab === 'function') loadNetOpsTab();
+    }
     checkQbStatus();
 }
 
@@ -16223,12 +16503,6 @@ async function loadInspectorMediaInfo(tHash) {
     `).join('');
 }
 
-document.addEventListener('DOMContentLoaded', () => {
-    document.querySelector('button[onclick*="openTorrentInspectorModal"]')?.addEventListener('click', () => {
-        setTimeout(() => { if (typeof selectedHash !== 'undefined' && selectedHash) loadInspectorMediaInfo(selectedHash); }, 120);
-    });
-});
-
 ================================================================================
 FILE: web/static/hygiene_ui.js
 ================================================================================
@@ -16237,12 +16511,23 @@ let _hygieneTorItems = [];
 let _hygienePathItems = [];
 let _hygieneMode = 'quarantine';
 let _pathMode = 'bt_backup';
+let _relocatePollTimer = null;
+
+function toggleAllHygTor(master) {
+    document.querySelectorAll('.hyg-tor-chk').forEach(c => { c.checked = master.checked; });
+}
+
+function toggleAllHygPath(master) {
+    document.querySelectorAll('.hyg-path-chk').forEach(c => { c.checked = master.checked; });
+}
 
 async function runHygieneTorrentScan(mode) {
     _hygieneMode = mode;
     const tbody = document.getElementById('hyg-tor-tbody');
     const summary = document.getElementById('hyg-tor-summary');
     const delBtn = document.getElementById('btn-hyg-tor-trash');
+    const masterChk = document.getElementById('hyg-tor-chk-all');
+    if (masterChk) masterChk.checked = false;
     if (!tbody) return;
     tbody.innerHTML = '<tr><td colspan="4" class="center-msg">⏳ Сканирование клиента...</td></tr>';
     if (delBtn) delBtn.classList.add('hidden');
@@ -16293,7 +16578,7 @@ async function deleteSelectedHygieneTorrents() {
     if (!confirm('Подтвердите повторно перенос выбранных раздач в _tbr_trash:')) return;
     const res = await api('/api/hygiene/delete_torrents_soft', 'POST', { items: chosen });
     const d = await res.json();
-    alert(`Перенесено в корзину: ${d.removed || 0}`);
+    alert(`Удалено из qBittorrent: ${d.removed || 0}\nПеренесено в _tbr_trash: ${d.trashed || 0}\nЗащищено общих папок: ${d.skipped_shared || 0}`);
     runHygieneTorrentScan(_hygieneMode);
     if (typeof loadTrashItems === 'function') loadTrashItems();
 }
@@ -16303,6 +16588,8 @@ async function runHygienePathScan(mode) {
     const tbody = document.getElementById('hyg-path-tbody');
     const summary = document.getElementById('hyg-path-summary');
     const delBtn = document.getElementById('btn-hyg-path-trash');
+    const masterChk = document.getElementById('hyg-path-chk-all');
+    if (masterChk) masterChk.checked = false;
     if (!tbody) return;
     tbody.innerHTML = '<tr><td colspan="4" class="center-msg">⏳ Сканирование...</td></tr>';
     if (delBtn) delBtn.classList.add('hidden');
@@ -16311,7 +16598,7 @@ async function runHygienePathScan(mode) {
     const d = await res.json();
     if (!res.ok || !d.success) {
         summary.textContent = d.error || 'Ошибка';
-        tbody.innerHTML = '';
+        tbody.innerHTML = `<tr><td colspan="4" class="center-msg" style="color:var(--danger);">${escapeHtml(d.error || 'Ошибка')}</td></tr>`;
         return;
     }
     _hygienePathItems = d.items || [];
@@ -16404,6 +16691,25 @@ async function previewBatchRelocate() {
         (d.items || []).slice(0, 20).map(i => `${i.old_path} → ${i.new_path}`).join('\n');
 }
 
+function pollBatchRelocateStatus() {
+    if (_relocatePollTimer) clearInterval(_relocatePollTimer);
+    _relocatePollTimer = setInterval(async () => {
+        try {
+            const res = await api('/api/batch/relocate/status');
+            if (!res.ok) return;
+            const st = await res.json();
+            const out = document.getElementById('batch-op-out');
+            if (out) {
+                out.textContent = `🚚 Переезд: всего ${st.total} | Готово: ${st.done} | В процессе: ${st.moving} | В очереди: ${st.pending}`;
+            }
+            if (!st.running && st.pending === 0 && st.moving === 0) {
+                clearInterval(_relocatePollTimer);
+                _relocatePollTimer = null;
+            }
+        } catch (e) {}
+    }, 3000);
+}
+
 async function startBatchRelocate() {
     const old_prefix = document.getElementById('batch-rel-old').value;
     const new_prefix = document.getElementById('batch-rel-new').value;
@@ -16411,6 +16717,7 @@ async function startBatchRelocate() {
     const res = await api('/api/batch/relocate/start', 'POST', { old_prefix, new_prefix });
     const d = await res.json();
     document.getElementById('batch-op-out').textContent = d.success ? `🚀 В очереди переезда: ${d.queued} раздач` : `❌ ${d.error}`;
+    if (d.success) pollBatchRelocateStatus();
 }
 
 async function previewBatchRemap() {
@@ -17238,7 +17545,10 @@ async function loadNetOpsTab() {
         if (ifRes.ok) {
             const d = await ifRes.json();
             document.getElementById('iface-guard-en').checked = Boolean(d.enabled);
-            document.getElementById('iface-guard-name').value = d.expected_cfg || d.current || '';
+            const ifInp = document.getElementById('iface-guard-name');
+            ifInp.value = d.expected_cfg || '';
+            const curLbl = d.current_name || d.current || 'Any';
+            ifInp.placeholder = `Эталонный интерфейс (сейчас в qB: ${curLbl})`;
             document.getElementById('iface-guard-panic').checked = Boolean(d.panic_on_drop);
         }
         if (whRes.ok) {
@@ -17373,12 +17683,15 @@ async function overrideConductor() {
 }
 
 async function addRouterRule() {
-    await api('/api/router/rules', 'POST', {
+    const res = await api('/api/router/rules', 'POST', {
         match_field: document.getElementById('router-field').value,
         pattern: document.getElementById('router-pattern').value,
         category: document.getElementById('router-cat').value,
         path: document.getElementById('router-path').value
     });
+    const d = await res.json();
+    if (!res.ok || !d.success) return alert(d.error || 'Ошибка добавления правила');
+    document.getElementById('router-pattern').value = '';
     loadAutoExtrasTab();
 }
 
@@ -17402,8 +17715,6 @@ async function importPresetsFile(file) {
 
 document.addEventListener('DOMContentLoaded', () => {
     setTimeout(loadSavedViews, 600);
-    document.querySelector('[data-tab="tools"]')?.addEventListener('click', () => setTimeout(loadNetOpsTab, 60));
-    document.querySelector('[data-tab="automation"]')?.addEventListener('click', () => setTimeout(loadAutoExtrasTab, 60));
 });
 
 ================================================================================
@@ -17412,6 +17723,7 @@ FILE: web/static/phase4_ui.js
 // web/static/phase4_ui.js
 let _hmMode = '365';
 let _inspFilesPage = 1;
+let _inspTotalPages = 1;
 
 async function toggleHeatmapMode(mode) {
     _hmMode = mode;
@@ -17444,7 +17756,7 @@ async function loadDayHourlyBreakdown(dateStr) {
     const d = await res.json();
     if (!d.success) { out.textContent = d.error || 'Ошибка'; return; }
     if (!d.has_detail) { out.innerHTML = `📅 <b>${escapeHtml(dateStr)}</b>: детальные почасовые точки за этот архивный день отсутствуют.`; return; }
-    out.innerHTML = `<b>📅 ${escapeHtml(dateStr)} по часам:</b> ` + (d.hours || []).filter(h => h.bytes > 0).map(h => `<span class="badge badge-up" style="margin:2px;">${h.hour}: ${escapeHtml(h.fmt)}</span>`).join('') || 'Нулевая активность';
+    out.innerHTML = `<b>📅 ${escapeHtml(dateStr)} по часам:</b> ` + ((d.hours || []).filter(h => h.bytes > 0).map(h => `<span class="badge badge-up" style="margin:2px;">${h.hour}: ${escapeHtml(h.fmt)}</span>`).join('') || 'Нулевая активность');
 }
 
 async function loadDeepAnalyticsWidgets() {
@@ -17459,6 +17771,8 @@ async function loadRunwayAndQuota() {
         const [rRes, qRes] = await Promise.all([api('/api/analytics/runway'), api('/api/analytics/quota')]);
         if (rRes.ok) {
             const r = await rRes.json();
+            const resInp = document.getElementById('inp-reserve-gib');
+            if (resInp && document.activeElement !== resInp) resInp.value = r.reserve_gib ?? 20;
             document.getElementById('runway-box').innerHTML = `
                 <div>Диск <b>${escapeHtml(r.disk_path)}</b>: свободно <b>${escapeHtml(r.free_fmt)}</b> (после очереди: <b class="${r.guard_triggered ? 'orange-txt' : 'accent-txt'}">${escapeHtml(r.post_queue_fmt)}</b>)</div>
                 <div class="lbl-xs muted-text mt-10">Темп роста (30д): ${escapeHtml(r.daily_growth_fmt)} • Запас до резерва (${r.reserve_gib} GiB): <b>${r.days_left !== null ? r.days_left + ' дн.' : '∞'}</b></div>
@@ -17466,6 +17780,8 @@ async function loadRunwayAndQuota() {
         }
         if (qRes.ok) {
             const q = await qRes.json();
+            const qInp = document.getElementById('inp-quota-tib');
+            if (qInp && document.activeElement !== qInp) qInp.value = q.quota_tib > 0 ? q.quota_tib : '';
             document.getElementById('quota-box').innerHTML = `
                 <div>За месяц: <b class="accent-txt">${escapeHtml(q.used_fmt)}</b> / <b>${escapeHtml(q.quota_fmt)}</b> (${q.percent}%)</div>
                 <div style="height:6px; background:var(--bg-main); border-radius:3px; overflow:hidden; margin:6px 0;"><div style="height:100%; width:${q.percent}%; background:var(--accent);"></div></div>
@@ -17575,6 +17891,13 @@ async function refreshActivityTicker() {
     } catch (e) {}
 }
 
+function changeInspectorFilesPage(delta) {
+    const h = (typeof _inspHash !== 'undefined' && _inspHash) ? _inspHash : selectedHash;
+    if (!h) return;
+    const next = Math.max(1, Math.min(_inspTotalPages, _inspFilesPage + delta));
+    if (next !== _inspFilesPage) loadInspectorPhase4(h, next);
+}
+
 async function loadInspectorPhase4(tHash, page = 1) {
     _inspFilesPage = page;
     const [noteRes, timeRes, filesRes] = await Promise.all([
@@ -17589,6 +17912,9 @@ async function loadInspectorPhase4(tHash, page = 1) {
     }
     if (filesRes.ok) {
         const fd = await filesRes.json();
+        _inspTotalPages = fd.total_pages || 1;
+        const pgInfo = document.getElementById('insp-files-page-info');
+        if (pgInfo) pgInfo.textContent = `${_inspFilesPage} / ${_inspTotalPages} (${fd.total || 0})`;
         document.getElementById('insp-files-tbody').innerHTML = (fd.files || []).map(f => `
             <tr>
                 <td style="white-space:normal; word-break:break-all;">${escapeHtml(f.name)}</td>
@@ -17601,8 +17927,9 @@ async function loadInspectorPhase4(tHash, page = 1) {
 }
 
 async function saveInspectorNote() {
-    if (!selectedHash) return;
-    await api('/api/torrent/notes', 'POST', { hash: selectedHash, note: document.getElementById('insp-note-inp').value });
+    const h = (typeof _inspHash !== 'undefined' && _inspHash) ? _inspHash : selectedHash;
+    if (!h) return;
+    await api('/api/torrent/notes', 'POST', { hash: h, note: document.getElementById('insp-note-inp').value });
     alert('📝 Заметка сохранена (привязана к UID)');
 }
 
@@ -17618,8 +17945,6 @@ document.addEventListener('DOMContentLoaded', () => {
             if (/^\d{4}-\d{2}-\d{2}$/.test(dStr)) loadDayHourlyBreakdown(dStr);
         }
     });
-    document.querySelector('[data-tab="analytics"]')?.addEventListener('click', () => setTimeout(loadDeepAnalyticsWidgets, 150));
-    document.querySelector('button[onclick*="openTorrentInspectorModal"]')?.addEventListener('click', () => setTimeout(() => { if (selectedHash) loadInspectorPhase4(selectedHash, 1); }, 100));
 });
 
 ================================================================================
@@ -18052,7 +18377,6 @@ async function finishOnboarding(skipped = false) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-    document.querySelector('[data-tab="tools"]')?.addEventListener('click', () => setTimeout(loadSafetyToolsTab, 50));
     setTimeout(checkOnboardingWizard, 1200);
 });
 
@@ -20448,8 +20772,16 @@ FILE: web/templates/partials/modal_system.html
                 <div id="insp-timeline-box" class="col-gap"></div>
             </div>
         </div>
-        <div class="scroll-box mt-10" style="max-height:160px; border:1px solid var(--border); border-radius:6px; padding:6px;">
-            <div class="row-between mb-8"><span class="lbl-xs orange-txt">📁 ФАЙЛЫ И ПРИОРИТЕТЫ</span><span class="lbl-xs muted-text">Снятие галочки с уже скачанного не удаляет его с диска (.parts)</span></div>
+        <div class="scroll-box mt-10" style="max-height:185px; border:1px solid var(--border); border-radius:6px; padding:6px;">
+            <div class="row-between mb-8">
+                <span class="lbl-xs orange-txt">📁 ФАЙЛЫ И ПРИОРИТЕТЫ</span>
+                <div class="row-gap" style="gap:6px;">
+                    <span class="lbl-xs muted-text">Снятие галочки с уже скачанного не удаляет его с диска (.parts)</span>
+                    <button class="btn btn-secondary btn-xs" onclick="changeInspectorFilesPage(-1)">◀</button>
+                    <span id="insp-files-page-info" class="lbl-xs muted-text">1 / 1</span>
+                    <button class="btn btn-secondary btn-xs" onclick="changeInspectorFilesPage(1)">▶</button>
+                </div>
+            </div>
             <table><thead><tr><th>Файл</th><th>Размер</th><th>%</th><th>Приоритет</th></tr></thead><tbody id="insp-files-tbody"></tbody></table>
         </div>
     </div>
@@ -20866,15 +21198,15 @@ FILE: web/templates/partials/tab_analytics.html
 ================================================================================
 FILE: web/templates/partials/tab_analytics_deep.html
 ================================================================================
-<!-- Панель Фазы 4: Глубокая аналитика, Treemap, Квота, Машина времени, Wrapped, Экспорт -->
+<!-- Панель глубокой аналитики, Treemap, Квота, Машина времени, Wrapped, Экспорт -->
 <div class="grid-2" style="gap:12px;">
     <div class="card">
-        <div class="card-title">🛫 ВЗЛЁТНАЯ ПОЛОСА ДИСКА (#18)</div>
+        <div class="card-title">🛫 ВЗЛЁТНАЯ ПОЛОСА ДИСКА</div>
         <div id="runway-box" style="font-size:12px;">Загрузка...</div>
     </div>
     <div class="card">
         <div class="row-between mb-8">
-            <div class="card-title" style="margin:0;">📊 МЕСЯЧНАЯ КВОТА ТРАФИКА (#42)</div>
+            <div class="card-title" style="margin:0;">📊 МЕСЯЧНАЯ КВОТА ТРАФИКА</div>
             <div class="row-gap admin-only" style="gap:4px;">
                 <input id="inp-quota-tib" type="number" step="0.5" min="0" class="form-control" style="width:65px; padding:2px 4px; font-size:11px;" placeholder="TiB">
                 <input id="inp-reserve-gib" type="number" min="0" class="form-control" style="width:65px; padding:2px 4px; font-size:11px;" placeholder="Резерв GiB">
@@ -20887,7 +21219,7 @@ FILE: web/templates/partials/tab_analytics_deep.html
 
 <div class="card">
     <div class="row-between mb-8">
-        <div class="card-title" style="margin:0;">🗺️ КАРТА ТЯЖЕЛОВЕСОВ — TREEMAP (#22)</div>
+        <div class="card-title" style="margin:0;">🗺️ КАРТА ТЯЖЕЛОВЕСОВ — TREEMAP</div>
         <div class="row-gap">
             <button class="btn btn-secondary btn-xs" onclick="loadTreemap('tags')">По тегам</button>
             <button class="btn btn-secondary btn-xs" onclick="loadTreemap('trackers')">По трекерам</button>
@@ -20898,7 +21230,7 @@ FILE: web/templates/partials/tab_analytics_deep.html
 </div>
 
 <div class="card">
-    <div class="card-title">⏳ МАШИНА ВРЕМЕНИ — СРАВНЕНИЕ ПЕРИОДОВ A / B (#33)</div>
+    <div class="card-title">⏳ МАШИНА ВРЕМЕНИ — СРАВНЕНИЕ ПЕРИОДОВ A / B</div>
     <div class="row-wrap mb-8" style="gap:6px;">
         <input type="date" id="ab-a1" class="form-control" style="width:130px;"> — <input type="date" id="ab-a2" class="form-control" style="width:130px;">
         <span>vs</span>
@@ -20910,13 +21242,13 @@ FILE: web/templates/partials/tab_analytics_deep.html
 </div>
 
 <div class="card">
-    <div class="card-title">🧬 ЖИВУЧЕСТЬ ТРЕКЕРОВ (#19), uTP vs TCP (#43) И АВТО-ТЮНЕР (#50)</div>
+    <div class="card-title">🧬 ЖИВУЧЕСТЬ ТРЕКЕРОВ, uTP vs TCP И АВТО-ТЮНЕР</div>
     <div id="swarm-analytics-box" style="font-size:12px;">Загрузка...</div>
 </div>
 
 <div class="card">
     <div class="row-between mb-8">
-        <div class="card-title" style="margin:0;">🎁 WRAPPED (#40), ГРУППИРОВЩИК ВЕРСИЙ (#39) И ЭКСПОРТ (#53)</div>
+        <div class="card-title" style="margin:0;">🎁 WRAPPED, ГРУППИРОВЩИК ВЕРСИЙ И ЭКСПОРТ</div>
         <div class="row-gap" style="flex-wrap:wrap;">
             <button class="btn btn-xs" onclick="openWrappedModal('month')">🎁 Wrapped (Месяц)</button>
             <button class="btn btn-secondary btn-xs" onclick="openWrappedModal('year')">📅 Wrapped (Год)</button>
@@ -20932,10 +21264,10 @@ FILE: web/templates/partials/tab_analytics_deep.html
 ================================================================================
 FILE: web/templates/partials/tab_auto_extras.html
 ================================================================================
-<!-- Панель Фазы 3 в Автопилоте: #26, #27, #52, #56, #29 -->
+<!-- Панель дирижёра, очередей, пресетов и авто-роутера -->
 <div class="card">
     <div class="row-between mb-8">
-        <div class="card-title" style="margin:0;">🎼 СУТОЧНЫЙ ДИРИЖЁР (#26), ОЧЕРЕДИ (#52, #56) И ПРЕСЕТЫ (#29)</div>
+        <div class="card-title" style="margin:0;">🎼 СУТОЧНЫЙ ДИРИЖЁР, ОЧЕРЕДИ И ПРЕСЕТЫ</div>
         <div class="row-gap">
             <button class="btn btn-secondary btn-xs" onclick="overrideConductor()">⚡ Переопределить на 1ч</button>
             <button class="btn btn-xs" onclick="saveConductorAndExtras()">💾 Сохранить</button>
@@ -20958,7 +21290,7 @@ FILE: web/templates/partials/tab_auto_extras.html
 </div>
 
 <div class="card">
-    <div class="card-title">🧭 АВТО-РОУТЕР ВХОДЯЩИХ (1 РАЗ НА НОВЫЙ ХЭШ #27)</div>
+    <div class="card-title">🧭 АВТО-РОУТЕР ВХОДЯЩИХ (1 РАЗ НА НОВЫЙ ХЭШ)</div>
     <div class="row-wrap mb-8" style="gap:6px;">
         <select id="router-field" class="form-control" style="width:130px;"><option value="tracker">Трекер</option><option value="ext">Имя/расш.</option><option value="min_gib">Размер &gt;= GiB</option></select>
         <input id="router-pattern" class="form-control grow-1" placeholder="Паттерн (напр. rutracker или .mkv)">
@@ -21136,10 +21468,10 @@ FILE: web/templates/partials/tab_automation.html
 ================================================================================
 FILE: web/templates/partials/tab_hygiene_cards.html
 ================================================================================
-<!-- Карточки Фазы 2: Гигиена, Архивариус и Массовые операции -->
+<!-- Карточки гигиены, архивариуса и массовых операций -->
 <div class="card admin-only" style="grid-column: 1 / -1;">
     <div class="row-between mb-8">
-        <div class="card-title" style="margin:0;">🩺 ГИГИЕНА ТРЕКЕРОВ И ТУНЕЯДЦЕВ (#7, #37, #4)</div>
+        <div class="card-title" style="margin:0;">🩺 ГИГИЕНА ТРЕКЕРОВ И ТУНЕЯДЦЕВ</div>
         <div class="row-gap" style="flex-wrap:wrap;">
             <button class="btn btn-secondary btn-xs" onclick="runHygieneTorrentScan('quarantine')">☣️ Карантин (72ч)</button>
             <button class="btn btn-secondary btn-xs" onclick="runHygieneTorrentScan('incompletes')">🪦 Недокачки</button>
@@ -21150,7 +21482,7 @@ FILE: web/templates/partials/tab_hygiene_cards.html
     </div>
     <div class="scroll-box" style="max-height:220px; border:1px solid var(--border); border-radius:6px;">
         <table>
-            <thead><tr><th style="width:28px;"></th><th>Раздача / Инфо</th><th>Размер</th><th>Статус</th></tr></thead>
+            <thead><tr><th style="width:28px;"><input type="checkbox" id="hyg-tor-chk-all" onchange="toggleAllHygTor(this)" title="Выбрать все"></th><th>Раздача / Инфо</th><th>Размер</th><th>Статус</th></tr></thead>
             <tbody id="hyg-tor-tbody"><tr><td colspan="4" class="center-msg">Выберите режим сканирования выше</td></tr></tbody>
         </table>
     </div>
@@ -21158,7 +21490,7 @@ FILE: web/templates/partials/tab_hygiene_cards.html
 
 <div class="card admin-only" style="grid-column: 1 / -1;">
     <div class="row-between mb-8">
-        <div class="card-title" style="margin:0;">🧽 САНИТАР BT_BACKUP И ПЫЛЕСОС ВНУТРИ ПАПОК (#31, #51)</div>
+        <div class="card-title" style="margin:0;">🧽 САНИТАР BT_BACKUP И ПЫЛЕСОС ВНУТРИ ПАПОК</div>
         <div class="row-gap" style="flex-wrap:wrap;">
             <button class="btn btn-secondary btn-xs" onclick="runHygienePathScan('bt_backup')">🧬 Санитар BT_backup</button>
             <button class="btn btn-secondary btn-xs" onclick="runHygienePathScan('inner_junk')">🧹 Пылесос папок</button>
@@ -21168,29 +21500,29 @@ FILE: web/templates/partials/tab_hygiene_cards.html
     </div>
     <div class="scroll-box" style="max-height:220px; border:1px solid var(--border); border-radius:6px;">
         <table>
-            <thead><tr><th style="width:28px;"></th><th>Файл / Путь</th><th>Категория</th><th>Размер</th></tr></thead>
+            <thead><tr><th style="width:28px;"><input type="checkbox" id="hyg-path-chk-all" onchange="toggleAllHygPath(this)" title="Выбрать все"></th><th>Файл / Путь</th><th>Категория</th><th>Размер</th></tr></thead>
             <tbody id="hyg-path-tbody"><tr><td colspan="4" class="center-msg">Нажмите кнопку сканирования</td></tr></tbody>
         </table>
     </div>
 </div>
 
 <div class="card admin-only" style="grid-column: 1 / -1;">
-    <div class="card-title">🚚 МАССОВЫЕ ОПЕРАЦИИ (#21 Трекеры, #24 Переезд, #38 Remap .fastresume)</div>
+    <div class="card-title">🚚 МАССОВЫЕ ОПЕРАЦИИ (ТРЕКЕРЫ, ПЕРЕЕЗД, REMAP .FASTRESUME)</div>
     <div class="grid-3 mb-10" style="gap:10px;">
         <div style="background:var(--bg-input); padding:8px; border-radius:6px;">
-            <div class="lbl-xs mb-8"><b>#21 Смена трекеров / пасскеев</b></div>
+            <div class="lbl-xs mb-8"><b>Смена трекеров / пасскеев</b></div>
             <input id="batch-tr-find" class="form-control mb-8" placeholder="Найти (домен/пасскей)">
             <input id="batch-tr-rep" class="form-control mb-8" placeholder="Заменить на">
             <div class="row-gap"><button class="btn btn-secondary btn-xs" onclick="previewBatchTrackers()">Dry-Run</button><button class="btn btn-xs" onclick="applyBatchTrackers()">Применить</button></div>
         </div>
         <div style="background:var(--bg-input); padding:8px; border-radius:6px;">
-            <div class="lbl-xs mb-8"><b>#24 Пакетный переезд (API)</b></div>
+            <div class="lbl-xs mb-8"><b>Пакетный переезд (API)</b></div>
             <input id="batch-rel-old" class="form-control mb-8" placeholder="Старый префикс (D:\Torrents)">
             <input id="batch-rel-new" class="form-control mb-8" placeholder="Новый префикс (E:\Torrents)">
             <div class="row-gap"><button class="btn btn-secondary btn-xs" onclick="previewBatchRelocate()">Проверка</button><button class="btn btn-xs" onclick="startBatchRelocate()">Старт</button></div>
         </div>
         <div style="background:var(--bg-input); padding:8px; border-radius:6px;">
-            <div class="lbl-xs mb-8"><b>#38 Remap .fastresume (qB стоп)</b></div>
+            <div class="lbl-xs mb-8"><b>Remap .fastresume (qB стоп)</b></div>
             <input id="batch-rem-old" class="form-control mb-8" placeholder="Старая буква/путь">
             <input id="batch-rem-new" class="form-control mb-8" placeholder="Новая буква/путь">
             <div class="row-gap"><button class="btn btn-secondary btn-xs" onclick="previewBatchRemap()">Dry-Run</button><button class="btn btn-danger btn-xs" onclick="applyBatchRemap()">Переписать</button></div>
@@ -21201,7 +21533,7 @@ FILE: web/templates/partials/tab_hygiene_cards.html
 
 <div class="card" style="grid-column: 1 / -1;">
     <div class="row-between mb-8">
-        <div class="card-title" style="margin:0;">🗄️ АРХИВАРИУС .TORRENT-ФАЙЛОВ (#32)</div>
+        <div class="card-title" style="margin:0;">🗄️ АРХИВАРИУС .TORRENT-ФАЙЛОВ</div>
         <div class="row-gap" style="flex-wrap:wrap;">
             <input id="archive-search" class="form-control" style="width:150px;" placeholder="Поиск (имя/UID)..." oninput="loadArchivedTorrents()">
             <input id="archive-tag" class="form-control" style="width:110px;" placeholder="Тег...">
@@ -21221,10 +21553,10 @@ FILE: web/templates/partials/tab_hygiene_cards.html
 ================================================================================
 FILE: web/templates/partials/tab_net_ops.html
 ================================================================================
-<!-- Панель Фазы 3 + Фазы 5: Сеть, Реаниматор, Вебхуки, Радар, Undo, SMART и RSS + Pre-Flight модал -->
+<!-- Панель сети, реаниматора, вебхуков, радара, Undo, SMART и RSS + Pre-Flight модал -->
 <div class="card admin-only" style="grid-column: 1 / -1;">
     <div class="row-between mb-8">
-        <div class="card-title" style="margin:0;">🌐 СЕТЬ, ДИАГНОСТИКА И РЕАНИМАТОР qB (#9, #46, #17)</div>
+        <div class="card-title" style="margin:0;">🌐 СЕТЬ, ДИАГНОСТИКА И РЕАНИМАТОР qB</div>
         <div class="row-gap" style="flex-wrap:wrap;">
             <button class="btn btn-secondary btn-xs" onclick="runBottleneckCheck()">🐢 Почему тормозит?</button>
             <button class="btn btn-secondary btn-xs" onclick="runTrackerPing()">📡 Пинг трекеров</button>
@@ -21237,7 +21569,7 @@ FILE: web/templates/partials/tab_net_ops.html
 </div>
 
 <div class="card admin-only">
-    <div class="card-title">🛡️ СТРАЖ ИНТЕРФЕЙСА (#23) И РАДАР (#48)</div>
+    <div class="card-title">🛡️ СТРАЖ ИНТЕРФЕЙСА И РАДАР ОБНОВЛЕНИЙ</div>
     <label class="row-gap pointer lbl-xs mb-8"><input type="checkbox" id="iface-guard-en"> Следить за интерфейсом qB</label>
     <div class="row-gap mb-8">
         <input id="iface-guard-name" class="form-control grow-1" placeholder="Эталонный интерфейс (напр. tun0)">
@@ -21252,7 +21584,7 @@ FILE: web/templates/partials/tab_net_ops.html
 </div>
 
 <div class="card admin-only">
-    <div class="card-title">🔗 ВЕБХУКИ (#41) И АНТИ-СПАМ (#49)</div>
+    <div class="card-title">🔗 ВЕБХУКИ И АНТИ-СПАМ</div>
     <label class="row-gap pointer lbl-xs mb-8"><input type="checkbox" id="webhooks-bundler" checked> Группировать алерты (окно 45с)</label>
     <textarea id="webhooks-urls" class="form-control mb-8" rows="2" placeholder="URL вебхуков (по одному на строку)"></textarea>
     <div class="row-gap">
@@ -21263,7 +21595,7 @@ FILE: web/templates/partials/tab_net_ops.html
 
 <div class="card admin-only">
     <div class="row-between mb-8">
-        <div class="card-title" style="margin:0;">💽 ОХРАНА HDD: SMART И РЕЧЕКИ (#30)</div>
+        <div class="card-title" style="margin:0;">💽 ОХРАНА HDD: SMART И РЕЧЕКИ</div>
         <button class="btn btn-secondary btn-xs" onclick="loadSmartStatus()">🔎 Проверить</button>
     </div>
     <div id="smart-hdd-box" style="font-size:12px;"><span class="muted-text">Нажмите «Проверить»</span></div>
@@ -21271,7 +21603,7 @@ FILE: web/templates/partials/tab_net_ops.html
 
 <div class="card admin-only">
     <div class="row-between mb-8">
-        <div class="card-title" style="margin:0;">📰 УМНЫЙ RSS-ФИЛЬТР ДУБЛЕЙ (#34)</div>
+        <div class="card-title" style="margin:0;">📰 УМНЫЙ RSS-ФИЛЬТР ДУБЛЕЙ</div>
         <button class="btn btn-secondary btn-xs" onclick="checkRssDuplicates()">🔎 Проверить RSS</button>
     </div>
     <div id="rss-dedup-box" class="scroll-box" style="max-height:150px; font-size:12px;"><span class="muted-text">Чтение лент через API qB</span></div>
@@ -21279,13 +21611,13 @@ FILE: web/templates/partials/tab_net_ops.html
 
 <div class="card admin-only" style="grid-column: 1 / -1;">
     <div class="row-between mb-8">
-        <div class="card-title" style="margin:0;">↩️ МАШИНА ОТКАТА МАССОВЫХ ОПЕРАЦИЙ (UNDO STACK #54)</div>
+        <div class="card-title" style="margin:0;">↩️ МАШИНА ОТКАТА МАССОВЫХ ОПЕРАЦИЙ (UNDO STACK)</div>
         <button class="btn btn-secondary btn-xs" onclick="loadUndoStack()">🔄</button>
     </div>
     <div id="undo-stack-list" class="col-gap" style="font-size:12px;"><span class="muted-text">Загрузка...</span></div>
 </div>
 
-<!-- Модальное окно Pre-Flight Инбокса (#5) -->
+<!-- Модальное окно Pre-Flight Инбокса -->
 <div id="preflight-modal" class="modal-backdrop">
     <div class="modal" style="max-width:520px;">
         <div class="card-title">📥 PRE-FLIGHT ИНБОКС (ДОБАВЛЕНИЕ РАЗДАЧИ)</div>
@@ -21345,7 +21677,7 @@ FILE: web/templates/partials/tab_tools.html
                     <button id="btn-doctor-copy-md" class="btn btn-xs hidden" onclick="copyDoctorReport()">📋 Отчёт GitHub</button>
                 </div>
             </div>
-            <p class="muted-text mb-8">Проверка API qB, прав `BT_backup`, целостности 4 SQLite-БД (WAL) и рассинхрона времени.</p>
+            <p class="muted-text mb-8">Проверка API qB, прав `BT_backup`, целостности 5 SQLite-БД (WAL) и рассинхрона времени.</p>
             <div id="doctor-results-box" style="font-size:12px;"><span class="muted-text">Нажмите «Проверить»</span></div>
         </div>
 

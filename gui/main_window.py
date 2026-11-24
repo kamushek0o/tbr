@@ -10,7 +10,7 @@ from core.version import APP_VERSION
 from core.qb_api import detect_qbittorrent_port, is_qb_running, launch_qbittorrent, close_qbittorrent
 from core.autostart import set_autostart, is_autostart_enabled
 from core.summary_tracker import summary_tracker
-from core.torrent_parser import get_global_torrent_summaries
+from core.torrent_parser import get_live_merged_summaries
 from core.profiles_db import profiles_db
 from gui.tray import SystemTrayController
 
@@ -28,7 +28,7 @@ class TorrentApp:
         self.root.minsize(440, 520)
         self.root.configure(bg="#121214")
 
-        summary_tracker.start_auto_export(get_global_torrent_summaries)
+        summary_tracker.start_auto_export(get_live_merged_summaries)
         self.build_ui()
 
         self.tray = SystemTrayController(

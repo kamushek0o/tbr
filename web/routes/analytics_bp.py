@@ -9,7 +9,7 @@ from flask import Blueprint, request, jsonify, Response, g
 
 from utils.config import cfg
 from utils.helpers import sanitize_csv_cell, format_file_size, LOG_FOLDER
-from core.torrent_parser import get_global_torrent_summaries
+from core.torrent_parser import get_global_torrent_summaries, get_live_merged_summaries
 from core.summary_tracker import summary_tracker
 from core.qb_api import detect_qbittorrent_port, get_live_torrent_info
 from core.private_vault import get_hidden_hashes, filter_summary_stats_for_role
@@ -48,7 +48,7 @@ def _get_live_dict():
 
 @analytics_bp.route('/api/summary')
 def api_summary():
-    summaries = get_global_torrent_summaries()
+    summaries = get_live_merged_summaries()
     stats = summary_tracker.get_stats(summaries)
     live = _get_live_dict()
     targets = list_targets()
@@ -130,7 +130,7 @@ def api_smart_calc():
         return jsonify({'success': False, 'error': 'Неверный формат JSON'}), 400
     return jsonify(summary_tracker.calculate_smart_forecast(
         str(data.get('target_type', 'torrent')), str(data.get('hash', '')),
-        str(data.get('target', ''))[:64], str(data.get('speed', ''))[:64], get_global_torrent_summaries()
+        str(data.get('target', ''))[:64], str(data.get('speed', ''))[:64], get_live_merged_summaries()
     ))
 
 
@@ -159,7 +159,7 @@ def api_export_csv():
             return jsonify({'error': 'Некорректный список или превышен лимит 5000 строк'}), 400
         summary_tracker.save_manual_csv(items)
     else:
-        stats = summary_tracker.get_stats(get_global_torrent_summaries())
+        stats = summary_tracker.get_stats(get_live_merged_summaries())
         if role != 'admin':
             stats = filter_summary_stats_for_role(stats, role, get_hidden_hashes(_get_live_dict()))
         items = stats.get('items', [])

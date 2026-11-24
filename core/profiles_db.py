@@ -1,52 +1,45 @@
 # core/profiles_db.py
 import os
-import hmac
 import json
 import time
-import hashlib
 import secrets
 import sqlite3
 import threading
-from werkzeug.security import generate_password_hash, check_password_hash
+from contextlib import contextmanager
 from utils.helpers import APP_DATA_DIR, write_error_log
 from core.ui_defaults import DEFAULT_UI_SETTINGS, merge_ui_defaults
-
-
-def hash_token(raw_token):
-    return hashlib.sha256(str(raw_token).encode('utf-8')).hexdigest()
-
-
-def hash_password_salted(raw_token):
-    return generate_password_hash(str(raw_token), method='pbkdf2:sha256')
-
-
-def _verify_stored_token(stored_hash, raw_token):
-    if not stored_hash:
-        return False, False
-    if stored_hash.startswith(('pbkdf2:', 'scrypt:')):
-        return check_password_hash(stored_hash, raw_token), False
-    legacy_ok = hmac.compare_digest(stored_hash.lower(), hash_token(raw_token).lower())
-    return legacy_ok, legacy_ok
+from core.profiles_auth import (  # noqa: F401
+    hash_token, hash_password_salted, verify_stored_token,
+    create_invite_db, get_valid_invite_db, consume_invite_db
+)
 
 
 class ProfilesDB:
     def __init__(self):
         self.db_file = os.path.join(APP_DATA_DIR, "profiles.db")
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._init_db()
 
+    @contextmanager
     def _get_conn(self):
         conn = sqlite3.connect(self.db_file, timeout=30.0)
-        conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA busy_timeout = 30000;")
         conn.execute("PRAGMA foreign_keys=ON;")
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def _init_db(self):
         with self._lock:
             try:
                 with self._get_conn() as conn:
+                    conn.execute("PRAGMA journal_mode=WAL;")
                     conn.executescript("""
                         CREATE TABLE IF NOT EXISTS profiles (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,9 +75,7 @@ class ProfilesDB:
                     for r in rows:
                         if not r['login']:
                             base = ''.join(c for c in str(r['name'] or 'user').lower() if c.isalnum() or c in ('_', '-'))[:24] or 'user'
-                            cand = base
-                            if cand in used_logins:
-                                cand = f"{base}_{r['id']}"
+                            cand = base if base not in used_logins else f"{base}_{r['id']}"
                             used_logins.add(cand)
                             cur.execute("UPDATE profiles SET login = ? WHERE id = ?", (cand, r['id']))
                         if not r['api_token']:
@@ -102,7 +93,6 @@ class ProfilesDB:
                                VALUES (?, ?, 'admin', ?, ?, ?, ?, ?)""",
                             ("Admin", "admin", hash_password_salted(raw), raw[:8] + "...", api_tok, json.dumps(DEFAULT_UI_SETTINGS), time.time())
                         )
-                    conn.commit()
             except Exception as e:
                 write_error_log("Инициализация profiles.db", e)
 
@@ -137,14 +127,13 @@ class ProfilesDB:
                     row = cur.fetchone()
                     if not row:
                         return None
-                    ok, needs_upgrade = _verify_stored_token(row['token_hash'], clean_pwd)
+                    ok, needs_upgrade = verify_stored_token(row['token_hash'], clean_pwd)
                     if not ok:
                         return None
                     prof = dict(row)
                     if needs_upgrade:
                         new_h = hash_password_salted(clean_pwd)
                         cur.execute("UPDATE profiles SET token_hash = ? WHERE id = ?", (new_h, row['id']))
-                        conn.commit()
                         prof['token_hash'] = new_h
                     return prof
             except Exception:
@@ -164,12 +153,11 @@ class ProfilesDB:
                         return dict(row)
                     cur.execute("SELECT * FROM profiles")
                     for r in cur.fetchall():
-                        ok, needs_upgrade = _verify_stored_token(r['token_hash'], clean)
+                        ok, needs_upgrade = verify_stored_token(r['token_hash'], clean)
                         if ok:
                             prof = dict(r)
                             if needs_upgrade:
                                 cur.execute("UPDATE profiles SET token_hash = ? WHERE id = ?", (hash_password_salted(clean), r['id']))
-                                conn.commit()
                             return prof
                     return None
             except Exception:
@@ -201,7 +189,6 @@ class ProfilesDB:
 
         api_tok = "tbr_api_" + secrets.token_urlsafe(24)
         prefix = (raw_pwd[:2] + "***") if len(raw_pwd) <= 6 else (raw_pwd[:4] + "...")
-
         with self._lock:
             try:
                 with self._get_conn() as conn:
@@ -211,7 +198,6 @@ class ProfilesDB:
                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                         (clean_name, clean_login, role, hash_password_salted(raw_pwd), prefix, api_tok, json.dumps(DEFAULT_UI_SETTINGS), time.time())
                     )
-                    conn.commit()
                     return cur.lastrowid, raw_pwd, api_tok, None
             except sqlite3.IntegrityError:
                 return None, None, None, "Такой логин уже занят!"
@@ -241,7 +227,6 @@ class ProfilesDB:
                             "UPDATE profiles SET token_hash = ?, token_prefix = ? WHERE id = ?",
                             (hash_password_salted(raw_pwd), prefix, int(profile_id))
                         )
-                    conn.commit()
                     return (raw_pwd, None) if cur.rowcount > 0 else (None, "Профиль не найден")
             except sqlite3.IntegrityError:
                 return None, "Такой логин уже занят!"
@@ -255,61 +240,18 @@ class ProfilesDB:
                 with self._get_conn() as conn:
                     cur = conn.cursor()
                     cur.execute("UPDATE profiles SET api_token = ? WHERE id = ?", (new_api, int(profile_id)))
-                    conn.commit()
                     return new_api if cur.rowcount > 0 else None
             except Exception:
                 return None
 
     def create_invite(self, profile_id, ttl_hours=24):
-        raw_inv = "inv_" + secrets.token_urlsafe(24)
-        with self._lock:
-            try:
-                with self._get_conn() as conn:
-                    conn.execute(
-                        "INSERT INTO invites (profile_id, token_hash, expires_at, used_at) VALUES (?, ?, ?, NULL)",
-                        (int(profile_id), hash_token(raw_inv), time.time() + ttl_hours * 3600)
-                    )
-                    conn.commit()
-                    return raw_inv
-            except Exception as e:
-                write_error_log("Ошибка create_invite", e)
-                return None
+        return create_invite_db(self, profile_id, ttl_hours=ttl_hours)
 
     def get_valid_invite(self, raw_inv):
-        if not raw_inv:
-            return None
-        with self._lock:
-            try:
-                with self._get_conn() as conn:
-                    cur = conn.cursor()
-                    cur.execute(
-                        """SELECT i.id AS invite_id, i.profile_id, i.expires_at, i.used_at, p.name, p.login, p.role
-                           FROM invites i JOIN profiles p ON p.id = i.profile_id
-                           WHERE i.token_hash = ? LIMIT 1""",
-                        (hash_token(raw_inv.strip()),)
-                    )
-                    row = cur.fetchone()
-                    if not row or row['used_at'] is not None or time.time() > row['expires_at']:
-                        return None
-                    return dict(row)
-            except Exception:
-                return None
+        return get_valid_invite_db(self, raw_inv)
 
     def consume_invite(self, raw_inv, new_login, new_password):
-        inv = self.get_valid_invite(raw_inv)
-        if not inv:
-            return None, "Инвайт недействителен, просрочен или уже использован"
-        _, err = self.change_password(inv['profile_id'], new_password=new_password, new_login=new_login)
-        if err:
-            return None, err
-        with self._lock:
-            try:
-                with self._get_conn() as conn:
-                    conn.execute("UPDATE invites SET used_at = ? WHERE id = ?", (time.time(), inv['invite_id']))
-                    conn.commit()
-            except Exception:
-                pass
-        return self.get_by_id(inv['profile_id']), None
+        return consume_invite_db(self, raw_inv, new_login, new_password)
 
     def delete_profile(self, profile_id):
         with self._lock:
@@ -325,7 +267,6 @@ class ProfilesDB:
                         if cur.fetchone()[0] <= 1:
                             return False, "Нельзя удалить последнего администратора!"
                     cur.execute("DELETE FROM profiles WHERE id = ?", (int(profile_id),))
-                    conn.commit()
                     return True, "Профиль удалён"
             except Exception as e:
                 return False, str(e)
@@ -340,7 +281,6 @@ class ProfilesDB:
             try:
                 with self._get_conn() as conn:
                     conn.execute("UPDATE profiles SET ui_settings_json = ? WHERE id = ?", (json.dumps(merged, ensure_ascii=False), int(profile_id)))
-                    conn.commit()
             except Exception as e:
                 write_error_log("Ошибка save_ui_settings", e)
         return merged

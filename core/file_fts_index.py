@@ -3,21 +3,29 @@ import os
 import sqlite3
 import threading
 import urllib.parse
+from contextlib import contextmanager
 from utils.bencode import decode_bencode
 from utils.helpers import APP_DATA_DIR, BT_BACKUP_PATH, format_file_size, write_error_log
 from core.qb_api import get_torrent_files
 
 _FTS_DB = os.path.join(APP_DATA_DIR, "file_index.db")
-_LOCK = threading.Lock()
+_LOCK = threading.RLock()
 _HAS_FTS5 = True
 
 
+@contextmanager
 def _get_conn():
     conn = sqlite3.connect(_FTS_DB, timeout=30.0)
-    conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA busy_timeout = 30000;")
     conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def _init_fts():
@@ -25,6 +33,7 @@ def _init_fts():
     with _LOCK:
         try:
             with _get_conn() as conn:
+                conn.execute("PRAGMA journal_mode=WAL;")
                 try:
                     conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(hash_id UNINDEXED, torrent_name UNINDEXED, file_path, file_size UNINDEXED)")
                     _HAS_FTS5 = True
@@ -33,7 +42,6 @@ def _init_fts():
                     conn.execute("CREATE TABLE IF NOT EXISTS files_plain (hash_id TEXT, torrent_name TEXT, file_path TEXT, file_size INTEGER)")
                     conn.execute("CREATE INDEX IF NOT EXISTS idx_fp_path ON files_plain(file_path)")
                 conn.execute("CREATE TABLE IF NOT EXISTS indexed_hashes (hash_id TEXT PRIMARY KEY, mtime REAL NOT NULL)")
-                conn.commit()
         except Exception as e:
             write_error_log("init_fts", e)
 
@@ -63,7 +71,6 @@ def _extract_files_from_torrent(fpath):
         rel = "/".join(p.decode('utf-8', errors='replace') if isinstance(p, bytes) else str(p) for p in parts)
         files.append((rel, sz))
 
-    # Лимит для гигантских паков (>5000 файлов) — индексируем топ-500 крупнейших
     if len(files) > 5000:
         files.sort(key=lambda x: x[1], reverse=True)
         files = files[:500]
@@ -82,7 +89,6 @@ def reindex_torrent_files(force=False):
                 tbl = "files_fts" if _HAS_FTS5 else "files_plain"
                 conn.execute(f"DELETE FROM {tbl}")
                 conn.execute("DELETE FROM indexed_hashes")
-                conn.commit()
 
     indexed_cnt = 0
     for ent in os.scandir(BT_BACKUP_PATH):
@@ -105,7 +111,6 @@ def reindex_torrent_files(force=False):
                         [(hl, t_name, fp, sz) for fp, sz in files]
                     )
                     conn.execute("INSERT OR REPLACE INTO indexed_hashes (hash_id, mtime) VALUES (?, ?)", (hl, mtime))
-                    conn.commit()
             indexed_cnt += 1
         except Exception:
             continue

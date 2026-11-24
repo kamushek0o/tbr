@@ -30,7 +30,6 @@ def _ensure_table():
                         archived_at REAL NOT NULL
                     )
                 """)
-                conn.commit()
         except Exception as e:
             write_error_log("torrent_archive_index init", e)
 
@@ -66,7 +65,8 @@ def sync_torrent_archive():
 
         if not os.path.isfile(gz_path):
             try:
-                raw = open(ent.path, 'rb').read()
+                with open(ent.path, 'rb') as rf:
+                    raw = rf.read()
                 tmp = gz_path + '.tmp'
                 with gzip.open(tmp, 'wb', compresslevel=6) as gf:
                     gf.write(raw)
@@ -88,7 +88,6 @@ def sync_torrent_archive():
                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
                     records
                 )
-                conn.commit()
         except Exception as e:
             write_error_log("sync_torrent_archive db", e)
 

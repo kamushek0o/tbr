@@ -96,7 +96,7 @@ def sanitize_text_for_github(raw_text):
     s = re.sub(r'bot\d+:[A-Za-z0-9_\-]+', 'bot<REDACTED>', s)
     s = re.sub(r'https://discord(?:app)?\.com/api/webhooks/[^\s\)]+', 'https://discord.com/api/webhooks/<REDACTED>', s)
     s = re.sub(r'passkey=[A-Za-z0-9]+', 'passkey=<REDACTED>', s, flags=re.IGNORECASE)
-    s = re.sub(r'C:\\Users\\[^\\\s]+', r'C:\\Users\\<USER>', s, flags=re.IGNORECASE)
+    s = re.sub(r'C:\\Users\\[^\\\/\r\n]+', r'C:\\Users\\<USER>', s, flags=re.IGNORECASE)
     s = re.sub(r'/home/[^/\s]+', '/home/<USER>', s)
     s = re.sub(r'\b(?!127\.0\.0\.1\b)(?!10\.)(?!192\.168\.)(?!100\.)\d{1,3}(?:\.\d{1,3}){3}\b', '<EXTERNAL_IP>', s)
     return s
