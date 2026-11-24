@@ -3,6 +3,64 @@ let _tunerProfiles = {};
 let _tunerCurProfile = 'performance';
 let _tunerRules = {};
 
+function syncTunerDisabledStates() {
+    const setGroupState = (chkId, rowId, inputIds) => {
+        const en = Boolean(document.getElementById(chkId)?.checked);
+        const row = document.getElementById(rowId);
+        if (row) row.classList.toggle('tuner-row-disabled', !en);
+        inputIds.forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.disabled = !en;
+        });
+    };
+
+    setGroupState('tp-g-disk-en', 'guard-row-disk', ['tp-g-disk-warn', 'tp-g-disk-crit', 'tp-g-disk-rec']);
+    setGroupState('tp-g-cpu-en', 'guard-row-cpu', ['tp-g-cpu-warn', 'tp-g-cpu-rec']);
+    setGroupState('tp-g-ram-en', 'guard-row-ram', ['tp-g-ram-min', 'tp-g-ram-rec']);
+    setGroupState('tp-g-net-en', 'guard-row-net', ['tp-g-net-warn', 'tp-g-net-rec']);
+
+    const sqEn = Boolean(document.getElementById('tp-sq-en')?.checked);
+    ['tp-sq-up', 'tp-sq-dl'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = !sqEn;
+        document.getElementById(`wrap-${id}`)?.classList.toggle('tuner-row-disabled', !sqEn);
+    });
+
+    const actMode = document.getElementById('tp-act-mode')?.value || 'keep';
+    const minEl = document.getElementById('tp-act-min');
+    const maxEl = document.getElementById('tp-act-max');
+    if (minEl) minEl.disabled = (actMode === 'keep');
+    if (maxEl) maxEl.disabled = (actMode !== 'range');
+    document.getElementById('wrap-tp-act-min')?.classList.toggle('tuner-row-disabled', actMode === 'keep');
+    document.getElementById('wrap-tp-act-max')?.classList.toggle('tuner-row-disabled', actMode !== 'range');
+
+    const ptUpAuto = Boolean(document.getElementById('tp-pt-up-auto')?.checked);
+    ['tp-pt-up-min', 'tp-pt-up-max'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = ptUpAuto;
+    });
+
+    const mcAuto = Boolean(document.getElementById('tp-mc-auto')?.checked);
+    ['tp-mc-min', 'tp-mc-max'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = mcAuto;
+    });
+
+    const prEn = Boolean(document.getElementById('tr-proc-en')?.checked);
+    ['tr-proc-mode', 'tr-proc-names', 'tr-proc-enter', 'tr-proc-exit'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = !prEn;
+    });
+    document.getElementById('rules-box-proc')?.classList.toggle('tuner-row-disabled', !prEn);
+
+    const extEn = Boolean(document.getElementById('tr-ext-en')?.checked);
+    ['tr-ext-mode', 'tr-ext-cpu-w', 'tr-ext-cpu-r', 'tr-ext-net-w', 'tr-ext-net-r', 'tr-ext-ram-w', 'tr-ext-ram-r', 'tr-ext-enter', 'tr-ext-exit'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = !extEn;
+    });
+    document.getElementById('rules-box-ext')?.classList.toggle('tuner-row-disabled', !extEn);
+}
+
 async function loadTunerTab() {
     if (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE !== 'admin') return;
     await Promise.all([refreshTunerState(), loadTunerProfiles(), loadTunerRules()]);
@@ -49,7 +107,7 @@ async function refreshTunerState() {
             const hist = d.history || [];
             tbody.innerHTML = hist.length ? hist.map(h => `
                 <tr><td>${escapeHtml(h.time)}</td><td>${escapeHtml(h.mode)}</td><td><span class="badge badge-pause">${escapeHtml(h.event_type)}</span></td><td style="white-space:normal;">${escapeHtml(h.reason)}</td><td>${h.old_slots}→${h.new_slots}</td></tr>
-            `).join('') : '<tr><td colspan="5" class="center-msg">Событий пока нет</td></tr>';
+            `).join('') : '<tr><td colspan="5" class="center-msg">Нет событий</td></tr>';
         }
     } catch (e) {}
 }
@@ -91,6 +149,7 @@ function selectTunerProfileTab(mode) {
     const p = _tunerProfiles[mode] || {}, g = p.guards || {};
     const sv = (id, v) => { const e = document.getElementById(id); if (e) e.value = v ?? ''; };
     const sc = (id, v) => { const e = document.getElementById(id); if (e) e.checked = Boolean(v); };
+
     sv('tp-mu-min', p.max_uploads_min); sv('tp-mu-max', p.max_uploads_max); sv('tp-mu-start', p.max_uploads_start);
     sv('tp-pt-up-min', p.per_torrent_up_min); sv('tp-pt-up-max', p.per_torrent_up_max); sc('tp-pt-up-auto', p.per_torrent_up_auto);
     sv('tp-mc-min', p.max_connec_min); sv('tp-mc-max', p.max_connec_max); sc('tp-mc-auto', p.max_connec_auto);
@@ -104,6 +163,8 @@ function selectTunerProfileTab(mode) {
     sc('tp-g-cpu-en', g.cpu?.enabled); sv('tp-g-cpu-warn', g.cpu?.warn); sv('tp-g-cpu-rec', g.cpu?.recover);
     sc('tp-g-ram-en', g.ram?.enabled); sv('tp-g-ram-min', g.ram?.min_free); sv('tp-g-ram-rec', g.ram?.recover_free);
     sc('tp-g-net-en', g.net?.enabled); sv('tp-g-net-warn', g.net?.warn_pct); sv('tp-g-net-rec', g.net?.recover_pct);
+
+    syncTunerDisabledStates();
 }
 
 async function saveTunerProfile() {
@@ -143,7 +204,9 @@ async function loadTunerRules() {
     _tunerRules = (await res.json()).rules || {};
     const sv = (id, v) => { const e = document.getElementById(id); if (e) e.value = v ?? ''; };
     const sc = (id, v) => { const e = document.getElementById(id); if (e) e.checked = Boolean(v); };
-    sv('tr-def-mode', _tunerRules.default_mode || 'performance'); sv('tr-ov-policy', _tunerRules.override_policy || '2h');
+
+    sv('tr-def-mode', _tunerRules.default_mode || 'performance');
+    sv('tr-ov-policy', _tunerRules.override_policy || '2h');
     const pr = _tunerRules.processes || {}, ex = _tunerRules.external_load || {};
     sc('tr-proc-en', pr.enabled); sv('tr-proc-mode', pr.target_mode || 'comfort');
     sv('tr-proc-names', (pr.names || []).join(', ')); sv('tr-proc-enter', pr.enter_sec); sv('tr-proc-exit', pr.exit_sec);
@@ -152,7 +215,9 @@ async function loadTunerRules() {
     sv('tr-ext-net-w', ex.net_warn_pct); sv('tr-ext-net-r', ex.net_recover_pct);
     sv('tr-ext-ram-w', ex.ram_min_free); sv('tr-ext-ram-r', ex.ram_recover_free);
     sv('tr-ext-enter', ex.enter_sec); sv('tr-ext-exit', ex.exit_sec);
+
     renderTunerSchedules();
+    syncTunerDisabledStates();
 }
 
 function renderTunerSchedules() {
@@ -161,10 +226,13 @@ function renderTunerSchedules() {
     const list = _tunerRules.schedules || [];
     box.innerHTML = list.map((s, idx) => `
         <div class="row-gap" style="gap:4px;">
-            <input type="time" class="form-control" style="width:92px;" value="${escapeHtml(s.start)}" onchange="_tunerRules.schedules[${idx}].start=this.value">
+            <input type="time" class="form-control" style="width:96px; padding:3px 4px;" value="${escapeHtml(s.start)}" onchange="_tunerRules.schedules[${idx}].start=this.value">
             <span>—</span>
-            <input type="time" class="form-control" style="width:92px;" value="${escapeHtml(s.end)}" onchange="_tunerRules.schedules[${idx}].end=this.value">
-            <select class="form-control grow-1" onchange="_tunerRules.schedules[${idx}].mode=this.value"><option value="performance" ${s.mode==='performance'?'selected':''}>Производ.</option><option value="comfort" ${s.mode==='comfort'?'selected':''}>Комфорт</option></select>
+            <input type="time" class="form-control" style="width:96px; padding:3px 4px;" value="${escapeHtml(s.end)}" onchange="_tunerRules.schedules[${idx}].end=this.value">
+            <select class="form-control grow-1" style="padding:3px 4px;" onchange="_tunerRules.schedules[${idx}].mode=this.value">
+                <option value="performance" ${s.mode==='performance'?'selected':''}>Производ.</option>
+                <option value="comfort" ${s.mode==='comfort'?'selected':''}>Комфорт</option>
+            </select>
             <button class="btn btn-danger btn-xs" onclick="_tunerRules.schedules.splice(${idx},1);renderTunerSchedules()">✕</button>
         </div>
     `).join('') || '<span class="lbl-xs muted-text">Окон расписания нет</span>';

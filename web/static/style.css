@@ -88,6 +88,32 @@ tr.selected td { background: rgba(46, 204, 113, 0.15) !important; border-left: 3
 .form-group label { display: block; font-size: 11px; color: var(--text-muted); margin-bottom: 4px; font-weight: 600; }
 .form-control { width: 100%; background: var(--bg-input); border: 1px solid var(--border); color: var(--text); padding: 7px 10px; border-radius: 6px; outline: none; font-size: 13px; }
 
+/* === АВТО-ТЮНЕР СТИЛИ === */
+.tuner-columns-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 12px; width: 100%; }
+.tuner-box { background: var(--bg-input); padding: 12px; border-radius: 6px; border: 1px solid var(--border); display: flex; flex-direction: column; }
+.tuner-telemetry-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
+.tuner-stat-card { background: var(--bg-input); padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border); }
+.tuner-section-title { font-size: 10.5px; font-weight: 800; color: var(--text-muted); letter-spacing: 0.5px; margin: 6px 0 4px; }
+.tuner-block-divider { border-top: 1px dashed var(--border); padding-top: 8px; }
+.tuner-fields-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; }
+.tuner-field { display: flex; flex-direction: column; gap: 2px; flex: 1 1 70px; min-width: 68px; }
+.tuner-num-input { padding: 5px 6px !important; font-size: 12px !important; text-align: center; }
+.lbl-micro { font-size: 9.5px; color: var(--text-muted); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.no-wrap { white-space: nowrap !important; }
+.align-end { align-items: flex-end !important; }
+
+.tuner-guards-list { display: flex; flex-direction: column; gap: 6px; border-top: 1px dashed var(--border); padding-top: 8px; }
+.tuner-guard-row { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; background: rgba(0,0,0,0.15); padding: 6px 8px; border-radius: 6px; transition: opacity 0.2s; }
+.tuner-guard-label { width: 110px; padding-bottom: 6px; flex-shrink: 0; }
+.tuner-row-disabled { opacity: 0.38 !important; }
+.tuner-row-disabled input:not([type=checkbox]),
+.tuner-row-disabled select { pointer-events: none; background: rgba(0,0,0,0.2) !important; color: var(--text-muted) !important; }
+
+.tuner-details { border-top: 1px dashed var(--border); padding-top: 8px; margin-top: 6px; }
+.tuner-details summary { font-size: 11.5px; font-weight: 700; color: var(--info); cursor: pointer; user-select: none; padding: 4px 0; }
+.tuner-details summary:hover { color: var(--accent); }
+.tuner-details-body { padding-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+
 .terminal { background: #0c0c0f; color: #2ecc71; font-family: 'Consolas', monospace; font-size: 12px; padding: 12px; border-radius: 6px; height: 170px; overflow-y: auto; white-space: pre-wrap; line-height: 1.45; border: 1px solid var(--border); }
 .scroll-box { max-height: 220px; overflow-y: auto; }
 .flex-scroll { flex: 1; overflow: auto; }
@@ -111,8 +137,8 @@ tr.selected td { background: rgba(46, 204, 113, 0.15) !important; border-left: 3
 .grid-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
 .grid-calc { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
 
-.w-full { width: 100%; } .grow-1 { flex: 1; min-width: 160px; }
-.mb-8 { margin-bottom: 8px; } .mb-10 { margin-bottom: 10px; } .mb-12 { margin-bottom: 12px; }
+.w-full { width: 100%; } .grow-1 { flex: 1; min-width: 140px; }
+.mb-6 { margin-bottom: 6px; } .mb-8 { margin-bottom: 8px; } .mb-10 { margin-bottom: 10px; } .mb-12 { margin-bottom: 12px; }
 .mt-10 { margin-top: 10px; } .mt-12 { margin-top: 12px; }
 .hidden { display: none !important; } .pointer { cursor: pointer; }
 .center-msg { text-align: center; padding: 20px; color: var(--text-muted); }
@@ -144,6 +170,13 @@ tr.selected td { background: rgba(46, 204, 113, 0.15) !important; border-left: 3
     .tools-grid { grid-template-columns: 1fr; }
     .grid-2 { grid-template-columns: 1fr; }
     .tab-content { padding: 8px; }
+
+    .tuner-columns-grid { grid-template-columns: 1fr; }
+    .tuner-guard-row { flex-direction: column; align-items: stretch; gap: 4px; }
+    .tuner-guard-label { width: 100%; }
+    .tuner-fields-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .tuner-fields-row.align-end { grid-template-columns: 1fr; }
+
     body.mobile-cards-on .grid-cards,
     body.mobile-cards-on #analytics-charts-grid {
         grid-template-columns: 1fr !important;

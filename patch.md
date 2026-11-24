@@ -1,19 +1,19 @@
-### План (Пачка 3 — UI адаптивного авто-тюнера, профили, правила, телеметрия)
-1. `web/templates/partials/tab_tuner.html` *(новый)* — панель управления режимами, живая телеметрия, лента решений `tuner_history`, конструктор профилей и правил автопереключения.
-2. `web/templates/partials/tab_automation.html` — подключаем `tab_tuner.html` во вкладке Автопилота.
-3. `web/templates/index.html` — добавляем индикатор тюнера `#tuner-header-badge` в шапку и подключаем `tuner_ui.js`.
-4. `web/static/tuner_ui.js` *(новый)* — вся логика UI тюнера, живой поллинг телеметрии и мастер выбора процессов.
-5. `web/static/automation.js` — вызов `loadTunerTab()` при открытии вкладки Автопилота.
+По кайфу, запрос правильный — на мобиле и в PWA плотные цифровые панели без подписей быстро превращаются в ребус со стрелочками. 
+
+### План
+1. `web/templates/partials/tab_tuner.html` — переверстываем панель тюнера: добавляем микро-лейблы над каждым числовым полем («Тревога %», «Крит. %», «Возврат %», «От %», «До %», «Up %», «DL %», «Min», «Max»), запрещаем перенос заголовков (`white-space: nowrap`) и прячем второстепенные параметры в нативный аккордеон `<details>`.
+2. `web/static/style.css` — добавляем стили для мини-полей `.tuner-field`, аккордеона `<details class="tuner-details">`, анимации выключения `.is-disabled`, убираем наезд стрелок спиннеров на цифры и настраиваем адаптивный перенос сетки для PWA/смартфонов.
+3. `web/static/tuner_ui.js` — внедряем функцию `syncTunerDisabledStates()`, которая на лету вешает `disabled` и уводит в полупрозрачность поля отключённых ограничителей, «Ужимания», «Авто 28%», «Авто ×4» и `max_active_uploads: keep`.
 
 ---
 
-#### `web/templates/partials/tab_tuner.html` *(новый файл)*
+#### `web/templates/partials/tab_tuner.html`
 ```html
 <!-- Адаптивный авто-тюнер qBittorrent (ТЗ #58) -->
 <div class="card admin-only" id="tuner-main-card">
     <div class="row-between mb-8">
         <div class="row-gap" style="flex-wrap:wrap;">
-            <div class="card-title" style="margin:0;">🎛️ АДАПТИВНЫЙ АВТО-ТЮНЕР qBITTORRENT</div>
+            <div class="card-title" style="margin:0; white-space:nowrap;">🎛️ АВТО-ТЮНЕР qB</div>
             <span id="tuner-reason-badge" class="badge badge-pause">Выключен</span>
             <button id="tuner-btn-clear-ov" class="btn btn-secondary btn-xs hidden" onclick="clearTunerOverride()">🔄 Вернуть авто</button>
         </div>
@@ -21,112 +21,219 @@
             <button id="tuner-btn-off" class="btn btn-secondary btn-xs" onclick="setTunerMode('off')">Выкл</button>
             <button id="tuner-btn-comfort" class="btn btn-secondary btn-xs" onclick="setTunerMode('comfort')">🛋️ Комфорт</button>
             <button id="tuner-btn-performance" class="btn btn-secondary btn-xs" onclick="setTunerMode('performance')">🚀 Производ.</button>
-            <label class="row-gap pointer lbl-xs" style="margin-left:4px;"><input type="checkbox" id="tuner-auto-chk" onchange="toggleTunerAutoSwitch()"> <b>Авто</b></label>
-            <button class="btn btn-secondary btn-xs" onclick="restoreTunerBaseline()" title="Откатить лимиты qB к эталону">♻️ Эталон</button>
+            <label class="row-gap pointer lbl-xs" style="margin-left:4px; white-space:nowrap;"><input type="checkbox" id="tuner-auto-chk" onchange="toggleTunerAutoSwitch()"> <b>Авто</b></label>
+            <button class="btn btn-secondary btn-xs" onclick="restoreTunerBaseline()" title="Откатить настройки qB к исходному эталону">♻️ Эталон</button>
         </div>
     </div>
 
-    <div class="grid-cards mb-10" style="grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));">
-        <div style="background:var(--bg-input); padding:7px; border-radius:6px;"><div class="lbl-xs muted-text">Диск I/O</div><div id="tel-disk" class="val-sm">—</div></div>
-        <div style="background:var(--bg-input); padding:7px; border-radius:6px;"><div class="lbl-xs muted-text">Чужой CPU</div><div id="tel-cpu" class="val-sm">—</div></div>
-        <div style="background:var(--bg-input); padding:7px; border-radius:6px;"><div class="lbl-xs muted-text">RAM своб.</div><div id="tel-ram" class="val-sm">—</div></div>
-        <div style="background:var(--bg-input); padding:7px; border-radius:6px;"><div class="lbl-xs muted-text">Канал qB</div><div id="tel-chan" class="val-sm accent-txt">—</div></div>
-        <div style="background:var(--bg-input); padding:7px; border-radius:6px;"><div class="lbl-xs muted-text">Чужая сеть</div><div id="tel-net" class="val-sm">—</div></div>
-        <div style="background:var(--bg-input); padding:7px; border-radius:6px;"><div class="lbl-xs muted-text">Слоты / Заполн.</div><div id="tel-slots" class="val-sm blue-txt">—</div></div>
+    <!-- Метрики в реальном времени -->
+    <div class="tuner-telemetry-grid mb-10">
+        <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap">Диск I/O</div><div id="tel-disk" class="val-sm">—</div></div>
+        <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap">Чужой CPU</div><div id="tel-cpu" class="val-sm">—</div></div>
+        <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap">RAM своб.</div><div id="tel-ram" class="val-sm">—</div></div>
+        <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap">Канал qB</div><div id="tel-chan" class="val-sm accent-txt">—</div></div>
+        <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap">Чужая сеть</div><div id="tel-net" class="val-sm">—</div></div>
+        <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap">Слоты / Заполн.</div><div id="tel-slots" class="val-sm blue-txt">—</div></div>
     </div>
 
-    <div class="scroll-box mb-12" style="max-height:150px; border:1px solid var(--border); border-radius:6px;">
+    <!-- Лента решений -->
+    <div class="scroll-box mb-12" style="max-height:140px; border:1px solid var(--border); border-radius:6px;">
         <table>
             <thead><tr><th>Время</th><th>Режим</th><th>Событие</th><th>Причина</th><th>Слоты</th></tr></thead>
             <tbody id="tuner-history-tbody"><tr><td colspan="5" class="center-msg">Нет событий</td></tr></tbody>
         </table>
     </div>
 
-    <div class="grid-2" style="gap:12px;">
-        <div style="background:var(--bg-input); padding:10px; border-radius:6px; border:1px solid var(--border);">
+    <div class="tuner-columns-grid">
+        <!-- Левая колонка: Профили -->
+        <div class="tuner-box">
             <div class="row-between mb-8">
                 <div class="row-gap">
                     <button id="tp-tab-performance" class="btn btn-xs" onclick="selectTunerProfileTab('performance')">🚀 Производительность</button>
                     <button id="tp-tab-comfort" class="btn btn-secondary btn-xs" onclick="selectTunerProfileTab('comfort')">🛋️ Комфорт</button>
                 </div>
                 <div class="row-gap">
-                    <button class="btn btn-secondary btn-xs" onclick="resetTunerProfile()">Сброс</button>
-                    <button class="btn btn-xs" onclick="saveTunerProfile()">💾 Профиль</button>
+                    <button class="btn btn-secondary btn-xs" onclick="resetTunerProfile()" title="Сбросить профиль к заводским">Сброс</button>
+                    <button class="btn btn-xs" onclick="saveTunerProfile()">💾 Сохранить</button>
                 </div>
             </div>
-            <div class="grid-3 mb-8" style="gap:6px;">
-                <div><label class="lbl-xs">Слоты Min</label><input id="tp-mu-min" type="number" class="form-control"></div>
-                <div><label class="lbl-xs">Слоты Max</label><input id="tp-mu-max" type="number" class="form-control"></div>
-                <div><label class="lbl-xs">Старт</label><input id="tp-mu-start" type="number" class="form-control"></div>
+
+            <!-- Главные параметры слотов -->
+            <div class="tuner-section-title">СЛОТЫ ОТДАЧИ (MAX_UPLOADS)</div>
+            <div class="tuner-fields-row mb-8">
+                <div class="tuner-field"><span class="lbl-micro">Мин. слотов</span><input id="tp-mu-min" type="number" class="form-control tuner-num-input"></div>
+                <div class="tuner-field"><span class="lbl-micro">Макс. слотов</span><input id="tp-mu-max" type="number" class="form-control tuner-num-input"></div>
+                <div class="tuner-field"><span class="lbl-micro">Стартовые</span><input id="tp-mu-start" type="number" class="form-control tuner-num-input"></div>
             </div>
-            <div class="grid-3 mb-8" style="gap:6px;">
-                <div><label class="lbl-xs">На торр. Min</label><input id="tp-pt-up-min" type="number" class="form-control"></div>
-                <div><label class="lbl-xs">На торр. Max</label><input id="tp-pt-up-max" type="number" class="form-control"></div>
-                <label class="row-gap pointer lbl-xs" style="align-self:end; padding-bottom:6px;"><input id="tp-pt-up-auto" type="checkbox"> Авто 28%</label>
+
+            <div class="tuner-fields-row mb-8">
+                <div class="tuner-field grow-1">
+                    <span class="lbl-micro">max_active_uploads</span>
+                    <select id="tp-act-mode" class="form-control" onchange="syncTunerDisabledStates()">
+                        <option value="keep">Не менять (как в эталоне)</option>
+                        <option value="range">Диапазон Min..Max</option>
+                        <option value="fixed">Фиксированное число</option>
+                    </select>
+                </div>
+                <div class="tuner-field" id="wrap-tp-act-min"><span class="lbl-micro">Min</span><input id="tp-act-min" type="number" class="form-control tuner-num-input"></div>
+                <div class="tuner-field" id="wrap-tp-act-max"><span class="lbl-micro">Max</span><input id="tp-act-max" type="number" class="form-control tuner-num-input"></div>
             </div>
-            <div class="grid-3 mb-8" style="gap:6px;">
-                <div><label class="lbl-xs">Соед. Min</label><input id="tp-mc-min" type="number" class="form-control"></div>
-                <div><label class="lbl-xs">Соед. Max</label><input id="tp-mc-max" type="number" class="form-control"></div>
-                <label class="row-gap pointer lbl-xs" style="align-self:end; padding-bottom:6px;"><input id="tp-mc-auto" type="checkbox"> Авто ×4</label>
+
+            <!-- Скорость и канал -->
+            <div class="tuner-section-title">ЦЕЛЬ КАНАЛА И СКОРОСТИ</div>
+            <div class="tuner-fields-row mb-8">
+                <div class="tuner-field"><span class="lbl-micro">Цель канала (От %)</span><input id="tp-ch-min" type="number" class="form-control tuner-num-input"></div>
+                <div class="tuner-field"><span class="lbl-micro">Цель канала (До %)</span><input id="tp-ch-max" type="number" class="form-control tuner-num-input"></div>
+                <div class="tuner-field"><span class="lbl-micro">Потолок Up (0=∞)</span><input id="tp-up-pct" type="number" class="form-control tuner-num-input"></div>
+                <div class="tuner-field"><span class="lbl-micro">Потолок DL (0=∞)</span><input id="tp-dl-pct" type="number" class="form-control tuner-num-input"></div>
             </div>
-            <div class="grid-2 mb-8" style="gap:6px;">
-                <div><label class="lbl-xs">Connec/torr Min..Max</label><div class="row-gap"><input id="tp-pt-con-min" type="number" class="form-control"><input id="tp-pt-con-max" type="number" class="form-control"></div></div>
-                <div><label class="lbl-xs">max_active_uploads</label><div class="row-gap"><select id="tp-act-mode" class="form-control"><option value="keep">Не менять</option><option value="range">Диапазон</option><option value="fixed">Фикс</option></select><input id="tp-act-min" type="number" class="form-control" style="width:55px;"><input id="tp-act-max" type="number" class="form-control" style="width:55px;"></div></div>
+
+            <div class="tuner-fields-row mb-8 align-end">
+                <label class="row-gap pointer lbl-xs no-wrap grow-1" style="padding-bottom:5px;">
+                    <input id="tp-sq-en" type="checkbox" onchange="syncTunerDisabledStates()"> <b>Ужимать при перегрузе</b>
+                </label>
+                <div class="tuner-field" id="wrap-tp-sq-up"><span class="lbl-micro">Сжать Up %</span><input id="tp-sq-up" type="number" class="form-control tuner-num-input"></div>
+                <div class="tuner-field" id="wrap-tp-sq-dl"><span class="lbl-micro">Сжать DL %</span><input id="tp-sq-dl" type="number" class="form-control tuner-num-input"></div>
             </div>
-            <div class="grid-3 mb-8" style="gap:6px;">
-                <div><label class="lbl-xs">Цель канала %</label><div class="row-gap"><input id="tp-ch-min" type="number" class="form-control"><input id="tp-ch-max" type="number" class="form-control"></div></div>
-                <div><label class="lbl-xs">Потолок Up % (0=∞)</label><input id="tp-up-pct" type="number" class="form-control"></div>
-                <div><label class="lbl-xs">Потолок DL % (0=∞)</label><input id="tp-dl-pct" type="number" class="form-control"></div>
+
+            <!-- Ограничители железа -->
+            <div class="tuner-section-title">ОГРАНИЧИТЕЛИ ЖЕЛЕЗА И СЕТИ</div>
+            <div class="tuner-guards-list mb-8">
+                <!-- Диск -->
+                <div class="tuner-guard-row" id="guard-row-disk">
+                    <label class="row-gap pointer lbl-xs tuner-guard-label no-wrap"><input id="tp-g-disk-en" type="checkbox" onchange="syncTunerDisabledStates()"> <span>Диск I/O</span></label>
+                    <div class="tuner-field"><span class="lbl-micro">Тревога %</span><input id="tp-g-disk-warn" type="number" class="form-control tuner-num-input"></div>
+                    <div class="tuner-field"><span class="lbl-micro">Крит. %</span><input id="tp-g-disk-crit" type="number" class="form-control tuner-num-input"></div>
+                    <div class="tuner-field"><span class="lbl-micro">Возврат %</span><input id="tp-g-disk-rec" type="number" class="form-control tuner-num-input"></div>
+                </div>
+
+                <!-- CPU -->
+                <div class="tuner-guard-row" id="guard-row-cpu">
+                    <label class="row-gap pointer lbl-xs tuner-guard-label no-wrap"><input id="tp-g-cpu-en" type="checkbox" onchange="syncTunerDisabledStates()"> <span>Чужой CPU</span></label>
+                    <div class="tuner-field"><span class="lbl-micro">Тревога %</span><input id="tp-g-cpu-warn" type="number" class="form-control tuner-num-input"></div>
+                    <div class="tuner-field"><span class="lbl-micro">Возврат %</span><input id="tp-g-cpu-rec" type="number" class="form-control tuner-num-input"></div>
+                </div>
+
+                <!-- RAM -->
+                <div class="tuner-guard-row" id="guard-row-ram">
+                    <label class="row-gap pointer lbl-xs tuner-guard-label no-wrap"><input id="tp-g-ram-en" type="checkbox" onchange="syncTunerDisabledStates()"> <span>Своб. RAM</span></label>
+                    <div class="tuner-field"><span class="lbl-micro">Мин. % (тревога)</span><input id="tp-g-ram-min" type="number" class="form-control tuner-num-input"></div>
+                    <div class="tuner-field"><span class="lbl-micro">Возврат %</span><input id="tp-g-ram-rec" type="number" class="form-control tuner-num-input"></div>
+                </div>
+
+                <!-- Сеть -->
+                <div class="tuner-guard-row" id="guard-row-net">
+                    <label class="row-gap pointer lbl-xs tuner-guard-label no-wrap"><input id="tp-g-net-en" type="checkbox" onchange="syncTunerDisabledStates()"> <span>Чужая сеть</span></label>
+                    <div class="tuner-field"><span class="lbl-micro">Тревога %</span><input id="tp-g-net-warn" type="number" class="form-control tuner-num-input"></div>
+                    <div class="tuner-field"><span class="lbl-micro">Возврат %</span><input id="tp-g-net-rec" type="number" class="form-control tuner-num-input"></div>
+                </div>
             </div>
-            <div class="row-wrap mb-8" style="gap:6px;">
-                <label class="row-gap pointer lbl-xs"><input id="tp-sq-en" type="checkbox"> Ужимать Up/DL %:</label>
-                <input id="tp-sq-up" type="number" class="form-control" style="width:55px;">
-                <input id="tp-sq-dl" type="number" class="form-control" style="width:55px;">
-                <span class="lbl-xs">Кулдаун(с):</span><input id="tp-cd-sec" type="number" class="form-control" style="width:62px;">
-                <span class="lbl-xs">Шаг+:</span><input id="tp-step-up" type="number" class="form-control" style="width:52px;">
-                <label class="row-gap pointer lbl-xs"><input id="tp-yield-turtle" type="checkbox"> Уступать «Черепахе»</label>
-            </div>
-            <div class="col-gap" style="font-size:11px; border-top:1px dashed var(--border); padding-top:6px;">
-                <div class="row-gap"><label style="width:95px;"><input id="tp-g-disk-en" type="checkbox"> Диск %</label><input id="tp-g-disk-warn" type="number" class="form-control" title="Тревога"><input id="tp-g-disk-crit" type="number" class="form-control" title="Крит"><input id="tp-g-disk-rec" type="number" class="form-control" title="Возврат"></div>
-                <div class="row-gap"><label style="width:95px;"><input id="tp-g-cpu-en" type="checkbox"> Чужой CPU %</label><input id="tp-g-cpu-warn" type="number" class="form-control" title="Тревога"><input id="tp-g-cpu-rec" type="number" class="form-control" title="Возврат"></div>
-                <div class="row-gap"><label style="width:95px;"><input id="tp-g-ram-en" type="checkbox"> Своб. RAM %</label><input id="tp-g-ram-min" type="number" class="form-control" title="Мин."><input id="tp-g-ram-rec" type="number" class="form-control" title="Возврат"></div>
-                <div class="row-gap"><label style="width:95px;"><input id="tp-g-net-en" type="checkbox"> Чужая сеть %</label><input id="tp-g-net-warn" type="number" class="form-control" title="Тревога"><input id="tp-g-net-rec" type="number" class="form-control" title="Возврат"></div>
-            </div>
+
+            <!-- Аккордеон: Тонкие настройки -->
+            <details class="tuner-details">
+                <summary>⚙️ Тонкие настройки слотов и задержек</summary>
+                <div class="tuner-details-body">
+                    <div class="tuner-fields-row mb-8 align-end">
+                        <div class="tuner-field"><span class="lbl-micro">На торрент (Min)</span><input id="tp-pt-up-min" type="number" class="form-control tuner-num-input"></div>
+                        <div class="tuner-field"><span class="lbl-micro">На торрент (Max)</span><input id="tp-pt-up-max" type="number" class="form-control tuner-num-input"></div>
+                        <label class="row-gap pointer lbl-xs no-wrap" style="padding-bottom:5px;"><input id="tp-pt-up-auto" type="checkbox" onchange="syncTunerDisabledStates()"> Авто 28%</label>
+                    </div>
+
+                    <div class="tuner-fields-row mb-8 align-end">
+                        <div class="tuner-field"><span class="lbl-micro">Соединений (Min)</span><input id="tp-mc-min" type="number" class="form-control tuner-num-input"></div>
+                        <div class="tuner-field"><span class="lbl-micro">Соединений (Max)</span><input id="tp-mc-max" type="number" class="form-control tuner-num-input"></div>
+                        <label class="row-gap pointer lbl-xs no-wrap" style="padding-bottom:5px;"><input id="tp-mc-auto" type="checkbox" onchange="syncTunerDisabledStates()"> Авто ×4</label>
+                    </div>
+
+                    <div class="tuner-fields-row mb-8">
+                        <div class="tuner-field"><span class="lbl-micro">Connec/торр. (Min)</span><input id="tp-pt-con-min" type="number" class="form-control tuner-num-input"></div>
+                        <div class="tuner-field"><span class="lbl-micro">Connec/торр. (Max)</span><input id="tp-pt-con-max" type="number" class="form-control tuner-num-input"></div>
+                        <div class="tuner-field"><span class="lbl-micro">Кулдаун (сек)</span><input id="tp-cd-sec" type="number" class="form-control tuner-num-input"></div>
+                        <div class="tuner-field"><span class="lbl-micro">Шаг разгона (+слоты)</span><input id="tp-step-up" type="number" class="form-control tuner-num-input"></div>
+                    </div>
+
+                    <label class="row-gap pointer lbl-xs no-wrap">
+                        <input id="tp-yield-turtle" type="checkbox"> Уступать ручной «Черепахе» в клиенте
+                    </label>
+                </div>
+            </details>
         </div>
 
-        <div style="background:var(--bg-input); padding:10px; border-radius:6px; border:1px solid var(--border);">
+        <!-- Правая колонка: Правила автопереключения -->
+        <div class="tuner-box">
             <div class="row-between mb-8">
-                <span class="lbl-sm" style="margin:0;">🧠 ПРАВИЛА АВТОПЕРЕКЛЮЧЕНИЯ</span>
-                <button class="btn btn-xs" onclick="saveTunerRules()">💾 Правила</button>
+                <span class="lbl-sm" style="margin:0; font-weight:700;">🧠 ПРАВИЛА АВТОПЕРЕКЛЮЧЕНИЯ</span>
+                <button class="btn btn-xs" onclick="saveTunerRules()">💾 Сохранить</button>
             </div>
-            <div class="grid-2 mb-8" style="gap:6px;">
-                <div><label class="lbl-xs">Режим по умолчанию:</label><select id="tr-def-mode" class="form-control"><option value="performance">Производительность</option><option value="comfort">Комфорт</option></select></div>
-                <div><label class="lbl-xs">Ручной Override:</label><select id="tr-ov-policy" class="form-control"><option value="2h">На 2 часа</option><option value="until_schedule">До смены расписания</option><option value="until_process_exit">До закрытия процесса</option></select></div>
-            </div>
-            <div class="mb-8" style="border-top:1px dashed var(--border); padding-top:6px;">
-                <div class="row-between mb-8"><span class="lbl-xs"><b>⏰ Расписание (переход ч/з полночь поддерживается):</b></span><button class="btn btn-secondary btn-xs" onclick="addTunerScheduleRow()">+ Окно</button></div>
-                <div id="tr-sched-list" class="col-gap" style="max-height:95px; overflow-y:auto;"></div>
-            </div>
-            <div class="mb-8" style="border-top:1px dashed var(--border); padding-top:6px;">
-                <div class="row-between mb-8">
-                    <label class="row-gap pointer lbl-xs"><input id="tr-proc-en" type="checkbox"> <b>🎮 Процессы (Watchlist)</b></label>
-                    <div class="row-gap"><select id="tr-proc-mode" class="form-control" style="padding:2px; font-size:11px;"><option value="comfort">→ Комфорт</option><option value="performance">→ Производ.</option></select><button class="btn btn-secondary btn-xs" onclick="loadRunningProcessesPicker()">🖥️ Процессы ПК</button></div>
+
+            <div class="tuner-fields-row mb-8">
+                <div class="tuner-field grow-1">
+                    <span class="lbl-micro">Режим по умолчанию</span>
+                    <select id="tr-def-mode" class="form-control">
+                        <option value="performance">Производительность</option>
+                        <option value="comfort">Комфорт</option>
+                    </select>
                 </div>
-                <input id="tr-proc-names" class="form-control mb-8" placeholder="cs2.exe, dota2.exe, obs64.exe">
-                <div id="tr-proc-picker" class="hidden row-wrap mb-8" style="max-height:80px; overflow-y:auto; gap:4px;"></div>
-                <div class="row-gap lbl-xs"><span>Вход(с):</span><input id="tr-proc-enter" type="number" class="form-control" style="width:60px;"><span>Возврат(с):</span><input id="tr-proc-exit" type="number" class="form-control" style="width:65px;"></div>
+                <div class="tuner-field grow-1">
+                    <span class="lbl-micro">Политика Manual Override</span>
+                    <select id="tr-ov-policy" class="form-control">
+                        <option value="2h">На 2 часа</option>
+                        <option value="until_schedule">До смены расписания</option>
+                        <option value="until_process_exit">До закрытия процесса</option>
+                    </select>
+                </div>
             </div>
-            <div style="border-top:1px dashed var(--border); padding-top:6px;">
-                <div class="row-between mb-8">
-                    <label class="row-gap pointer lbl-xs"><input id="tr-ext-en" type="checkbox"> <b>⚡ Внешняя нагрузка</b></label>
-                    <select id="tr-ext-mode" class="form-control" style="width:115px; padding:2px; font-size:11px;"><option value="comfort">→ Комфорт</option><option value="performance">→ Производ.</option></select>
+
+            <!-- Расписание -->
+            <div class="tuner-block-divider mb-8">
+                <div class="row-between mb-6">
+                    <span class="lbl-xs"><b>⏰ Расписание (с переходом через полночь)</b></span>
+                    <button class="btn btn-secondary btn-xs" onclick="addTunerScheduleRow()">+ Окно</button>
                 </div>
-                <div class="grid-3 mb-8" style="gap:4px;">
-                    <div><label class="lbl-xs">CPU Вход/Вых</label><div class="row-gap"><input id="tr-ext-cpu-w" type="number" class="form-control"><input id="tr-ext-cpu-r" type="number" class="form-control"></div></div>
-                    <div><label class="lbl-xs">Сеть% Вх/Вых</label><div class="row-gap"><input id="tr-ext-net-w" type="number" class="form-control"><input id="tr-ext-net-r" type="number" class="form-control"></div></div>
-                    <div><label class="lbl-xs">RAM Мин/Возв</label><div class="row-gap"><input id="tr-ext-ram-w" type="number" class="form-control"><input id="tr-ext-ram-r" type="number" class="form-control"></div></div>
+                <div id="tr-sched-list" class="col-gap" style="max-height:110px; overflow-y:auto;"></div>
+            </div>
+
+            <!-- Процессы (Watchlist) -->
+            <div class="tuner-block-divider mb-8" id="rules-box-proc">
+                <div class="row-between mb-6">
+                    <label class="row-gap pointer lbl-xs no-wrap"><input id="tr-proc-en" type="checkbox" onchange="syncTunerDisabledStates()"> <b>🎮 Процессы (Watchlist)</b></label>
+                    <div class="row-gap">
+                        <select id="tr-proc-mode" class="form-control" style="padding:2px 4px; font-size:11px;">
+                            <option value="comfort">→ Комфорт</option>
+                            <option value="performance">→ Производ.</option>
+                        </select>
+                        <button class="btn btn-secondary btn-xs" onclick="loadRunningProcessesPicker()">🖥️ Процессы ПК</button>
+                    </div>
                 </div>
-                <div class="row-gap lbl-xs"><span>Вход(с):</span><input id="tr-ext-enter" type="number" class="form-control" style="width:60px;"><span>Возврат(с):</span><input id="tr-ext-exit" type="number" class="form-control" style="width:65px;"></div>
+                <input id="tr-proc-names" class="form-control mb-6" placeholder="cs2.exe, dota2.exe, obs64.exe">
+                <div id="tr-proc-picker" class="hidden row-wrap mb-6" style="max-height:85px; overflow-y:auto; gap:4px;"></div>
+                <div class="tuner-fields-row">
+                    <div class="tuner-field"><span class="lbl-micro">Задержка входа (сек)</span><input id="tr-proc-enter" type="number" class="form-control tuner-num-input"></div>
+                    <div class="tuner-field"><span class="lbl-micro">Задержка выхода (сек)</span><input id="tr-proc-exit" type="number" class="form-control tuner-num-input"></div>
+                </div>
+            </div>
+
+            <!-- Внешняя нагрузка -->
+            <div class="tuner-block-divider" id="rules-box-ext">
+                <div class="row-between mb-6">
+                    <label class="row-gap pointer lbl-xs no-wrap"><input id="tr-ext-en" type="checkbox" onchange="syncTunerDisabledStates()"> <b>⚡ Активность чужих программ</b></label>
+                    <select id="tr-ext-mode" class="form-control" style="width:115px; padding:2px 4px; font-size:11px;">
+                        <option value="comfort">→ Комфорт</option>
+                        <option value="performance">→ Производ.</option>
+                    </select>
+                </div>
+                <div class="tuner-fields-row mb-6">
+                    <div class="tuner-field"><span class="lbl-micro">CPU Вход %</span><input id="tr-ext-cpu-w" type="number" class="form-control tuner-num-input"></div>
+                    <div class="tuner-field"><span class="lbl-micro">CPU Выход %</span><input id="tr-ext-cpu-r" type="number" class="form-control tuner-num-input"></div>
+                    <div class="tuner-field"><span class="lbl-micro">Сеть Вход %</span><input id="tr-ext-net-w" type="number" class="form-control tuner-num-input"></div>
+                    <div class="tuner-field"><span class="lbl-micro">Сеть Выход %</span><input id="tr-ext-net-r" type="number" class="form-control tuner-num-input"></div>
+                </div>
+                <div class="tuner-fields-row mb-6">
+                    <div class="tuner-field"><span class="lbl-micro">RAM Мин. %</span><input id="tr-ext-ram-w" type="number" class="form-control tuner-num-input"></div>
+                    <div class="tuner-field"><span class="lbl-micro">RAM Возвр. %</span><input id="tr-ext-ram-r" type="number" class="form-control tuner-num-input"></div>
+                    <div class="tuner-field"><span class="lbl-micro">Вход (сек)</span><input id="tr-ext-enter" type="number" class="form-control tuner-num-input"></div>
+                    <div class="tuner-field"><span class="lbl-micro">Выход (сек)</span><input id="tr-ext-exit" type="number" class="form-control tuner-num-input"></div>
+                </div>
             </div>
         </div>
     </div>
@@ -135,434 +242,317 @@
 
 ---
 
-#### `web/templates/partials/tab_automation.html`
-```html
-<!-- TAB 5: Автопилот -->
-    <div id="tab-automation" class="tab-content col-wide">
-        <div class="card">
-            <div class="row-between mb-10">
-                <div class="card-title" style="margin-bottom:0;" data-i18n="card_automation">🤖 АВТОПИЛОТ И УВЕДОМЛЕНИЯ (TELEGRAM / DISCORD)</div>
-                <span id="auto-status-msg" class="lbl-xs accent-txt"></span>
-            </div>
-            <div class="grid-2 mb-10">
-                <div class="autostart-box" style="margin-bottom:0;">
-                    <label class="row-gap pointer" style="font-size:13px; font-weight:700;">
-                        <input type="checkbox" id="auto-enabled"> <span data-i18n="auto_enable">Включить фоновый автопилот</span>
-                    </label>
-                    <div class="row-gap">
-                        <span class="lbl-xs muted-text" data-i18n="auto_interval">Раз в (мин):</span>
-                        <input type="number" id="auto-interval" class="form-control" style="width:70px;" min="1" max="1440" value="5">
-                    </div>
-                </div>
-                <div class="row-gap" style="justify-content: flex-end; flex-wrap:wrap;">
-                    <button class="btn btn-secondary" onclick="runAutopilotDryRun()">🧪 Прогнать вхолостую</button>
-                    <button class="btn btn-secondary" onclick="testNotifications()" data-i18n="btn_test">🔔 Тест</button>
-                    <button class="btn btn-secondary" onclick="runAutomationNow()" data-i18n="btn_run_now">⚡ Проверить сейчас</button>
-                    <button class="btn" onclick="saveAutomationSettings()" data-i18n="btn_save">💾 Сохранить</button>
-                </div>
-            </div>
+#### `web/static/style.css`
+```css
+:root {
+    --bg-main: #121214; --bg-panel: #1a1a20; --bg-input: #262630; --bg-hover: #22222a;
+    --text: #ffffff; --text-muted: #95a5a6; --accent: #2ecc71; --th-bg: #1e1e26;
+    --danger: #e74c3c; --warning: #f39c12; --info: #3498db; --border: #2a2a34;
+    --app-font: 'Segoe UI', system-ui, sans-serif;
+}
+html, body { width: 100%; max-width: 100vw; overflow-x: hidden; }
+* { box-sizing: border-box; margin: 0; padding: 0; font-family: var(--app-font); }
+body { background: var(--bg-main); color: var(--text); display: flex; flex-direction: column; min-height: 100vh; }
 
-            <div class="card mb-10" style="background:var(--bg-input); border:1px solid var(--border); padding:8px 12px;">
-                <div class="lbl-sm mb-6" style="color:var(--warning); font-weight:700;">🚨 СИСТЕМНЫЕ АЛЕРТЫ И РЕАНИМАЦИЯ (TG / DISCORD)</div>
-                <div class="row-wrap" style="gap:14px;">
-                    <div class="row-gap">
-                        <span class="lbl-xs">Алерт, если на диске меньше:</span>
-                        <input type="number" id="auto-alert-disk" class="form-control" style="width:80px;" placeholder="0" min="0" step="5">
-                        <span class="lbl-xs muted-text">GiB (0 = выкл, гистерезис +5 GiB)</span>
-                    </div>
-                    <label class="row-gap pointer lbl-xs">
-                        <input type="checkbox" id="auto-alert-qb"> Алерт при отвале WebUI qBittorrent (> 2.5 мин)
-                    </label>
-                    <label class="row-gap pointer lbl-xs">
-                        <input type="checkbox" id="auto-recheck-io"> Авто-перепроверка при ошибках диска (I/O, макс. 1 попытка -> тег io-error)
-                    </label>
-                </div>
-            </div>
+::-webkit-scrollbar { width: 7px; height: 7px; }
+::-webkit-scrollbar-track { background: var(--bg-main); }
+::-webkit-scrollbar-thumb { background: var(--bg-input); border-radius: 4px; border: 1px solid var(--border); }
+::-webkit-scrollbar-thumb:hover { background: var(--accent); }
 
-            <div class="grid-3 mb-10">
-                <div class="form-group">
-                    <label class="row-between"><span data-i18n="lbl_tg_token">Telegram Bot Token:</span><button type="button" class="btn btn-secondary btn-xs" onclick="openBotGuide('tg')">?</button></label>
-                    <input type="password" id="auto-tg-token" class="form-control" placeholder="123456:ABC-DEF...">
-                </div>
-                <div class="form-group">
-                    <label data-i18n="lbl_tg_chat">Telegram Chat ID:</label>
-                    <input type="text" id="auto-tg-chat" class="form-control" placeholder="123456789">
-                </div>
-                <div class="form-group">
-                    <label class="row-between"><span data-i18n="lbl_discord">Discord Webhook URL:</span><button type="button" class="btn btn-secondary btn-xs" onclick="openBotGuide('discord')">?</button></label>
-                    <input type="password" id="auto-discord" class="form-control" placeholder="https://discord.com/api/webhooks/...">
-                </div>
-            </div>
+header { background: var(--bg-panel); padding: 10px 16px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; width: 100%; max-width: 100vw; }
+.logo-svg { width: 32px; height: 32px; filter: drop-shadow(0 0 6px rgba(46, 204, 113, 0.4)); }
+.logo-text { font-size: 1.15rem; font-weight: 800; color: var(--accent); }
 
-            <div class="card" style="background:var(--bg-input); border:1px solid var(--border); padding:10px 12px;">
-                <div class="row-between mb-8">
-                    <span class="lbl-sm" style="margin:0; color:var(--info); font-weight:700;">🌙 «ТИХИЙ ЧАС» (DND) И ДАЙДЖЕСТ В БОТОВ</span>
-                    <button class="btn btn-secondary btn-xs" onclick="saveDndDigestSchedule()">💾 Сохранить расписание</button>
-                </div>
-                <div class="grid-2" style="gap:12px;">
-                    <div>
-                        <label class="row-gap pointer lbl-xs mb-8">
-                            <input type="checkbox" id="dnd-enabled"> <b>Включить «Тихий час»</b> (критические тревоги пробивают)
-                        </label>
-                        <div class="row-gap mb-8" style="gap:6px;">
-                            <span class="lbl-xs">С:</span><input type="time" id="dnd-start" class="form-control" style="width:100px;" value="23:00">
-                            <span class="lbl-xs">До:</span><input type="time" id="dnd-end" class="form-control" style="width:100px;" value="08:00">
-                        </div>
-                        <div class="row-wrap" style="gap:6px;">
-                            <label class="lbl-xs"><input type="checkbox" class="dnd-day-chk" value="0" checked> Пн</label>
-                            <label class="lbl-xs"><input type="checkbox" class="dnd-day-chk" value="1" checked> Вт</label>
-                            <label class="lbl-xs"><input type="checkbox" class="dnd-day-chk" value="2" checked> Ср</label>
-                            <label class="lbl-xs"><input type="checkbox" class="dnd-day-chk" value="3" checked> Чт</label>
-                            <label class="lbl-xs"><input type="checkbox" class="dnd-day-chk" value="4" checked> Пт</label>
-                            <label class="lbl-xs"><input type="checkbox" class="dnd-day-chk" value="5" checked> Сб</label>
-                            <label class="lbl-xs"><input type="checkbox" class="dnd-day-chk" value="6" checked> Вс</label>
-                        </div>
-                    </div>
-                    <div>
-                        <label class="lbl-sm">Авто-дайджест статистики:</label>
-                        <div class="row-wrap" style="gap:6px;">
-                            <select id="digest-mode" class="form-control" style="width:140px;">
-                                <option value="off">Выключен</option><option value="daily">Ежедневно</option><option value="weekly">Еженедельно</option>
-                            </select>
-                            <input type="number" id="digest-hour" class="form-control" style="width:65px;" min="0" max="23" value="21" title="Час отправки">
-                            <select id="digest-weekday" class="form-control" style="width:95px;">
-                                <option value="0">Пн</option><option value="1">Вт</option><option value="2">Ср</option>
-                                <option value="3">Чт</option><option value="4">Пт</option><option value="5">Сб</option><option value="6" selected>Вс</option>
-                            </select>
-                        </div>
-                        <div class="lbl-xs muted-text mt-10">Если ПК был выключен, бот дошлёт сводку при старте.</div>
-                    </div>
-                </div>
-            </div>
-        </div>
+.nav-tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+.tab-btn { background: transparent; border: none; color: var(--text-muted); padding: 7px 12px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 13px; transition: 0.15s; }
+.tab-btn:hover { background: var(--bg-input); color: var(--text); }
+.tab-btn.active { background: var(--accent); color: #000; font-weight: 700; }
 
-        {% include 'partials/tab_tuner.html' %}
-        {% include 'partials/tab_auto_extras.html' %}
+.btn { background: var(--accent); color: #000; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 700; display: inline-flex; align-items: center; gap: 5px; text-decoration: none; transition: 0.15s; }
+.btn:hover { filter: brightness(1.1); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn-danger { background: var(--danger); color: #fff; }
+.btn-secondary { background: var(--bg-input); color: var(--text); border: 1px solid var(--border); }
+.btn-xs { padding: 4px 8px; font-size: 11px; }
+.center-btn { justify-content: center; padding: 8px; }
 
-        <div id="rule-form-card" class="card">
-            <div id="rule-form-title" class="card-title" data-i18n="card_add_rule">➕ ДОБАВИТЬ ПРАВИЛО</div>
-            <div class="row-wrap mb-8">
-                <div class="grow-1"><label class="lbl-sm" data-i18n="lbl_rule_name">Название:</label><input type="text" id="rule-name" class="form-control" placeholder="Напр: Стоп после 2.0x и 14 дней" data-i18n-ph="rule_name_ph"></div>
-                <div style="width:140px;"><label class="lbl-sm">Метрика времени:</label><select id="rule-time-mode" class="form-control"><option value="seeding_time">Время сида</option><option value="time_active">Время актива</option></select></div>
-                <div style="width:95px;"><label class="lbl-sm" data-i18n="lbl_rule_ratio">Мин. Ratio:</label><input type="number" step="0.1" min="0" id="rule-ratio" class="form-control" placeholder="2.0"></div>
-                <div style="width:95px;"><label class="lbl-sm" data-i18n="lbl_rule_days">Мин. дней:</label><input type="number" step="0.5" min="0" id="rule-days" class="form-control" placeholder="14"></div>
-                <div style="width:170px;">
-                    <label class="lbl-sm">Мин. отдано:</label>
-                    <div class="row-gap">
-                        <input type="number" step="0.1" min="0" id="rule-up-val" class="form-control" placeholder="500">
-                        <select id="rule-up-unit" class="form-control" style="width:76px;"><option value="MiB">MiB</option><option value="GiB" selected>GiB</option><option value="TiB">TiB</option></select>
-                    </div>
-                </div>
-            </div>
-            <div class="row-wrap mb-10">
-                <div style="width:320px;">
-                    <label class="lbl-sm">Средняя скорость (окно W мин):</label>
-                    <div class="row-gap">
-                        <select id="rule-speed-op" class="form-control" style="width:75px;"><option value="">выкл</option><option value=">=">&gt;=</option><option value="<">&lt;</option></select>
-                        <input type="number" step="0.1" min="0" id="rule-speed-val" class="form-control" placeholder="100">
-                        <select id="rule-speed-unit" class="form-control" style="width:82px;"><option value="KiB">KiB/s</option><option value="MiB">MiB/s</option></select>
-                        <input type="number" min="1" max="10080" id="rule-speed-win" class="form-control" style="width:70px;" value="60" title="Окно W в минутах">
-                    </div>
-                </div>
-                <div style="width:130px;"><label class="lbl-sm" data-i18n="lbl_rule_tag">Повесить тег:</label><input type="text" id="rule-tag" class="form-control" placeholder="done (опц.)" data-i18n-ph="rule_tag_ph"></div>
-                <div style="width:130px;"><label class="lbl-sm">Снять тег:</label><input type="text" id="rule-remove-tag" class="form-control" placeholder="active (опц.)"></div>
-                <div class="row-gap" style="align-self:flex-end; padding-bottom: 4px;">
-                    <label class="row-gap pointer lbl-xs"><input type="checkbox" id="rule-pause"> <span data-i18n="chk_pause">⏸️ Пауза</span></label>
-                    <label class="row-gap pointer lbl-xs"><input type="checkbox" id="rule-notify" checked> <span data-i18n="chk_notify">📣 Уведомить</span></label>
-                    <button id="btn-rule-submit" class="btn" onclick="submitAutomationRule()" data-i18n="btn_add">➕ Добавить</button>
-                    <button id="btn-rule-cancel" class="btn btn-secondary hidden" onclick="cancelEditRule()" data-i18n="btn_cancel">Отмена</button>
-                </div>
-            </div>
-            <div class="scroll-box" style="max-height: 260px;">
-                <table>
-                    <thead><tr><th data-i18n="th_rule_name">Название</th><th data-i18n="th_rule_cond">Условие</th><th data-i18n="th_rule_act">Действия</th><th data-i18n="th_rule_status">Статус</th><th data-i18n="th_rule_ctrl">Управление</th></tr></thead>
-                    <tbody id="rules-tbody"><tr><td colspan="5" class="center-msg" data-i18n="no_rules">Нет правил</td></tr></tbody>
-                </table>
-            </div>
-        </div>
+#btn-panic-killswitch.holding { animation: panicPulse 0.4s infinite alternate; transform: scale(0.96); }
+@keyframes panicPulse { from { box-shadow: 0 0 0 0 rgba(231,76,60,0.6); } to { box-shadow: 0 0 12px 4px rgba(231,76,60,0.9); } }
 
-        <div class="card" id="tagging-rules-card">
-            <div class="card-title">🏷️ ПРАВИЛА АВТО-ТЕГИРОВАНИЯ (ПО ТРЕКЕРУ ИЛИ ПУТИ)</div>
-            <div class="row-wrap mb-10" style="gap:8px;">
-                <input type="text" id="tag-rule-name" class="form-control" style="width:160px;" placeholder="Название (опц.)">
-                <select id="tag-rule-field" class="form-control" style="width:155px;"><option value="tracker">URL трекера содержит</option><option value="save_path">Путь содержит</option></select>
-                <input type="text" id="tag-rule-pattern" class="form-control grow-1" placeholder="Напр: rutracker или D:\Games">
-                <input type="text" id="tag-rule-target" class="form-control" style="width:130px;" placeholder="Целевой тег">
-                <button class="btn" onclick="addTaggingRule()">➕ Добавить</button>
-            </div>
-            <div class="scroll-box" style="max-height: 200px;">
-                <table>
-                    <thead><tr><th>Название</th><th>Условие</th><th>Тег</th><th>Статус</th><th>Управление</th></tr></thead>
-                    <tbody id="tagging-rules-tbody"><tr><td colspan="5" class="center-msg">Загрузка...</td></tr></tbody>
-                </table>
-            </div>
-        </div>
-    </div>
+main { flex: 1; display: flex; flex-direction: column; width: 100%; max-width: 100vw; overflow-x: hidden; }
+.tab-content { display: none; height: 100%; padding: 14px; overflow-y: auto; width: 100%; max-width: 100%; }
+.tab-content.active { display: flex; gap: 14px; }
+.col-center { flex-direction: column; max-width: 850px; margin: 0 auto; width: 100%; }
+.col-wide { flex-direction: column; max-width: 1400px; margin: 0 auto; width: 100%; gap: 12px; }
+
+.app-footer { background: var(--bg-panel); border-top: 1px solid var(--border); padding: 8px 16px; display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; width: 100%; }
+.version-pill { color: var(--accent); font-weight: 700; text-decoration: none; padding: 3px 9px; background: var(--bg-input); border-radius: 6px; border: 1px solid var(--border); }
+.version-pill:hover { filter: brightness(1.15); }
+.tools-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; width: 100%; max-width: 100%; }
+
+.heatmap-scroll { overflow-x: auto; padding-bottom: 6px; max-width: 100%; }
+.heatmap-grid { display: grid; grid-template-rows: repeat(7, 12px); grid-auto-flow: column; grid-auto-columns: 12px; gap: 3px; width: max-content; }
+.hm-cell { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+.hm-empty { background: transparent; }
+.hm-l0 { background: var(--bg-input); border: 1px solid var(--border); }
+.hm-l1 { background: rgba(46, 204, 113, 0.28); }
+.hm-l2 { background: rgba(46, 204, 113, 0.52); }
+.hm-l3 { background: rgba(46, 204, 113, 0.78); }
+.hm-l4 { background: #2ecc71; }
+
+.diff-row-exact td { background: rgba(46, 204, 113, 0.08); }
+.diff-row-changed td { background: rgba(243, 156, 18, 0.12); }
+.diff-row-removed td { background: rgba(231, 76, 60, 0.12); }
+.diff-row-added td { background: rgba(52, 152, 219, 0.12); }
+
+.torrent-left { flex: 3.5; display: flex; flex-direction: column; background: var(--bg-panel); border-radius: 8px; border: 1px solid var(--border); overflow: hidden; min-width: 0; }
+.torrent-right { flex: 1; min-width: 280px; display: flex; flex-direction: column; gap: 12px; }
+.table-toolbar { padding: 8px 12px; display: flex; gap: 8px; border-bottom: 1px solid var(--border); align-items: center; flex-wrap: wrap; }
+.search-input { flex: 1; min-width: 140px; background: var(--bg-input); border: 1px solid var(--border); color: var(--text); padding: 7px 10px; border-radius: 6px; outline: none; font-size: 13px; }
+.table-container { flex: 1; overflow: auto; min-height: 250px; max-width: 100%; }
+
+table { width: 100%; border-collapse: collapse; text-align: left; font-size: 12px; }
+th { background: var(--th-bg); color: var(--text-muted); padding: 9px 10px; position: sticky; top: 0; border-bottom: 2px solid var(--border); cursor: pointer; user-select: none; white-space: nowrap; font-size: 11.5px; }
+th:hover { color: var(--accent); }
+td { padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+tr:hover td { background: var(--bg-hover); }
+tr.selected td { background: rgba(46, 204, 113, 0.15) !important; border-left: 3px solid var(--accent); }
+
+.badge { display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.badge-up { background: rgba(46, 204, 113, 0.15); color: #2ecc71; border: 1px solid rgba(46, 204, 113, 0.3); }
+.badge-dl { background: rgba(52, 152, 219, 0.15); color: #3498db; border: 1px solid rgba(52, 152, 219, 0.3); }
+.badge-pause { background: rgba(149, 165, 166, 0.15); color: #95a5a6; border: 1px solid rgba(149, 165, 166, 0.3); }
+.badge-stall { background: rgba(243, 156, 18, 0.15); color: #f39c12; border: 1px solid rgba(243, 156, 18, 0.3); }
+.badge-stop { background: rgba(231, 76, 60, 0.15); color: #e74c3c; border: 1px solid rgba(231, 76, 60, 0.3); }
+.badge-force { background: rgba(230, 126, 34, 0.15); color: #e67e22; border: 1px solid rgba(230, 126, 34, 0.3); }
+.badge-err { background: rgba(231, 76, 60, 0.25); color: #ff5252; border: 1px solid #ff5252; }
+
+.card { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; width: 100%; max-width: 100%; }
+.card-title { font-size: 12px; font-weight: 800; margin-bottom: 8px; color: var(--accent); letter-spacing: 0.5px; }
+.danger-border { border-color: rgba(231, 76, 60, 0.4); }
+.form-group { margin-bottom: 8px; }
+.form-group label { display: block; font-size: 11px; color: var(--text-muted); margin-bottom: 4px; font-weight: 600; }
+.form-control { width: 100%; background: var(--bg-input); border: 1px solid var(--border); color: var(--text); padding: 7px 10px; border-radius: 6px; outline: none; font-size: 13px; }
+
+/* === АВТО-ТЮНЕР СТИЛИ === */
+.tuner-columns-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 12px; width: 100%; }
+.tuner-box { background: var(--bg-input); padding: 12px; border-radius: 6px; border: 1px solid var(--border); display: flex; flex-direction: column; }
+.tuner-telemetry-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
+.tuner-stat-card { background: var(--bg-input); padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border); }
+.tuner-section-title { font-size: 10.5px; font-weight: 800; color: var(--text-muted); letter-spacing: 0.5px; margin: 6px 0 4px; }
+.tuner-block-divider { border-top: 1px dashed var(--border); padding-top: 8px; }
+.tuner-fields-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; }
+.tuner-field { display: flex; flex-direction: column; gap: 2px; flex: 1 1 70px; min-width: 68px; }
+.tuner-num-input { padding: 5px 6px !important; font-size: 12px !important; text-align: center; }
+.lbl-micro { font-size: 9.5px; color: var(--text-muted); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.no-wrap { white-space: nowrap !important; }
+.align-end { align-items: flex-end !important; }
+
+.tuner-guards-list { display: flex; flex-direction: column; gap: 6px; border-top: 1px dashed var(--border); padding-top: 8px; }
+.tuner-guard-row { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; background: rgba(0,0,0,0.15); padding: 6px 8px; border-radius: 6px; transition: opacity 0.2s; }
+.tuner-guard-label { width: 110px; padding-bottom: 6px; flex-shrink: 0; }
+.tuner-row-disabled { opacity: 0.38 !important; }
+.tuner-row-disabled input:not([type=checkbox]),
+.tuner-row-disabled select { pointer-events: none; background: rgba(0,0,0,0.2) !important; color: var(--text-muted) !important; }
+
+.tuner-details { border-top: 1px dashed var(--border); padding-top: 8px; margin-top: 6px; }
+.tuner-details summary { font-size: 11.5px; font-weight: 700; color: var(--info); cursor: pointer; user-select: none; padding: 4px 0; }
+.tuner-details summary:hover { color: var(--accent); }
+.tuner-details-body { padding-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+
+.terminal { background: #0c0c0f; color: #2ecc71; font-family: 'Consolas', monospace; font-size: 12px; padding: 12px; border-radius: 6px; height: 170px; overflow-y: auto; white-space: pre-wrap; line-height: 1.45; border: 1px solid var(--border); }
+.scroll-box { max-height: 220px; overflow-y: auto; }
+.flex-scroll { flex: 1; overflow: auto; }
+
+.modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.75); display: none; justify-content: center; align-items: center; z-index: 999; padding: 14px; }
+.modal { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; width: 100%; max-width: 480px; padding: 18px; }
+.autostart-box { background: var(--bg-input); padding: 10px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+
+.login-body { justify-content: center; align-items: center; padding: 16px; }
+.login-card { width: 100%; max-width: 380px; padding: 24px; text-align: center; }
+.login-title { font-size: 1.5rem; font-weight: 800; color: var(--accent); margin-bottom: 8px; }
+.alert-err { background: rgba(231, 76, 60, 0.2); border: 1px solid var(--danger); color: #ff6b6b; padding: 8px; border-radius: 6px; font-size: 12px; margin-bottom: 12px; }
+
+.row-gap { display: flex; gap: 8px; align-items: center; }
+.row-wrap { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.row-between { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+.row-end { display: flex; justify-content: flex-end; gap: 8px; }
+.col-gap { display: flex; flex-direction: column; gap: 8px; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+.grid-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+.grid-calc { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
+
+.w-full { width: 100%; } .grow-1 { flex: 1; min-width: 140px; }
+.mb-6 { margin-bottom: 6px; } .mb-8 { margin-bottom: 8px; } .mb-10 { margin-bottom: 10px; } .mb-12 { margin-bottom: 12px; }
+.mt-10 { margin-top: 10px; } .mt-12 { margin-top: 12px; }
+.hidden { display: none !important; } .pointer { cursor: pointer; }
+.center-msg { text-align: center; padding: 20px; color: var(--text-muted); }
+
+.muted-text { font-size: 12px; color: var(--text-muted); }
+.lbl-sm { display: block; font-size: 11px; color: var(--text-muted); margin-bottom: 3px; font-weight: 600; }
+.lbl-xs { font-size: 11px; font-weight: 600; }
+.val-lg { font-size: 18px; font-weight: 800; }
+.val-md { font-size: 15px; font-weight: 800; }
+.val-sm { font-size: 13px; font-weight: 700; margin-top: 3px; }
+.accent-txt { color: var(--accent); } .purple-txt { color: #9b59b6; }
+.orange-txt { color: #e67e22; } .blue-txt { color: #3498db; }
+
+.col-resizer { position: absolute; right: 0; top: 0; width: 6px; height: 100%; cursor: col-resize; user-select: none; }
+.col-resizer:hover { background: var(--accent); opacity: 0.6; }
+
+@media (max-width: 900px) {
+    .tab-content.active { flex-direction: column; overflow-y: auto; }
+    .torrent-right { min-width: 100%; }
+    body { height: auto; overflow-y: auto; }
+    main { overflow: visible; }
+}
+
+@media (max-width: 768px) {
+    header { padding: 8px 10px; }
+    header .row-gap { width: 100%; justify-content: flex-start; flex-wrap: wrap; gap: 6px; }
+    .nav-tabs { width: 100%; overflow-x: auto; flex-wrap: nowrap; padding-bottom: 4px; }
+    .nav-tabs .tab-btn { flex: 0 0 auto; white-space: nowrap; }
+    .tools-grid { grid-template-columns: 1fr; }
+    .grid-2 { grid-template-columns: 1fr; }
+    .tab-content { padding: 8px; }
+
+    .tuner-columns-grid { grid-template-columns: 1fr; }
+    .tuner-guard-row { flex-direction: column; align-items: stretch; gap: 4px; }
+    .tuner-guard-label { width: 100%; }
+    .tuner-fields-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .tuner-fields-row.align-end { grid-template-columns: 1fr; }
+
+    body.mobile-cards-on .grid-cards,
+    body.mobile-cards-on #analytics-charts-grid {
+        grid-template-columns: 1fr !important;
+    }
+    body.mobile-cards-on .btn, body.mobile-cards-on .tab-btn { padding: 8px 10px; font-size: 12px; }
+    body.mobile-cards-on #summary-table thead { display: none; }
+    body.mobile-cards-on #summary-table,
+    body.mobile-cards-on #summary-table tbody { display: block; width: 100%; }
+    body.mobile-cards-on #summary-table tr {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 6px 10px;
+        background: var(--bg-input);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        margin-bottom: 8px;
+        padding: 8px 10px;
+    }
+    body.mobile-cards-on #summary-table tr.selected { border-color: var(--accent); }
+    body.mobile-cards-on #summary-table td {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        padding: 2px 0;
+        border-bottom: none;
+        white-space: normal;
+        min-width: 0;
+    }
+    body.mobile-cards-on #summary-table td::before {
+        content: attr(data-label);
+        color: var(--text-muted);
+        font-size: 10px;
+        font-weight: 600;
+        text-transform: uppercase;
+    }
+    body.mobile-cards-on #summary-table td[data-col="name"] {
+        grid-column: 1 / -1;
+        flex-direction: row;
+        justify-content: space-between;
+        align-items: center;
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 6px;
+        margin-bottom: 2px;
+    }
+    body.mobile-cards-on #summary-table td[data-col="name"]::before { display: none; }
+    body.mobile-cards-on #summary-table td[data-col="name"] strong {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 13px;
+    }
+    body.mobile-cards-on #summary-table td[data-col="ratio"] {
+        grid-column: 1 / -1;
+        flex-direction: row;
+        justify-content: space-between;
+        align-items: center;
+        background: rgba(46, 204, 113, 0.08);
+        padding: 4px 8px;
+        border-radius: 5px;
+    }
+}
 ```
 
 ---
 
-#### `web/templates/index.html`
-```html
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <meta name="csrf-token" content="{{ csrf_token }}">
-    <meta name="theme-color" content="#1a1a20">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <link rel="manifest" href="/manifest.json">
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-    <title>tbr PRO — Швейцарский нож qBittorrent</title>
-    <link rel="stylesheet" href="/static/style.css?v={{ v }}">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
-</head>
-<body>
-<header>
-    <div class="row-gap">
-        <svg class="logo-svg" viewBox="0 0 48 48" fill="none">
-            <rect width="48" height="48" rx="10" fill="#1A1A20"/>
-            <path d="M26 6L12 26H24L20 42L36 22H24L26 6Z" fill="#2ECC71" stroke="#2ECC71" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-        <span class="logo-text">tbr PRO</span>
-        <span id="qb-status-badge" class="badge badge-pause pointer" onclick="toggleQbPower()" data-i18n="qb_loading">⏳ qB...</span>
-        <span id="tuner-header-badge" class="badge badge-pause pointer admin-only" onclick="switchTab('automation')" title="Адаптивный авто-тюнер qB">🎛️ Тюнер: Выкл</span>
-        <button id="update-available-badge" class="btn btn-xs hidden" style="background:var(--warning); color:#000;" onclick="openUpdateModal(false)">⬆️ Доступно обновление</button>
-    </div>
-    <div class="nav-tabs">
-        <button class="tab-btn active" data-tab="torrents" onclick="switchTab('torrents')" data-i18n="tab_torrents">⚡ Раздачи</button>
-        <button class="tab-btn" data-tab="merger" onclick="switchTab('merger')" data-i18n="tab_merger">🔀 Подменщик</button>
-        <button class="tab-btn" data-tab="summary" onclick="switchTab('summary')" data-i18n="tab_summary">📊 Сводка</button>
-        <button class="tab-btn" data-tab="analytics" onclick="switchTab('analytics')" data-i18n="tab_analytics">📈 Аналитика</button>
-        <button class="tab-btn" data-tab="automation" onclick="switchTab('automation')" data-i18n="tab_automation">🤖 Автопилот</button>
-        <button class="tab-btn" data-tab="tools" onclick="switchTab('tools')" data-i18n="tab_tools">🛠️ Инструменты</button>
-    </div>
-    <div class="row-gap">
-        <button class="btn btn-secondary" title="Палитра команд (Ctrl+K)" onclick="openCommandPalette()">🔍 Ctrl+K</button>
-        <button id="btn-smart-freeze" class="btn btn-secondary admin-only" title="Заморозить/возобновить только активные раздачи" onclick="toggleSmartFreeze()">❄️ Заморозка</button>
-        <button id="btn-snooze-timer" class="btn btn-secondary admin-only" title="Таймер сна для торрентов" onclick="openSnoozeModal()">😴 Сон</button>
-        <button id="btn-panic-killswitch" class="btn btn-danger admin-only" title="Экстренная остановка всех раздач (на мобильном удерживайте 2с)" onclick="onPanicBtnClick()">🚨 Экстренная пауза</button>
-        <button class="btn btn-secondary" title="Обновить текущую вкладку" onclick="refreshActiveTab()">↻</button>
-        <button id="lang-toggle-btn" class="btn btn-secondary" onclick="toggleLang()">🌐 RU</button>
-        <button class="btn btn-secondary" onclick="openCustomizeModal()">🎨 Оформление</button>
-        <button class="btn btn-secondary" title="Сменить свой пароль" onclick="changeSelfPassword()">🔑</button>
-        <button class="btn btn-secondary admin-only" onclick="openSettingsModal()" data-i18n="btn_settings">⚙️ Настройки</button>
-        <button class="btn btn-secondary admin-only" onclick="restartQb()" data-i18n="btn_restart_qb">🔄 Перезапуск qB</button>
-        {% if auth_enabled %}
-        <a href="/logout" class="btn btn-danger" data-i18n="btn_logout">🚪 Выйти</a>
-        {% endif %}
-    </div>
-</header>
-
-<main>
-    <div id="tab-torrents" class="tab-content active">
-        <div class="torrent-left">
-            <div class="table-toolbar">
-                <input type="text" id="search-box" class="search-input" placeholder="🔍 Поиск раздач..." data-i18n-ph="search_ph" oninput="filterTorrents()">
-                <select id="filter-tag-select" class="form-control" style="width:120px; font-size:12px;" onchange="filterTorrents()"><option value="">Все теги</option></select>
-                <select id="filter-tracker-select" class="form-control" style="width:130px; font-size:12px;" onchange="filterTorrents()"><option value="">Все трекеры</option></select>
-                <select id="filter-tracker-err-select" class="form-control" style="width:165px; font-size:12px;" onchange="filterTorrents()">
-                    <option value="">Проблемы с трекерами</option><option value="any">⚠️ Любая ошибка</option>
-                    <option value="unregistered">🚫 Не зарегистрирована</option><option value="auth">🔑 Ошибка passkey/авторизации</option>
-                    <option value="timeout">⏱️ Превышен таймаут</option><option value="other">❓ Прочие ошибки</option>
-                </select>
-                <button class="btn btn-xs admin-only" onclick="openPreflightModal()">➕ Добавить</button>
-                <button class="btn btn-secondary admin-only" onclick="scanDeadTorrents()" data-i18n="btn_scan_dead">🩺 Мёртвые</button>
-                <button class="btn btn-secondary" onclick="loadTorrents(true)" data-i18n="btn_refresh">🔄</button>
-            </div>
-            <div id="saved-views-bar" class="row-wrap" style="padding:5px 12px; border-bottom:1px solid var(--border); gap:6px;"></div>
-            <div id="bulk-actions-bar" class="row-between hidden" style="background:var(--bg-input); padding:6px 12px; border-bottom:1px solid var(--border);">
-                <span class="lbl-xs">Выбрано раздач: <b id="bulk-selected-count" class="accent-txt">0</b></span>
-                <div class="row-gap" style="gap:6px;">
-                    <button class="btn btn-secondary btn-xs" onclick="bulkTorrentAction('stop')">⏸️ Пауза</button>
-                    <button class="btn btn-secondary btn-xs" onclick="bulkTorrentAction('start')">▶️ Пуск</button>
-                    <button class="btn btn-secondary btn-xs" onclick="bulkTorrentAction('addTags')">🏷️ +Тег</button>
-                    <button class="btn btn-secondary btn-xs" onclick="bulkTorrentAction('removeTags')">✂️ -Тег</button>
-                </div>
-            </div>
-            <div class="table-container">
-                <table>
-                    <thead>
-                        <tr>
-                            <th style="width:28px;"><input type="checkbox" onchange="toggleSelectAllVisible(this)" title="Выбрать все видимые"></th>
-                            <th onclick="sortTable('name')"><span data-i18n="th_name">Имя раздачи</span> <span id="sort-icon-name"></span></th>
-                            <th onclick="sortTable('size')"><span data-i18n="th_size">Размер</span> <span id="sort-icon-size"></span></th>
-                            <th onclick="sortTable('uploaded')"><span data-i18n="th_uploaded">Отдано</span> <span id="sort-icon-uploaded"></span></th>
-                            <th onclick="sortTable('ratio')"><span data-i18n="th_ratio">Ratio</span> <span id="sort-icon-ratio"></span></th>
-                            <th onclick="sortTable('health_score')"><span>💎 Ценность</span> <span id="sort-icon-health_score"></span></th>
-                            <th onclick="sortTable('state')"><span data-i18n="th_state">Состояние</span> <span id="sort-icon-state"></span></th>
-                            <th onclick="sortTable('save_path')"><span data-i18n="th_path">Путь</span> <span id="sort-icon-save_path"></span></th>
-                        </tr>
-                    </thead>
-                    <tbody id="torrents-tbody"><tr><td colspan="8" class="center-msg" data-i18n="loading_torrents">Загрузка раздач...</td></tr></tbody>
-                </table>
-            </div>
-        </div>
-        <div class="torrent-right">
-            <div class="card">
-                <div class="card-title" data-i18n="card_selected">ВЫБРАННАЯ РАЗДАЧА</div>
-                <div id="selected-title" class="muted-text" style="margin-bottom: 10px; overflow:hidden; text-overflow:ellipsis;" data-i18n="select_left">Выберите раздачу слева</div>
-                <div class="grid-3 mb-10">
-                    <button class="btn btn-secondary admin-only" onclick="torrentAction('stop')" data-i18n="btn_pause">⏸️ Пауза</button>
-                    <button class="btn btn-secondary admin-only" onclick="torrentAction('start')" data-i18n="btn_start">▶️ Пуск</button>
-                    <button class="btn btn-secondary admin-only" onclick="torrentAction('setForceStart')" data-i18n="btn_force">⚡ Форс</button>
-                </div>
-                <button class="btn w-full center-btn mb-8" onclick="goToAnalyticsWithTorrent()" data-i18n="btn_forecast">🔮 Рассчитать прогноз</button>
-                <button class="btn btn-secondary w-full center-btn mb-8" onclick="openTorrentInspectorModal()">🔬 Пиры, заметки и файлы</button>
-                <div class="grid-2 mb-8">
-                    <button class="btn btn-secondary center-btn admin-only" onclick="openTargetModal()">🎯 Цель</button>
-                    <button class="btn btn-secondary center-btn admin-only" onclick="openExpirationModal()">⏳ Срок</button>
-                </div>
-                <div class="grid-2 mb-8">
-                    <button class="btn btn-secondary center-btn admin-only" onclick="toggleSelectedSniper()">📡 Маячок</button>
-                    <button class="btn btn-secondary center-btn admin-only" onclick="enqueueSelectedRecheck()">💽 Речек (очер.)</button>
-                </div>
-                <button class="btn btn-danger w-full center-btn admin-only" onclick="deleteSelectedTorrent()">🗑️ Удалить раздачу</button>
-            </div>
-            <div class="card danger-border admin-only">
-                <div class="card-title" style="color: var(--danger);" data-i18n="card_seedbox">УПРАВЛЕНИЕ ВСЕМ СИДБОКСОМ</div>
-                <p class="muted-text mb-10" data-i18n="seedbox_desc">Остановить или запустить все раздачи в клиенте:</p>
-                <div class="col-gap">
-                    <button class="btn btn-danger w-full center-btn" onclick="globalTorrentAction('stop')" data-i18n="btn_pause_all">⏸️ ОСТАНОВИТЬ ВСЕ</button>
-                    <button class="btn w-full center-btn" onclick="globalTorrentAction('start')" data-i18n="btn_resume_all">▶️ ВОЗОБНОВИТЬ ВСЕ</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div id="tab-merger" class="tab-content col-center">
-        <div id="smart-match-card" class="card mb-12">
-            <div class="row-between mb-8">
-                <div class="card-title" style="margin:0;">✨ НАЙДЕНЫ КАНДИДАТЫ НА ОБЪЕДИНЕНИЕ (SMART MATCH)</div>
-                <button class="btn btn-secondary btn-xs" onclick="loadSmartMatchCandidates()">🔎 Обновить подбор</button>
-            </div>
-            <div id="smart-match-list" class="col-gap" style="max-height:160px; overflow-y:auto; font-size:12px;"><span class="muted-text">Поиск похожих раздач...</span></div>
-        </div>
-        <div class="card">
-            <div class="card-title" data-i18n="card_merger">🔄 ПОДМЕНЩИК РАЗДАЧ (.FASTRESUME)</div>
-            <p class="muted-text mb-10" data-i18n="merger_desc">qBittorrent выгружается перед подменой и перезапускается автоматически — бенкод не пострадает.</p>
-            <div class="form-group"><label data-i18n="lbl_old_tor">1. Исходная раздача (старая):</label><select id="merger-old" class="form-control" onchange="onMergerSelectionChange()"></select></div>
-            <div class="form-group"><label data-i18n="lbl_new_tor">2. Целевая раздача (приёмник):</label><select id="merger-new" class="form-control" onchange="onMergerSelectionChange()"></select></div>
-            <div class="form-group"><label>3. Режим переноса статистики:</label><select id="merger-mode" class="form-control" onchange="updateMergerCalcPreview()"><option value="add" selected>➕ Сложить (рекомендуется, если на цели уже есть отдача)</option><option value="replace">🔄 Заменить (переписать статистику цели начисто)</option></select></div>
-            <div id="merger-calc-preview" class="card mb-8" style="background:var(--bg-input); padding:8px 12px; border-radius:6px; border:1px solid var(--border);"><div class="row-between"><span class="lbl-xs">Итоговый расчёт отдачи:</span><b id="merger-calc-txt" class="accent-txt">—</b></div></div>
-            <div id="merger-dup-warn" class="lbl-xs hidden mb-8" style="color:var(--warning); background:rgba(243,156,18,0.12); padding:6px 10px; border-radius:6px; border:1px solid rgba(243,156,18,0.3);">⚠️ Внимание: эти раздачи уже объединялись ранее!</div>
-            <div class="form-group"><label data-i18n="lbl_del_mode">4. Исходная раздача после переноса:</label><select id="merger-delete-mode" class="form-control" onchange="onMergerDeleteModeChange()"><option value="none" data-i18n="del_mode_none">Не удалять (оставить всё)</option><option value="safe" data-i18n="del_mode_safe">Удалить всё (безопасно: с проверкой путей)</option><option value="force" data-i18n="del_mode_force">Удалить всё (принудительно: файлы с диска)</option></select></div>
-            <div id="merger-force-warn" class="lbl-xs hidden" style="color: var(--danger); margin-bottom: 8px;" data-i18n="del_force_warn">⚠️ ОПАСНО: принудительный режим удалит файлы с диска, даже если пути исходника и получателя совпадают!</div>
-            <div class="grid-2 mt-10"><button id="btn-merger-diff" class="btn btn-secondary w-full center-btn" onclick="openTorrentDiffModal()">🔍 Сравнить файлы раздач</button><button class="btn w-full center-btn" onclick="runMerger()" data-i18n="btn_merge">🚀 ПЕРЕНЕСТИ СТАТИСТИКУ</button></div>
-        </div>
-        <div class="card mt-12"><div class="card-title" data-i18n="card_op_log">ЛОГ ОПЕРАЦИИ</div><div id="merger-log" class="terminal" data-i18n="ready">Готов к работе...</div></div>
-    </div>
-
-    <div id="tab-summary" class="tab-content col-wide">
-        <div class="grid-cards mb-12">
-            <div class="card"><div class="lbl-sm" data-i18n="sum_count">Раздач:</div><div id="sum-count" class="val-lg">-</div></div>
-            <div class="card"><div class="lbl-sm" data-i18n="sum_size">Общий объем:</div><div id="sum-size" class="val-lg">-</div></div>
-            <div class="card"><div class="lbl-sm" data-i18n="sum_uploaded">Всего отдано:</div><div id="sum-uploaded" class="val-lg accent-txt">-</div></div>
-            <div class="card"><div class="lbl-sm" data-i18n="sum_1h">Сумма за 1 час:</div><div id="sum-global-hour" class="val-md purple-txt">-</div><div id="sum-global-hour-speed" class="lbl-xs purple-txt">-</div><div id="sum-global-hour-note" class="lbl-xs muted-text"></div></div>
-            <div class="card"><div class="lbl-sm" data-i18n="sum_day">Объем в день:</div><div id="sum-global-day" class="val-md orange-txt">-</div><div id="sum-global-day-speed" class="lbl-xs orange-txt">-</div></div>
-            <div class="card"><div class="lbl-sm" data-i18n="sum_ratio_h">Ratio/ч (всего / 24ч):</div><div id="sum-ratio-h" class="val-sm blue-txt">-</div></div>
-        </div>
-        <div id="summary-equivalents-bar" class="card mb-12 hidden" style="padding:8px 12px; font-size:12px;"></div>
-        <div class="card row-wrap mb-12">
-            <div class="grow-1"><label class="lbl-sm" data-i18n="lbl_search">Поиск:</label><input type="text" id="sum-filter-search" class="form-control" placeholder="Фильтр..." data-i18n-ph="filter_ph" oninput="applySummaryFilters()"></div>
-            <div style="width:110px"><label class="lbl-sm" data-i18n="lbl_min_ratio">Мин. Ratio:</label><input type="number" step="0.5" id="sum-filter-ratio" class="form-control" oninput="applySummaryFilters()"></div>
-            <div style="width:130px"><label class="lbl-sm" data-i18n="lbl_min_up">Мин. отдано (ГБ):</label><input type="number" id="sum-filter-uploaded" class="form-control" oninput="applySummaryFilters()"></div>
-            <div class="row-gap" style="align-self:flex-end; flex-wrap:wrap;">
-                <button id="btn-live-filter" class="btn btn-secondary" onclick="toggleSummaryLiveFilter()">📡 Прямой эфир</button>
-                <button id="btn-last-seed-filter" class="btn btn-secondary" onclick="toggleSummaryLastSeedFilter()">🛡️ Последний сид</button>
-                <button class="btn btn-secondary" onclick="sortSummary('health_score')">💎 По ценности</button>
-                <button class="btn btn-secondary" onclick="loadSummary(true)" data-i18n="btn_refresh">🔄 Обновить</button>
-                <button id="btn-toggle-mobile-cards" class="btn btn-secondary" onclick="toggleMobileCardsMode()">📋 Таблица</button>
-                <div style="position:relative;"><button class="btn btn-secondary" onclick="toggleSummaryColsMenu()">🧱 Столбцы</button><div id="summary-cols-menu" class="card hidden" style="position:absolute; right:0; top:34px; z-index:50; min-width:160px;"></div></div>
-                <button class="btn btn-secondary" onclick="resetSummaryFilters()" data-i18n="btn_reset">Сброс</button>
-                <button class="btn" onclick="exportFilteredSummaryCSV()" data-i18n="btn_export_csv">📥 Экспорт выборки</button>
-            </div>
-        </div>
-        <div id="summary-table-wrap" class="card flex-scroll"><table id="summary-table"><thead id="summary-thead"><tr id="summary-thead-row"></tr></thead><tbody id="summary-tbody"></tbody></table></div>
-    </div>
-
-    {% include 'partials/tab_analytics.html' %}
-    {% include 'partials/tab_automation.html' %}
-    {% include 'partials/tab_tools.html' %}
-</main>
-
-<footer class="app-footer">
-    <a href="{{ releases_url }}" target="_blank" class="version-pill" title="Открыть релизы на GitHub">⚡ tbr PRO v{{ app_version }}</a>
-    <a href="/kiosk" target="_blank" class="btn btn-secondary btn-xs">🖥️ Режим Киоск</a>
-    <span id="autopilot-freeze-badge" class="badge badge-stall hidden">❄️ Автопилот заморожен</span>
-    <button class="btn btn-secondary btn-xs admin-only" onclick="openUpdateModal(true)">🔄 Ченджлог и обновление</button>
-</footer>
-
-{% include 'partials/modals.html' %}
-
-<div id="dry-run-modal" class="modal-backdrop"><div class="modal" style="max-width:740px; max-height:85vh; display:flex; flex-direction:column;">
-    <div class="row-between mb-8"><div class="card-title" style="margin:0;">🧪 ПЕСОЧНИЦА АВТОПИЛОТА (DRY-RUN)</div><button class="btn btn-secondary btn-xs" onclick="document.getElementById('dry-run-modal').style.display='none'">✕</button></div>
-    <div id="dry-run-summary" class="lbl-xs muted-text mb-8">—</div>
-    <div class="scroll-box" style="flex:1; max-height:55vh; border:1px solid var(--border); border-radius:6px;">
-        <table><thead><tr><th>Раздача / Правило</th><th>Ratio</th><th>Отдано</th><th>Планируемые действия</th></tr></thead><tbody id="dry-run-tbody"></tbody></table>
-    </div>
-</div></div>
-
-<div id="qb-diff-modal" class="modal-backdrop"><div class="modal" style="max-width:780px; max-height:85vh; display:flex; flex-direction:column;">
-    <div class="row-between mb-8"><div class="card-title" style="margin:0;">🔍 DIFF КОНФИГОВ qBITTORRENT</div><button class="btn btn-secondary btn-xs" onclick="document.getElementById('qb-diff-modal').style.display='none'">✕</button></div>
-    <div class="row-wrap mb-8" style="gap:6px;">
-        <select id="qb-diff-a" class="form-control grow-1" onchange="runQbConfigDiff()"></select>
-        <select id="qb-diff-b" class="form-control grow-1" onchange="runQbConfigDiff()"></select>
-        <select id="qb-diff-file" class="form-control" style="width:160px;" onchange="runQbConfigDiff()"><option>qBittorrent.ini</option><option>qBittorrent.conf</option><option>categories.json</option><option>watched_folders.json</option></select>
-    </div>
-    <pre id="qb-diff-out" class="terminal" style="height:320px; color:var(--text);">—</pre>
-</div></div>
-
-<div id="onboarding-modal" class="modal-backdrop"><div class="modal" style="max-width:480px;">
-    <div class="card-title">🚀 МАСТЕР ПЕРВОГО ЗАПУСКА tbr PRO</div>
-    <div id="onb-step-1"><p class="muted-text mb-10">Шаг 1/4: Автопоиск qBittorrent и окружения</p><div id="onb-probe-status" class="card mb-10" style="background:var(--bg-input); font-size:12px;">Проверка...</div><div class="row-between"><button class="btn btn-secondary" onclick="finishOnboarding(true)">Пропустить</button><button class="btn" onclick="_setOnbStep(2)">Далее →</button></div></div>
-    <div id="onb-step-2" class="hidden"><p class="muted-text mb-10">Шаг 2/4: Подключение к WebUI qBittorrent</p><div class="grid-2 mb-8"><input id="onb-qb-ip" class="form-control" placeholder="IP"><input id="onb-qb-port" class="form-control" placeholder="Порт"></div><div class="grid-2 mb-10"><input id="onb-qb-user" class="form-control" placeholder="Логин (admin)"><input id="onb-qb-pass" type="password" class="form-control" placeholder="Пароль"></div><div class="row-between"><button class="btn btn-secondary" onclick="_setOnbStep(1)">← Назад</button><button class="btn" onclick="_setOnbStep(3)">Далее →</button></div></div>
-    <div id="onb-step-3" class="hidden"><p class="muted-text mb-10">Шаг 3/4: Диски и потолок канала</p><div class="form-group"><label>Основной диск:</label><select id="onb-disk" class="form-control"></select></div><div class="form-group"><label>Потолок канала (Мбит/с):</label><input id="onb-mbps" type="number" class="form-control" value="1000"></div><div class="row-between"><button class="btn btn-secondary" onclick="_setOnbStep(2)">← Назад</button><button class="btn" onclick="_setOnbStep(4)">Далее →</button></div></div>
-    <div id="onb-step-4" class="hidden"><p class="muted-text mb-12">Шаг 4/4: Всё готово к взлёту! Нажмите «Завершить», чтобы сохранить параметры и начать работу.</p><div class="row-between"><button class="btn btn-secondary" onclick="_setOnbStep(3)">← Назад</button><button class="btn" onclick="finishOnboarding(false)">✅ Завершить</button></div></div>
-</div></div>
-
-<script src="/static/common.js?v={{ v }}"></script>
-<script src="/static/i18n_ru.js?v={{ v }}"></script>
-<script src="/static/i18n_en.js?v={{ v }}"></script>
-<script src="/static/i18n.js?v={{ v }}"></script>
-<script src="/static/settings.js?v={{ v }}"></script>
-<script src="/static/profiles.js?v={{ v }}"></script>
-<script src="/static/customizer.js?v={{ v }}"></script>
-<script src="/static/torrents_merger.js?v={{ v }}"></script>
-<script src="/static/torrents.js?v={{ v }}"></script>
-<script src="/static/summary.js?v={{ v }}"></script>
-<script src="/static/analytics_logs.js?v={{ v }}"></script>
-<script src="/static/analytics_insights.js?v={{ v }}"></script>
-<script src="/static/smart_calc.js?v={{ v }}"></script>
-<script src="/static/analytics_charts_render.js?v={{ v }}"></script>
-<script src="/static/analytics.js?v={{ v }}"></script>
-<script src="/static/tuner_ui.js?v={{ v }}"></script>
-<script src="/static/automation.js?v={{ v }}"></script>
-<script src="/static/system_tools.js?v={{ v }}"></script>
-<script src="/static/merger_tools.js?v={{ v }}"></script>
-<script src="/static/timers_ui.js?v={{ v }}"></script>
-<script src="/static/palette_targets.js?v={{ v }}"></script>
-<script src="/static/social_ui.js?v={{ v }}"></script>
-<script src="/static/safety_ui.js?v={{ v }}"></script>
-<script src="/static/hygiene_ui.js?v={{ v }}"></script>
-<script src="/static/phase3_ui.js?v={{ v }}"></script>
-<script src="/static/phase4_ui.js?v={{ v }}"></script>
-<script src="/static/hardcore_ui.js?v={{ v }}"></script>
-</body>
-</html>
-```
-
----
-
-#### `web/static/tuner_ui.js` *(новый файл)*
+#### `web/static/tuner_ui.js`
 ```javascript
 // web/static/tuner_ui.js
 let _tunerProfiles = {};
 let _tunerCurProfile = 'performance';
 let _tunerRules = {};
+
+function syncTunerDisabledStates() {
+    const setGroupState = (chkId, rowId, inputIds) => {
+        const en = Boolean(document.getElementById(chkId)?.checked);
+        const row = document.getElementById(rowId);
+        if (row) row.classList.toggle('tuner-row-disabled', !en);
+        inputIds.forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.disabled = !en;
+        });
+    };
+
+    setGroupState('tp-g-disk-en', 'guard-row-disk', ['tp-g-disk-warn', 'tp-g-disk-crit', 'tp-g-disk-rec']);
+    setGroupState('tp-g-cpu-en', 'guard-row-cpu', ['tp-g-cpu-warn', 'tp-g-cpu-rec']);
+    setGroupState('tp-g-ram-en', 'guard-row-ram', ['tp-g-ram-min', 'tp-g-ram-rec']);
+    setGroupState('tp-g-net-en', 'guard-row-net', ['tp-g-net-warn', 'tp-g-net-rec']);
+
+    const sqEn = Boolean(document.getElementById('tp-sq-en')?.checked);
+    ['tp-sq-up', 'tp-sq-dl'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = !sqEn;
+        document.getElementById(`wrap-${id}`)?.classList.toggle('tuner-row-disabled', !sqEn);
+    });
+
+    const actMode = document.getElementById('tp-act-mode')?.value || 'keep';
+    const minEl = document.getElementById('tp-act-min');
+    const maxEl = document.getElementById('tp-act-max');
+    if (minEl) minEl.disabled = (actMode === 'keep');
+    if (maxEl) maxEl.disabled = (actMode !== 'range');
+    document.getElementById('wrap-tp-act-min')?.classList.toggle('tuner-row-disabled', actMode === 'keep');
+    document.getElementById('wrap-tp-act-max')?.classList.toggle('tuner-row-disabled', actMode !== 'range');
+
+    const ptUpAuto = Boolean(document.getElementById('tp-pt-up-auto')?.checked);
+    ['tp-pt-up-min', 'tp-pt-up-max'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = ptUpAuto;
+    });
+
+    const mcAuto = Boolean(document.getElementById('tp-mc-auto')?.checked);
+    ['tp-mc-min', 'tp-mc-max'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = mcAuto;
+    });
+
+    const prEn = Boolean(document.getElementById('tr-proc-en')?.checked);
+    ['tr-proc-mode', 'tr-proc-names', 'tr-proc-enter', 'tr-proc-exit'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = !prEn;
+    });
+    document.getElementById('rules-box-proc')?.classList.toggle('tuner-row-disabled', !prEn);
+
+    const extEn = Boolean(document.getElementById('tr-ext-en')?.checked);
+    ['tr-ext-mode', 'tr-ext-cpu-w', 'tr-ext-cpu-r', 'tr-ext-net-w', 'tr-ext-net-r', 'tr-ext-ram-w', 'tr-ext-ram-r', 'tr-ext-enter', 'tr-ext-exit'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = !extEn;
+    });
+    document.getElementById('rules-box-ext')?.classList.toggle('tuner-row-disabled', !extEn);
+}
 
 async function loadTunerTab() {
     if (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE !== 'admin') return;
@@ -610,7 +600,7 @@ async function refreshTunerState() {
             const hist = d.history || [];
             tbody.innerHTML = hist.length ? hist.map(h => `
                 <tr><td>${escapeHtml(h.time)}</td><td>${escapeHtml(h.mode)}</td><td><span class="badge badge-pause">${escapeHtml(h.event_type)}</span></td><td style="white-space:normal;">${escapeHtml(h.reason)}</td><td>${h.old_slots}→${h.new_slots}</td></tr>
-            `).join('') : '<tr><td colspan="5" class="center-msg">Событий пока нет</td></tr>';
+            `).join('') : '<tr><td colspan="5" class="center-msg">Нет событий</td></tr>';
         }
     } catch (e) {}
 }
@@ -652,6 +642,7 @@ function selectTunerProfileTab(mode) {
     const p = _tunerProfiles[mode] || {}, g = p.guards || {};
     const sv = (id, v) => { const e = document.getElementById(id); if (e) e.value = v ?? ''; };
     const sc = (id, v) => { const e = document.getElementById(id); if (e) e.checked = Boolean(v); };
+
     sv('tp-mu-min', p.max_uploads_min); sv('tp-mu-max', p.max_uploads_max); sv('tp-mu-start', p.max_uploads_start);
     sv('tp-pt-up-min', p.per_torrent_up_min); sv('tp-pt-up-max', p.per_torrent_up_max); sc('tp-pt-up-auto', p.per_torrent_up_auto);
     sv('tp-mc-min', p.max_connec_min); sv('tp-mc-max', p.max_connec_max); sc('tp-mc-auto', p.max_connec_auto);
@@ -665,6 +656,8 @@ function selectTunerProfileTab(mode) {
     sc('tp-g-cpu-en', g.cpu?.enabled); sv('tp-g-cpu-warn', g.cpu?.warn); sv('tp-g-cpu-rec', g.cpu?.recover);
     sc('tp-g-ram-en', g.ram?.enabled); sv('tp-g-ram-min', g.ram?.min_free); sv('tp-g-ram-rec', g.ram?.recover_free);
     sc('tp-g-net-en', g.net?.enabled); sv('tp-g-net-warn', g.net?.warn_pct); sv('tp-g-net-rec', g.net?.recover_pct);
+
+    syncTunerDisabledStates();
 }
 
 async function saveTunerProfile() {
@@ -704,7 +697,9 @@ async function loadTunerRules() {
     _tunerRules = (await res.json()).rules || {};
     const sv = (id, v) => { const e = document.getElementById(id); if (e) e.value = v ?? ''; };
     const sc = (id, v) => { const e = document.getElementById(id); if (e) e.checked = Boolean(v); };
-    sv('tr-def-mode', _tunerRules.default_mode || 'performance'); sv('tr-ov-policy', _tunerRules.override_policy || '2h');
+
+    sv('tr-def-mode', _tunerRules.default_mode || 'performance');
+    sv('tr-ov-policy', _tunerRules.override_policy || '2h');
     const pr = _tunerRules.processes || {}, ex = _tunerRules.external_load || {};
     sc('tr-proc-en', pr.enabled); sv('tr-proc-mode', pr.target_mode || 'comfort');
     sv('tr-proc-names', (pr.names || []).join(', ')); sv('tr-proc-enter', pr.enter_sec); sv('tr-proc-exit', pr.exit_sec);
@@ -713,7 +708,9 @@ async function loadTunerRules() {
     sv('tr-ext-net-w', ex.net_warn_pct); sv('tr-ext-net-r', ex.net_recover_pct);
     sv('tr-ext-ram-w', ex.ram_min_free); sv('tr-ext-ram-r', ex.ram_recover_free);
     sv('tr-ext-enter', ex.enter_sec); sv('tr-ext-exit', ex.exit_sec);
+
     renderTunerSchedules();
+    syncTunerDisabledStates();
 }
 
 function renderTunerSchedules() {
@@ -722,10 +719,13 @@ function renderTunerSchedules() {
     const list = _tunerRules.schedules || [];
     box.innerHTML = list.map((s, idx) => `
         <div class="row-gap" style="gap:4px;">
-            <input type="time" class="form-control" style="width:92px;" value="${escapeHtml(s.start)}" onchange="_tunerRules.schedules[${idx}].start=this.value">
+            <input type="time" class="form-control" style="width:96px; padding:3px 4px;" value="${escapeHtml(s.start)}" onchange="_tunerRules.schedules[${idx}].start=this.value">
             <span>—</span>
-            <input type="time" class="form-control" style="width:92px;" value="${escapeHtml(s.end)}" onchange="_tunerRules.schedules[${idx}].end=this.value">
-            <select class="form-control grow-1" onchange="_tunerRules.schedules[${idx}].mode=this.value"><option value="performance" ${s.mode==='performance'?'selected':''}>Производ.</option><option value="comfort" ${s.mode==='comfort'?'selected':''}>Комфорт</option></select>
+            <input type="time" class="form-control" style="width:96px; padding:3px 4px;" value="${escapeHtml(s.end)}" onchange="_tunerRules.schedules[${idx}].end=this.value">
+            <select class="form-control grow-1" style="padding:3px 4px;" onchange="_tunerRules.schedules[${idx}].mode=this.value">
+                <option value="performance" ${s.mode==='performance'?'selected':''}>Производ.</option>
+                <option value="comfort" ${s.mode==='comfort'?'selected':''}>Комфорт</option>
+            </select>
             <button class="btn btn-danger btn-xs" onclick="_tunerRules.schedules.splice(${idx},1);renderTunerSchedules()">✕</button>
         </div>
     `).join('') || '<span class="lbl-xs muted-text">Окон расписания нет</span>';
@@ -784,310 +784,8 @@ setInterval(() => {
 
 ---
 
-#### `web/static/automation.js`
-```javascript
-// web/static/automation.js
-let currentRules = [];
-let editingRuleId = null;
-
-function openBotGuide(type) {
-    const modal = document.getElementById('bot-guide-modal');
-    const title = document.getElementById('bot-guide-title');
-    const body = document.getElementById('bot-guide-body');
-    const isEn = (typeof currentLang !== 'undefined' && currentLang === 'en');
-
-    if (type === 'tg') {
-        title.textContent = isEn ? '📱 How to set up Telegram Bot' : '📱 Как подключить Telegram-бота';
-        body.innerHTML = isEn ? `
-            <ol style="padding-left:18px; line-height:1.6;">
-                <li>Open <b>@BotFather</b> in Telegram, send <code>/newbot</code>, choose a name and copy the <b>Bot Token</b>.</li>
-                <li>Open your new bot and press <b>Start</b> (or send any message).</li>
-                <li>Open <b>@userinfobot</b> (or <b>@getmyid_bot</b>) to get your numeric <b>Chat ID</b>.</li>
-                <li>Paste Token &amp; Chat ID here, click <b>Save</b> and press <b>Test</b>.</li>
-            </ol>
-        ` : `
-            <ol style="padding-left:18px; line-height:1.6;">
-                <li>Найди в Telegram <b>@BotFather</b>, отправь <code>/newbot</code>, задай имя и скопируй <b>Bot Token</b>.</li>
-                <li>Зайди в своего нового бота и нажми <b>Запустить (Start)</b>.</li>
-                <li>Напиши боту <b>@userinfobot</b> (или <b>@getmyid_bot</b>), чтобы узнать свой цифровой <b>Chat ID</b>.</li>
-                <li>Вставь Token и Chat ID сюда, нажми <b>Сохранить</b> и проверь кнопкой <b>Тест</b>.</li>
-            </ol>
-        `;
-    } else {
-        title.textContent = isEn ? '💬 How to create a Discord Webhook' : '💬 Как создать Discord Webhook';
-        body.innerHTML = isEn ? `
-            <ol style="padding-left:18px; line-height:1.6;">
-                <li>Open your Discord server → <b>Channel Settings</b> (gear icon on any text channel).</li>
-                <li>Go to <b>Integrations</b> → <b>Webhooks</b> → <b>New Webhook</b>.</li>
-                <li>Click <b>Copy Webhook URL</b>.</li>
-                <li>Paste the URL here, click <b>Save</b> and press <b>Test</b>.</li>
-            </ol>
-        ` : `
-            <ol style="padding-left:18px; line-height:1.6;">
-                <li>Открой свой сервер Discord → <b>Настройки канала</b> (шестерёнка рядом с нужным каналом).</li>
-                <li>Перейди в <b>Интеграции</b> → <b>Вебхуки</b> → <b>Новый вебхук</b>.</li>
-                <li>Нажми <b>Копировать URL вебхука</b>.</li>
-                <li>Вставь ссылку сюда, нажми <b>Сохранить</b> и проверь кнопкой <b>Тест</b>.</li>
-            </ol>
-        `;
-    }
-    modal.style.display = 'flex';
-}
-
-function closeBotGuide() {
-    document.getElementById('bot-guide-modal').style.display = 'none';
-}
-
-async function loadAutomation() {
-    const res = await api('/api/automation');
-    const d = await res.json();
-    const s = d.settings || {};
-
-    document.getElementById('auto-enabled').checked = Boolean(s.enabled);
-    document.getElementById('auto-interval').value = s.interval || 5;
-    document.getElementById('auto-tg-token').value = '';
-    document.getElementById('auto-tg-token').placeholder = s.has_tg_token ? t('token_set_ph') : '123456:ABC-DEF...';
-    document.getElementById('auto-tg-chat').value = s.tg_chat_id || '';
-    document.getElementById('auto-discord').value = '';
-    document.getElementById('auto-discord').placeholder = s.has_discord ? t('webhook_set_ph') : 'https://discord.com/api/webhooks/...';
-
-    const diskInp = document.getElementById('auto-alert-disk');
-    if (diskInp) diskInp.value = s.alert_disk_gib || '';
-    const qbChk = document.getElementById('auto-alert-qb');
-    if (qbChk) qbChk.checked = Boolean(s.alert_qb_down);
-    const recheckChk = document.getElementById('auto-recheck-io');
-    if (recheckChk) recheckChk.checked = Boolean(s.auto_recheck_enabled);
-
-    currentRules = d.rules || [];
-    renderRules(currentRules);
-    if (typeof loadDndDigestAndTagging === 'function') loadDndDigestAndTagging();
-    if (typeof loadTunerTab === 'function') loadTunerTab();
-}
-
-function _fmtBytesBinary(b) {
-    if (!b || b <= 0) return '';
-    if (b >= 1024 ** 4) return `${(b / (1024 ** 4)).toFixed(2).replace(/\.00$/, '')} TiB`;
-    if (b >= 1024 ** 3) return `${(b / (1024 ** 3)).toFixed(2).replace(/\.00$/, '')} GiB`;
-    return `${(b / (1024 ** 2)).toFixed(2).replace(/\.00$/, '')} MiB`;
-}
-
-function _fmtSpeedBinary(bps) {
-    if (!bps || bps <= 0) return '';
-    if (bps >= 1024 ** 2) return `${(bps / (1024 ** 2)).toFixed(2).replace(/\.00$/, '')} MiB/s`;
-    return `${(bps / 1024).toFixed(1).replace(/\.0$/, '')} KiB/s`;
-}
-
-function renderRules(rules) {
-    const tbody = document.getElementById('rules-tbody');
-    tbody.innerHTML = '';
-    if (!rules.length) {
-        tbody.innerHTML = `<tr><td colspan="5" class="center-msg">${t('no_rules')}</td></tr>`;
-        return;
-    }
-    const isEn = (typeof currentLang !== 'undefined' && currentLang === 'en');
-    const frag = document.createDocumentFragment();
-    rules.forEach(r => {
-        const conds = [];
-        if (r.min_ratio > 0) conds.push(`Ratio >= ${r.min_ratio}x`);
-        if (r.min_seed_days > 0) {
-            const tmLbl = r.time_mode === 'time_active' ? (isEn ? 'Active' : 'Актив') : (isEn ? 'Seed' : 'Сид');
-            conds.push(`${tmLbl} >= ${r.min_seed_days} ${t('rule_days_unit')}`);
-        }
-        if (r.min_uploaded_bytes > 0) conds.push(`${isEn ? 'Up' : 'Отдано'} >= ${_fmtBytesBinary(r.min_uploaded_bytes)}`);
-        if (r.speed_op && r.speed_bytes > 0) {
-            conds.push(`${isEn ? 'AvgSpd' : 'СрСкор'} ${r.speed_op} ${_fmtSpeedBinary(r.speed_bytes)} (${r.speed_window_min || 60}m)`);
-        }
-
-        const acts = [];
-        if (r.action_pause) acts.push(t('chk_pause'));
-        if (r.action_tag) acts.push(`🏷️ +${r.action_tag}`);
-        if (r.action_remove_tag) acts.push(`✂️ -${r.action_remove_tag}`);
-        if (r.notify) acts.push(t('rule_bot'));
-
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-            <td><strong>${escapeHtml(r.name)}</strong></td>
-            <td style="white-space:normal;">${escapeHtml(conds.join(t('rule_and')))}</td>
-            <td style="white-space:normal;">${escapeHtml(acts.join(', ') || '—')}</td>
-            <td><span class="badge ${r.enabled ? 'badge-up' : 'badge-pause'}">${r.enabled ? t('rule_on') : t('rule_off')}</span></td>
-            <td class="row-gap">
-                <button class="btn btn-secondary btn-xs" onclick="editRule(${r.id})">✏️</button>
-                <button class="btn btn-secondary btn-xs" onclick="toggleRule(${r.id})">${r.enabled ? t('rule_off') : t('rule_on')}</button>
-                <button class="btn btn-danger btn-xs" onclick="deleteRule(${r.id})">🗑️</button>
-            </td>
-        `;
-        frag.appendChild(tr);
-    });
-    tbody.appendChild(frag);
-}
-
-function editRule(id) {
-    const r = currentRules.find(x => x.id === id);
-    if (!r) return;
-
-    editingRuleId = id;
-    document.getElementById('rule-name').value = r.name || '';
-    document.getElementById('rule-time-mode').value = r.time_mode || 'seeding_time';
-    document.getElementById('rule-ratio').value = r.min_ratio > 0 ? r.min_ratio : '';
-    document.getElementById('rule-days').value = r.min_seed_days > 0 ? r.min_seed_days : '';
-
-    const upBytes = r.min_uploaded_bytes || 0;
-    if (upBytes >= 1024 ** 4) {
-        document.getElementById('rule-up-val').value = +(upBytes / (1024 ** 4)).toFixed(3);
-        document.getElementById('rule-up-unit').value = 'TiB';
-    } else if (upBytes >= 1024 ** 3) {
-        document.getElementById('rule-up-val').value = +(upBytes / (1024 ** 3)).toFixed(3);
-        document.getElementById('rule-up-unit').value = 'GiB';
-    } else if (upBytes > 0) {
-        document.getElementById('rule-up-val').value = +(upBytes / (1024 ** 2)).toFixed(2);
-        document.getElementById('rule-up-unit').value = 'MiB';
-    } else {
-        document.getElementById('rule-up-val').value = '';
-        document.getElementById('rule-up-unit').value = 'GiB';
-    }
-
-    document.getElementById('rule-speed-op').value = r.speed_op || '';
-    const spBytes = r.speed_bytes || 0;
-    if (spBytes >= 1024 ** 2) {
-        document.getElementById('rule-speed-val').value = +(spBytes / (1024 ** 2)).toFixed(3);
-        document.getElementById('rule-speed-unit').value = 'MiB';
-    } else if (spBytes > 0) {
-        document.getElementById('rule-speed-val').value = +(spBytes / 1024).toFixed(2);
-        document.getElementById('rule-speed-unit').value = 'KiB';
-    } else {
-        document.getElementById('rule-speed-val').value = '';
-        document.getElementById('rule-speed-unit').value = 'KiB';
-    }
-    document.getElementById('rule-speed-win').value = r.speed_window_min || 60;
-
-    document.getElementById('rule-tag').value = r.action_tag || '';
-    document.getElementById('rule-remove-tag').value = r.action_remove_tag || '';
-    document.getElementById('rule-pause').checked = Boolean(r.action_pause);
-    document.getElementById('rule-notify').checked = Boolean(r.notify);
-
-    document.getElementById('rule-form-title').textContent = t('card_edit_rule', { id });
-    document.getElementById('btn-rule-submit').textContent = t('btn_save');
-    document.getElementById('btn-rule-cancel').classList.remove('hidden');
-    document.getElementById('rule-form-card').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-}
-
-function cancelEditRule() {
-    editingRuleId = null;
-    document.getElementById('rule-name').value = '';
-    document.getElementById('rule-time-mode').value = 'seeding_time';
-    document.getElementById('rule-ratio').value = '';
-    document.getElementById('rule-days').value = '';
-    document.getElementById('rule-up-val').value = '';
-    document.getElementById('rule-up-unit').value = 'GiB';
-    document.getElementById('rule-speed-op').value = '';
-    document.getElementById('rule-speed-val').value = '';
-    document.getElementById('rule-speed-unit').value = 'KiB';
-    document.getElementById('rule-speed-win').value = 60;
-    document.getElementById('rule-tag').value = '';
-    document.getElementById('rule-remove-tag').value = '';
-    document.getElementById('rule-pause').checked = false;
-    document.getElementById('rule-notify').checked = true;
-
-    document.getElementById('rule-form-title').textContent = t('card_add_rule');
-    document.getElementById('btn-rule-submit').textContent = t('btn_add');
-    document.getElementById('btn-rule-cancel').classList.add('hidden');
-}
-
-async function saveAutomationSettings() {
-    const payload = {
-        enabled: document.getElementById('auto-enabled').checked,
-        interval: parseInt(document.getElementById('auto-interval').value) || 5,
-        alert_disk_gib: parseInt(document.getElementById('auto-alert-disk')?.value || 0) || 0,
-        alert_qb_down: document.getElementById('auto-alert-qb')?.checked || false,
-        auto_recheck_enabled: document.getElementById('auto-recheck-io')?.checked || false,
-        tg_token: document.getElementById('auto-tg-token').value.trim(),
-        tg_chat_id: document.getElementById('auto-tg-chat').value.trim(),
-        discord_webhook: document.getElementById('auto-discord').value.trim()
-    };
-    const res = await api('/api/automation/settings', 'POST', payload);
-    const d = await res.json();
-    if (!res.ok) return alert(d.error || t('save_err'));
-    document.getElementById('auto-status-msg').textContent = d.message;
-    loadAutomation();
-}
-
-async function testNotifications() {
-    const msgEl = document.getElementById('auto-status-msg');
-    msgEl.textContent = t('auto_testing');
-    const res = await api('/api/automation/test', 'POST');
-    const d = await res.json();
-    msgEl.textContent = d.message;
-    if (!d.success) alert(d.message);
-}
-
-async function runAutomationNow() {
-    const msgEl = document.getElementById('auto-status-msg');
-    msgEl.textContent = t('auto_checking');
-    const res = await api('/api/automation/run_now', 'POST');
-    const d = await res.json();
-    msgEl.textContent = d.message;
-}
-
-async function submitAutomationRule() {
-    const upVal = parseFloat(document.getElementById('rule-up-val').value) || 0;
-    const upUnit = document.getElementById('rule-up-unit').value;
-    const upMult = upUnit === 'TiB' ? (1024 ** 4) : (upUnit === 'GiB' ? (1024 ** 3) : (1024 ** 2));
-
-    const spVal = parseFloat(document.getElementById('rule-speed-val').value) || 0;
-    const spUnit = document.getElementById('rule-speed-unit').value;
-    const spMult = spUnit === 'MiB' ? (1024 ** 2) : 1024;
-
-    const payload = {
-        name: document.getElementById('rule-name').value.trim(),
-        time_mode: document.getElementById('rule-time-mode').value,
-        min_ratio: parseFloat(document.getElementById('rule-ratio').value) || 0,
-        min_seed_days: parseFloat(document.getElementById('rule-days').value) || 0,
-        min_uploaded_bytes: upVal > 0 ? Math.round(upVal * upMult) : 0,
-        speed_op: document.getElementById('rule-speed-op').value,
-        speed_bytes: spVal > 0 ? (spVal * spMult) : 0,
-        speed_window_min: parseInt(document.getElementById('rule-speed-win').value) || 60,
-        action_tag: document.getElementById('rule-tag').value.trim(),
-        action_remove_tag: document.getElementById('rule-remove-tag').value.trim(),
-        action_pause: document.getElementById('rule-pause').checked,
-        notify: document.getElementById('rule-notify').checked
-    };
-
-    let url = '/api/automation/rules';
-    if (editingRuleId !== null) {
-        url = '/api/automation/rules/update';
-        payload.id = editingRuleId;
-    }
-
-    try {
-        const res = await api(url, 'POST', payload);
-        const d = await res.json();
-        if (!res.ok || d.success === false) {
-            return alert(d.error || `HTTP ${res.status}`);
-        }
-        cancelEditRule();
-        loadAutomation();
-    } catch (e) {
-        alert(e.message);
-    }
-}
-
-function addAutomationRule() {
-    return submitAutomationRule();
-}
-
-async function toggleRule(id) {
-    await api('/api/automation/rules/toggle', 'POST', { id });
-    loadAutomation();
-}
-
-async function deleteRule(id) {
-    if (!confirm(t('rule_del_confirm'))) return;
-    if (editingRuleId === id) cancelEditRule();
-    await api('/api/automation/rules/delete', 'POST', { id });
-    loadAutomation();
-}
-```
-
----
-
-Закидывай Пачку 3, прогоняй `pip install psutil` (или `pip install -r requirements.txt`) и запускай `python v` для проверки всех импортов! Если всё зелёное — тестируем в бою!
+Копируй это сообщение в `patch.md`, накатывай через `python apply_patch.py`, обновляй страницу через `Ctrl+F5` и проверяй обновлённый тюнер:
+- Все числовые поля теперь имеют свои микро-подписи.
+- При снятии галки с ограничителя поля становятся полупрозрачными и выключаются (`disabled`).
+- Второстепенные параметры компактно живут в аккордеоне `⚙️ Тонкие настройки слотов и задержек`.
+- На мобилках и планшетах блоки красиво перестраиваются без горизонтального скролла!
