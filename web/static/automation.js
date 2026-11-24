@@ -73,6 +73,7 @@ async function loadAutomation() {
     currentRules = d.rules || [];
     renderRules(currentRules);
     if (typeof loadDndDigestAndTagging === 'function') loadDndDigestAndTagging();
+    if (typeof loadTunerTab === 'function') loadTunerTab();
 }
 
 function _fmtBytesBinary(b) {

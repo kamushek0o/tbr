@@ -19,6 +19,7 @@ from utils.helpers import APP_DATA_DIR, write_error_log
 from core.torrent_parser import get_live_merged_summaries
 from core.summary_tracker import summary_tracker
 from core.automation import automation_engine
+from core.tuner_engine import tuner_engine
 from core.batch_relocate import resume_pending_relocate_if_any
 from web.security import register_security
 from web.errors import register_error_handlers
@@ -42,6 +43,7 @@ from web.routes.inbox_ops_bp import inbox_ops_bp
 from web.routes.deep_analytics_bp import deep_analytics_bp
 from web.routes.ux_bp import ux_bp
 from web.routes.hardcore_bp import hardcore_bp
+from web.routes.tuner_bp import tuner_bp
 
 
 def get_resource_path(relative_path):
@@ -78,10 +80,10 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 register_error_handlers(app)
 register_security(app)
 for bp in (
-    torrents_bp, merger_bp, analytics_bp, automation_bp, settings_bp,
-    profiles_bp, widget_bp, system_bp, tools_bp, timers_bp, insights_bp,
-    social_bp, safety_bp, hygiene_bp, batch_bp, net_ops_bp, inbox_ops_bp,
-    deep_analytics_bp, ux_bp, hardcore_bp
+    torrents_bp, merger_bp, analytics_bp, automation_bp, settings_bp, profiles_bp,
+    widget_bp, system_bp, tools_bp, timers_bp, insights_bp, social_bp,
+    safety_bp, hygiene_bp, batch_bp, net_ops_bp, inbox_ops_bp,
+    deep_analytics_bp, ux_bp, hardcore_bp, tuner_bp
 ):
     app.register_blueprint(bp)
 
@@ -113,6 +115,7 @@ class WebServerController:
 
         summary_tracker.start_auto_export(get_live_merged_summaries)
         automation_engine.start()
+        tuner_engine.start()
         resume_pending_relocate_if_any()
 
         try:

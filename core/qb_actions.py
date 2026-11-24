@@ -1,4 +1,5 @@
 # core/qb_actions.py
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from core.qb_api import (
     _post_qb_api, _post_qb_api_code, check_qb_api_alive,
@@ -89,6 +90,12 @@ def add_torrent_url(qb_ip, qb_port, urls, savepath='', tags='', paused=False):
 def set_global_speed_limits(qb_ip, qb_port, dl_limit_bps, up_limit_bps):
     return _post_qb_api(qb_ip, qb_port, 'transfer/setDownloadLimit', {'limit': str(max(0, int(dl_limit_bps)))}) and \
            _post_qb_api(qb_ip, qb_port, 'transfer/setUploadLimit', {'limit': str(max(0, int(up_limit_bps)))})
+
+
+def set_qb_preferences(qb_ip, qb_port, prefs_dict):
+    if not isinstance(prefs_dict, dict) or not prefs_dict:
+        return False
+    return _post_qb_api(qb_ip, qb_port, 'app/setPreferences', {'json': json.dumps(prefs_dict)})
 
 
 def shutdown_qb_webui(qb_ip, qb_port):

@@ -23,6 +23,7 @@
         </svg>
         <span class="logo-text">tbr PRO</span>
         <span id="qb-status-badge" class="badge badge-pause pointer" onclick="toggleQbPower()" data-i18n="qb_loading">⏳ qB...</span>
+        <span id="tuner-header-badge" class="badge badge-pause pointer admin-only" onclick="switchTab('automation')" title="Адаптивный авто-тюнер qB">🎛️ Тюнер: Выкл</span>
         <button id="update-available-badge" class="btn btn-xs hidden" style="background:var(--warning); color:#000;" onclick="openUpdateModal(false)">⬆️ Доступно обновление</button>
     </div>
     <div class="nav-tabs">
@@ -232,6 +233,7 @@
 <script src="/static/smart_calc.js?v={{ v }}"></script>
 <script src="/static/analytics_charts_render.js?v={{ v }}"></script>
 <script src="/static/analytics.js?v={{ v }}"></script>
+<script src="/static/tuner_ui.js?v={{ v }}"></script>
 <script src="/static/automation.js?v={{ v }}"></script>
 <script src="/static/system_tools.js?v={{ v }}"></script>
 <script src="/static/merger_tools.js?v={{ v }}"></script>

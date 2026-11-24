@@ -199,6 +199,11 @@ def _post_qb_api(qb_ip, qb_port, path, payload=None):
     return 200 <= code < 300
 
 
+def get_qb_preferences(qb_ip, qb_port):
+    data = _get_qb_json(qb_ip, qb_port, "app/preferences", timeout=2.0)
+    return data if isinstance(data, dict) else None
+
+
 def get_live_torrent_info(qb_ip, qb_port):
     data = _get_qb_json(qb_ip, qb_port, "torrents/info", timeout=1.8)
     return {t['hash']: t for t in data} if isinstance(data, list) else {}
@@ -228,5 +233,5 @@ from core.qb_actions import (  # noqa: E402, F401
     scan_dead_torrents, add_torrent_tags, remove_torrent_tags, delete_torrents,
     recheck_torrents, edit_torrent_tracker, set_torrent_location,
     set_torrent_file_prio, add_torrent_url, set_global_speed_limits,
-    shutdown_qb_webui, send_qb_command
+    set_qb_preferences, shutdown_qb_webui, send_qb_command
 )

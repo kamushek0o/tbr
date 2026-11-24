@@ -18,6 +18,7 @@ from core.keep_awake import keep_awake
 from core.updater import register_shutdown_hook
 from web.app import web_server
 from core.summary_tracker import summary_tracker
+from core.tuner_engine import tuner_engine
 
 
 def parse_arguments():
@@ -71,6 +72,7 @@ def main():
 
     def on_shutdown():
         keep_awake.stop()
+        tuner_engine.stop_and_restore()
         summary_tracker.flush_on_exit()
         web_server.stop()
         instance_lock.release()

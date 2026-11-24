@@ -30,8 +30,9 @@ def execute_panic_killswitch(kill_qb=False, actor="admin"):
 
     frozen_until = int(time.time() + 3600)
     cfg.set("Autopilot_Frozen_Until", str(frozen_until))
+    cfg.set("Panic_Active_Until", str(frozen_until))
     cfg.save()
-    details.append("Автопилот заморожен на 1 час")
+    details.append("Автопилот и авто-тюнер заморожены на 1 час")
 
     if kill_qb:
         if port:
