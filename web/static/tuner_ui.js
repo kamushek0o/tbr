@@ -2,6 +2,7 @@
 let _tunerProfiles = {};
 let _tunerCurProfile = 'performance';
 let _tunerRules = {};
+let _tunerAvailableDisks = [];
 
 function syncTunerDisabledStates() {
     const setGroupState = (chkId, rowId, inputIds) => {
@@ -14,7 +15,7 @@ function syncTunerDisabledStates() {
         });
     };
 
-    setGroupState('tp-g-disk-en', 'guard-row-disk', ['tp-g-disk-warn', 'tp-g-disk-crit', 'tp-g-disk-rec']);
+    setGroupState('tp-g-disk-en', 'guard-row-disk', ['tp-g-disk-target', 'tp-g-disk-warn', 'tp-g-disk-crit', 'tp-g-disk-rec']);
     setGroupState('tp-g-cpu-en', 'guard-row-cpu', ['tp-g-cpu-warn', 'tp-g-cpu-rec']);
     setGroupState('tp-g-ram-en', 'guard-row-ram', ['tp-g-ram-min', 'tp-g-ram-rec']);
     setGroupState('tp-g-net-en', 'guard-row-net', ['tp-g-net-warn', 'tp-g-net-rec']);
@@ -61,6 +62,18 @@ function syncTunerDisabledStates() {
     document.getElementById('rules-box-ext')?.classList.toggle('tuner-row-disabled', !extEn);
 }
 
+function _updateDiskSelectorOptions(selectedVal) {
+    const sel = document.getElementById('tp-g-disk-target');
+    if (!sel) return;
+    sel.innerHTML = '';
+    sel.add(new Option('Авто (по раздачам)', ''));
+    sel.add(new Option('Все диски (Max)', 'ALL'));
+    _tunerAvailableDisks.forEach(d => {
+        sel.add(new Option(`${d.path} (${d.free_fmt} своб.)`, d.path));
+    });
+    sel.value = selectedVal || '';
+}
+
 async function loadTunerTab() {
     if (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE !== 'admin') return;
     await Promise.all([refreshTunerState(), loadTunerProfiles(), loadTunerRules()]);
@@ -73,6 +86,8 @@ async function refreshTunerState() {
         if (!res.ok) return;
         const d = await res.json();
         const st = d.state || {}, tel = d.telemetry || {}, mode = st.mode || 'off';
+        _tunerAvailableDisks = d.available_disks || [];
+
         ['off', 'comfort', 'performance'].forEach(m => {
             const b = document.getElementById(`tuner-btn-${m}`);
             if (b) b.className = (m === mode) ? 'btn btn-xs' : 'btn btn-secondary btn-xs';
@@ -94,6 +109,8 @@ async function refreshTunerState() {
         document.getElementById('tuner-btn-clear-ov')?.classList.toggle('hidden', !st.manual_override_mode);
 
         const setTxt = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+        const diskTitle = tel.monitored_disk_label ? `Диск I/O (${tel.monitored_disk_label})` : 'Диск I/O';
+        setTxt('tel-disk-title', diskTitle);
         setTxt('tel-disk', tel.psutil_available === false ? 'нет psutil' : `${tel.disk_busy ?? 0}%`);
         setTxt('tel-cpu', `${tel.cpu_ext ?? 0}%`);
         setTxt('tel-ram', `${tel.ram_free ?? 0}%`);
@@ -159,6 +176,8 @@ function selectTunerProfileTab(mode) {
     sv('tp-up-pct', p.up_limit_pct); sv('tp-dl-pct', p.dl_limit_pct);
     sc('tp-sq-en', p.squeeze_enabled); sv('tp-sq-up', p.squeeze_up_pct); sv('tp-sq-dl', p.squeeze_dl_pct);
     sv('tp-cd-sec', p.cooldown_sec); sv('tp-step-up', p.step_up_size); sc('tp-yield-turtle', p.yield_to_turtle);
+
+    _updateDiskSelectorOptions(g.disk?.target_disk || '');
     sc('tp-g-disk-en', g.disk?.enabled); sv('tp-g-disk-warn', g.disk?.warn); sv('tp-g-disk-crit', g.disk?.crit); sv('tp-g-disk-rec', g.disk?.recover);
     sc('tp-g-cpu-en', g.cpu?.enabled); sv('tp-g-cpu-warn', g.cpu?.warn); sv('tp-g-cpu-rec', g.cpu?.recover);
     sc('tp-g-ram-en', g.ram?.enabled); sv('tp-g-ram-min', g.ram?.min_free); sv('tp-g-ram-rec', g.ram?.recover_free);
@@ -182,7 +201,11 @@ async function saveTunerProfile() {
         squeeze_enabled: cb('tp-sq-en'), squeeze_up_pct: iv('tp-sq-up'), squeeze_dl_pct: iv('tp-sq-dl'),
         cooldown_sec: iv('tp-cd-sec'), step_up_size: iv('tp-step-up'), yield_to_turtle: cb('tp-yield-turtle'),
         guards: {
-            disk: { enabled: cb('tp-g-disk-en'), warn: iv('tp-g-disk-warn'), crit: iv('tp-g-disk-crit'), recover: iv('tp-g-disk-rec') },
+            disk: {
+                enabled: cb('tp-g-disk-en'),
+                target_disk: document.getElementById('tp-g-disk-target')?.value || '',
+                warn: iv('tp-g-disk-warn'), crit: iv('tp-g-disk-crit'), recover: iv('tp-g-disk-rec')
+            },
             cpu:  { enabled: cb('tp-g-cpu-en'), warn: iv('tp-g-cpu-warn'), recover: iv('tp-g-cpu-rec') },
             ram:  { enabled: cb('tp-g-ram-en'), min_free: iv('tp-g-ram-min'), recover_free: iv('tp-g-ram-rec') },
             net:  { enabled: cb('tp-g-net-en'), warn_pct: iv('tp-g-net-warn'), recover_pct: iv('tp-g-net-rec') }

@@ -12,6 +12,55 @@ except ImportError:
     HAS_PSUTIL = False
 
 
+def _get_windows_physical_drive(drive_letter):
+    letter = str(drive_letter or '').strip().rstrip(':\\/').upper()
+    if not letter or len(letter) != 1 or not ('A' <= letter <= 'Z'):
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.windll.kernel32
+        h_dev = kernel32.CreateFileW(f"\\\\.\\{letter}:", 0, 3, None, 3, 0, None)
+        if h_dev == -1 or h_dev == wintypes.HANDLE(-1).value:
+            h_dev = kernel32.CreateFileW(f"\\\\.\\{letter}:", 0x80000000, 3, None, 3, 0, None)
+        if h_dev != -1 and h_dev != wintypes.HANDLE(-1).value:
+            class STORAGE_DEVICE_NUMBER(ctypes.Structure):
+                _fields_ = [
+                    ('DeviceType', wintypes.DWORD),
+                    ('DeviceNumber', wintypes.DWORD),
+                    ('PartitionNumber', wintypes.DWORD)
+                ]
+            dev_num = STORAGE_DEVICE_NUMBER()
+            bytes_ret = wintypes.DWORD()
+            ok = kernel32.DeviceIoControl(h_dev, 0x002D1080, None, 0, ctypes.byref(dev_num), ctypes.sizeof(dev_num), ctypes.byref(bytes_ret), None)
+            kernel32.CloseHandle(h_dev)
+            if ok:
+                return f"PhysicalDrive{dev_num.DeviceNumber}"
+    except Exception:
+        pass
+    return None
+
+
+def _get_linux_block_device(path):
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        st = os.stat(path)
+        major = os.major(st.st_dev)
+        minor = os.minor(st.st_dev)
+        sys_path = f"/sys/dev/block/{major}:{minor}"
+        if os.path.exists(sys_path):
+            real = os.path.realpath(sys_path)
+            parts = real.split(os.sep)
+            if 'block' in parts:
+                idx = parts.index('block')
+                if idx + 1 < len(parts):
+                    return parts[idx + 1]
+    except Exception:
+        pass
+    return None
+
+
 class TelemetryCollector:
     def __init__(self):
         self._qb_proc = None
@@ -47,34 +96,40 @@ class TelemetryCollector:
                 continue
         return None
 
-    def _measure_disk_busy(self, dt_ms, live):
+    def _measure_disk_busy(self, dt_ms, live, target_disk):
         if not HAS_PSUTIL or dt_ms <= 0:
-            return 0.0
+            return 0.0, '—'
         try:
             counters = psutil.disk_io_counters(perdisk=True) or {}
         except Exception:
-            return 0.0
+            return 0.0, '—'
         if self._prev_disk is None:
             self._prev_disk = counters
-            return 0.0
+            return 0.0, '—'
+
+        chosen_path = target_disk
+        is_auto = False
+        if not chosen_path:
+            is_auto = True
+            chosen_path = str(get_monitored_disk_info(live).get('path') or '')
 
         target_key = None
-        if os.name == 'nt':
-            try:
-                disk_path = str(get_monitored_disk_info(live).get('path') or '')
-                drive_letter = os.path.splitdrive(disk_path)[0].upper().rstrip(':')
-                if drive_letter:
-                    for k in counters:
-                        if drive_letter in k.upper():
-                            target_key = k
-                            break
-            except Exception:
-                pass
+        label = 'Все'
+        if chosen_path == 'ALL':
+            label = 'Все'
+        elif chosen_path:
+            clean_p = os.path.splitdrive(chosen_path)[0].upper() or chosen_path
+            label = f"Авто: {clean_p}" if is_auto else clean_p
+            if os.name == 'nt':
+                drive_letter = clean_p.rstrip(':\\/')
+                target_key = _get_windows_physical_drive(drive_letter)
+            else:
+                target_key = _get_linux_block_device(chosen_path)
 
         max_busy = 0.0
         keys = [target_key] if (target_key and target_key in counters and target_key in self._prev_disk) else list(counters.keys())
         for k in keys:
-            if k not in self._prev_disk:
+            if k not in self._prev_disk or k not in counters:
                 continue
             c_now, c_old = counters[k], self._prev_disk[k]
             d_read = max(0, getattr(c_now, 'read_time', 0) - getattr(c_old, 'read_time', 0))
@@ -84,9 +139,9 @@ class TelemetryCollector:
                 max_busy = busy
 
         self._prev_disk = counters
-        return max_busy
+        return max_busy, label
 
-    def collect(self, live, transfer_info, current_max_uploads):
+    def collect(self, live, transfer_info, current_max_uploads, target_disk=''):
         now = time.monotonic()
         dt_sec = max(0.5, now - self._prev_ts) if self._prev_ts else 10.0
         dt_ms = dt_sec * 1000.0
@@ -97,7 +152,7 @@ class TelemetryCollector:
         max_mbps = max(10, cfg.getint('Max_Channel_Mbps', 1000))
         max_chan_bps = (max_mbps * 1_000_000) / 8.0
 
-        disk_raw = self._measure_disk_busy(dt_ms, live)
+        disk_raw, disk_label = self._measure_disk_busy(dt_ms, live, target_disk)
         cpu_ext_raw, ram_free_raw, net_ext_raw = 0.0, 100.0, 0.0
 
         if HAS_PSUTIL:
@@ -142,6 +197,7 @@ class TelemetryCollector:
         return {
             'psutil_available': HAS_PSUTIL,
             'disk_busy': round(ema_disk, 1),
+            'monitored_disk_label': disk_label,
             'cpu_ext': round(ema_cpu, 1),
             'ram_free': round(ema_ram, 1),
             'net_ext_bps': int(ema_net_ext),

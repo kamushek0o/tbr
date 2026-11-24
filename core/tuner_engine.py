@@ -203,8 +203,13 @@ class AdaptiveTunerEngine:
         live = get_live_torrent_info(ip, port) if qb_up else {}
         tr = get_transfer_info(ip, port) if qb_up else {}
         st = get_tuner_state()
+        profiles = get_tuner_profiles()
+        mode = st.get('mode')
+        prof = profiles.get(mode) or profiles.get('performance', {})
+
+        target_disk = prof.get('guards', {}).get('disk', {}).get('target_disk', '')
         cur_slots = int((st.get('current_limits') or {}).get('max_uploads') or (st.get('baseline') or {}).get('max_uploads') or 20)
-        tel = telemetry_collector.collect(live, tr, cur_slots)
+        tel = telemetry_collector.collect(live, tr, cur_slots, target_disk=target_disk)
         self._last_telemetry = tel
 
         if not qb_up:
@@ -223,23 +228,18 @@ class AdaptiveTunerEngine:
         if base is None:
             return
 
-        profiles = get_tuner_profiles()
-        mode = st.get('mode')
-
         if st.get('auto_switch_enabled'):
             rules = get_switch_rules()
             sw_mode, sw_reason, _ = auto_switch_engine.evaluate(st, rules, tel)
             self._last_switch_reason = sw_reason
             if sw_mode in ('performance', 'comfort') and sw_mode != mode:
                 mode = sw_mode
+                prof = profiles.get(mode, prof)
                 update_tuner_state(mode=mode, last_reason=sw_reason)
                 add_tuner_history(mode, 'auto_switch', sw_reason, tel, cur_slots, cur_slots)
         else:
             self._last_switch_reason = ''
 
-        prof = profiles.get(mode)
-        if not prof:
-            return
         if prof.get('yield_to_turtle', True) and tr.get('use_alt_speed_limits'):
             update_tuner_state(last_reason='Уступает ручной «Черепахе»')
             return

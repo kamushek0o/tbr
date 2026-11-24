@@ -23,7 +23,7 @@ DEFAULT_PROFILES = {
         'cooldown_sec': 180, 'step_up_size': 5,
         'yield_to_turtle': True,
         'guards': {
-            'disk': {'enabled': False, 'warn': 85, 'crit': 95, 'recover': 70},
+            'disk': {'enabled': False, 'target_disk': '', 'warn': 85, 'crit': 95, 'recover': 70},
             'cpu':  {'enabled': True,  'warn': 85, 'recover': 65},
             'ram':  {'enabled': True,  'min_free': 10, 'recover_free': 18},
             'net':  {'enabled': False, 'warn_pct': 45, 'recover_pct': 25},
@@ -40,7 +40,7 @@ DEFAULT_PROFILES = {
         'cooldown_sec': 180, 'step_up_size': 3,
         'yield_to_turtle': True,
         'guards': {
-            'disk': {'enabled': True, 'warn': 55, 'crit': 80, 'recover': 35},
+            'disk': {'enabled': True, 'target_disk': '', 'warn': 55, 'crit': 80, 'recover': 35},
             'cpu':  {'enabled': True, 'warn': 45, 'recover': 30},
             'ram':  {'enabled': True, 'min_free': 20, 'recover_free': 28},
             'net':  {'enabled': True, 'warn_pct': 20, 'recover_pct': 10},
@@ -50,8 +50,8 @@ DEFAULT_PROFILES = {
 
 DEFAULT_SWITCH_RULES = {
     'default_mode': 'performance',
-    'override_policy': '2h',  # '2h' | 'until_schedule' | 'until_process_exit'
-    'schedules': [],  # [{start: "01:00", end: "08:00", days: [0..6], mode: "performance"}]
+    'override_policy': '2h',
+    'schedules': [],
     'processes': {
         'enabled': False,
         'target_mode': 'comfort',

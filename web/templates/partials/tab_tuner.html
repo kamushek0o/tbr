@@ -17,7 +17,7 @@
 
     <!-- Метрики в реальном времени -->
     <div class="tuner-telemetry-grid mb-10">
-        <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap">Диск I/O</div><div id="tel-disk" class="val-sm">—</div></div>
+        <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap" id="tel-disk-title">Диск I/O</div><div id="tel-disk" class="val-sm">—</div></div>
         <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap">Чужой CPU</div><div id="tel-cpu" class="val-sm">—</div></div>
         <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap">RAM своб.</div><div id="tel-ram" class="val-sm">—</div></div>
         <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap">Канал qB</div><div id="tel-chan" class="val-sm accent-txt">—</div></div>
@@ -59,7 +59,7 @@
                 <div class="tuner-field grow-1">
                     <span class="lbl-micro">max_active_uploads</span>
                     <select id="tp-act-mode" class="form-control" onchange="syncTunerDisabledStates()">
-                        <option value="keep">Не менять (как в эталоне)</option>
+                        <option value="keep">Не менять (эталон)</option>
                         <option value="range">Диапазон Min..Max</option>
                         <option value="fixed">Фиксированное число</option>
                     </select>
@@ -91,6 +91,10 @@
                 <!-- Диск -->
                 <div class="tuner-guard-row" id="guard-row-disk">
                     <label class="row-gap pointer lbl-xs tuner-guard-label no-wrap"><input id="tp-g-disk-en" type="checkbox" onchange="syncTunerDisabledStates()"> <span>Диск I/O</span></label>
+                    <div class="tuner-field" style="flex: 1.5 1 125px; min-width: 110px;">
+                        <span class="lbl-micro">Целевой диск</span>
+                        <select id="tp-g-disk-target" class="form-control" style="padding:4px 6px; font-size:11px;" onchange="syncTunerDisabledStates()"></select>
+                    </div>
                     <div class="tuner-field"><span class="lbl-micro">Тревога %</span><input id="tp-g-disk-warn" type="number" class="form-control tuner-num-input"></div>
                     <div class="tuner-field"><span class="lbl-micro">Крит. %</span><input id="tp-g-disk-crit" type="number" class="form-control tuner-num-input"></div>
                     <div class="tuner-field"><span class="lbl-micro">Возврат %</span><input id="tp-g-disk-rec" type="number" class="form-control tuner-num-input"></div>

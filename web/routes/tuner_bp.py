@@ -1,6 +1,9 @@
 # web/routes/tuner_bp.py
 import datetime
 from flask import Blueprint, request, jsonify, g
+from utils.config import cfg
+from core.qb_api import detect_qbittorrent_port, get_live_torrent_info
+from core.disk_monitor import list_active_disks
 from core.tuner_db import (
     get_tuner_profiles, save_tuner_profile, reset_tuner_profile,
     get_switch_rules, save_switch_rules, get_tuner_history
@@ -24,6 +27,9 @@ def api_tuner_state():
     for h in hist:
         h['time'] = datetime.datetime.fromtimestamp(h['ts']).strftime('%H:%M:%S')
     snap['history'] = hist
+    ip, port = detect_qbittorrent_port(cfg.config)
+    live = get_live_torrent_info(ip, port) if port else {}
+    snap['available_disks'] = list_active_disks(live)
     return jsonify(snap)
 
 
