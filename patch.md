@@ -1,953 +1,15 @@
-### Какой диск смотрится сейчас и в чём был подвох:
-По умолчанию тюнер смотрел на **основной диск с наибольшим числом раздач** (или выбранный в общих `⚙️ Настройки`). 
-
-Но под капотом Windows был критический баг: `psutil.disk_io_counters(perdisk=True)` возвращает ключи физических накопителей — `PhysicalDrive0`, `PhysicalDrive1` (а не буквы `C:` или `D:`). Из-за этого привязка по букве диска сбивалась на максимум по всем дискам, и в интерфейсе вообще не было видно, какой накопитель сейчас опрашивается.
-
-### План
-1. `core/tuner_telemetry.py` — внедряем Win32 API маппинг (`IOCTL_STORAGE_GET_DEVICE_NUMBER` через стандартный `ctypes`) и Linux `/sys/dev/block`, точно связывающие букву/точку монтирования с `PhysicalDriveX` / `sdX`. Добавляем поддержку режимов: `Авто`, `Все диски (Max)` или конкретный диск (`D:\`), а также возврат понятного лейбла `monitored_disk_label`.
-2. `core/tuner_db.py` & `core/tuner_engine.py` — прописываем `target_disk` в дефолтные профили тюнера и передаём выбранный диск в сборщик телеметрии.
-3. `web/routes/tuner_bp.py` — прокидываем список активных дисков `available_disks` в эндпоинт `/api/tuner/state`.
-4. `web/templates/partials/tab_tuner.html` & `web/static/tuner_ui.js` — добавляем выпадающий список дисков прямо в строку «Диск I/O» и динамически выводим текущий опрашиваемый накопитель в шапку карточки телеметрии (`Диск I/O (D:)` или `Диск I/O (Все)`).
-
----
-
-#### `core/tuner_telemetry.py`
-```python
-# core/tuner_telemetry.py
-import os
-import time
-from utils.config import cfg
-from core.disk_monitor import get_monitored_disk_info
-
-try:
-    import psutil
-    HAS_PSUTIL = True
-except ImportError:
-    psutil = None
-    HAS_PSUTIL = False
-
-
-def _get_windows_physical_drive(drive_letter):
-    letter = str(drive_letter or '').strip().rstrip(':\\/').upper()
-    if not letter or len(letter) != 1 or not ('A' <= letter <= 'Z'):
-        return None
-    try:
-        import ctypes
-        from ctypes import wintypes
-        kernel32 = ctypes.windll.kernel32
-        h_dev = kernel32.CreateFileW(f"\\\\.\\{letter}:", 0, 3, None, 3, 0, None)
-        if h_dev == -1 or h_dev == wintypes.HANDLE(-1).value:
-            h_dev = kernel32.CreateFileW(f"\\\\.\\{letter}:", 0x80000000, 3, None, 3, 0, None)
-        if h_dev != -1 and h_dev != wintypes.HANDLE(-1).value:
-            class STORAGE_DEVICE_NUMBER(ctypes.Structure):
-                _fields_ = [
-                    ('DeviceType', wintypes.DWORD),
-                    ('DeviceNumber', wintypes.DWORD),
-                    ('PartitionNumber', wintypes.DWORD)
-                ]
-            dev_num = STORAGE_DEVICE_NUMBER()
-            bytes_ret = wintypes.DWORD()
-            ok = kernel32.DeviceIoControl(h_dev, 0x002D1080, None, 0, ctypes.byref(dev_num), ctypes.sizeof(dev_num), ctypes.byref(bytes_ret), None)
-            kernel32.CloseHandle(h_dev)
-            if ok:
-                return f"PhysicalDrive{dev_num.DeviceNumber}"
-    except Exception:
-        pass
-    return None
-
-
-def _get_linux_block_device(path):
-    if not path or not os.path.exists(path):
-        return None
-    try:
-        st = os.stat(path)
-        major = os.major(st.st_dev)
-        minor = os.minor(st.st_dev)
-        sys_path = f"/sys/dev/block/{major}:{minor}"
-        if os.path.exists(sys_path):
-            real = os.path.realpath(sys_path)
-            parts = real.split(os.sep)
-            if 'block' in parts:
-                idx = parts.index('block')
-                if idx + 1 < len(parts):
-                    return parts[idx + 1]
-    except Exception:
-        pass
-    return None
-
-
-class TelemetryCollector:
-    def __init__(self):
-        self._qb_proc = None
-        self._prev_ts = None
-        self._prev_disk = None
-        self._prev_net = None
-        self._ema = {}
-
-    def _smooth(self, key, val):
-        if key not in self._ema:
-            self._ema[key] = float(val)
-        else:
-            self._ema[key] = 0.3 * float(val) + 0.7 * self._ema[key]
-        return self._ema[key]
-
-    def _get_qb_process(self):
-        if not HAS_PSUTIL:
-            return None
-        if self._qb_proc is not None:
-            try:
-                if self._qb_proc.is_running() and 'qbittorrent' in self._qb_proc.name().lower():
-                    return self._qb_proc
-            except Exception:
-                self._qb_proc = None
-        for p in psutil.process_iter(['pid', 'name']):
-            try:
-                nm = (p.info.get('name') or '').lower()
-                if nm in ('qbittorrent.exe', 'qbittorrent-nox.exe', 'qbittorrent', 'qbittorrent-nox'):
-                    p.cpu_percent(interval=None)
-                    self._qb_proc = p
-                    return p
-            except Exception:
-                continue
-        return None
-
-    def _measure_disk_busy(self, dt_ms, live, target_disk):
-        if not HAS_PSUTIL or dt_ms <= 0:
-            return 0.0, '—'
-        try:
-            counters = psutil.disk_io_counters(perdisk=True) or {}
-        except Exception:
-            return 0.0, '—'
-        if self._prev_disk is None:
-            self._prev_disk = counters
-            return 0.0, '—'
-
-        chosen_path = target_disk
-        is_auto = False
-        if not chosen_path:
-            is_auto = True
-            chosen_path = str(get_monitored_disk_info(live).get('path') or '')
-
-        target_key = None
-        label = 'Все'
-        if chosen_path == 'ALL':
-            label = 'Все'
-        elif chosen_path:
-            clean_p = os.path.splitdrive(chosen_path)[0].upper() or chosen_path
-            label = f"Авто: {clean_p}" if is_auto else clean_p
-            if os.name == 'nt':
-                drive_letter = clean_p.rstrip(':\\/')
-                target_key = _get_windows_physical_drive(drive_letter)
-            else:
-                target_key = _get_linux_block_device(chosen_path)
-
-        max_busy = 0.0
-        keys = [target_key] if (target_key and target_key in counters and target_key in self._prev_disk) else list(counters.keys())
-        for k in keys:
-            if k not in self._prev_disk or k not in counters:
-                continue
-            c_now, c_old = counters[k], self._prev_disk[k]
-            d_read = max(0, getattr(c_now, 'read_time', 0) - getattr(c_old, 'read_time', 0))
-            d_write = max(0, getattr(c_now, 'write_time', 0) - getattr(c_old, 'write_time', 0))
-            busy = min(100.0, ((d_read + d_write) / dt_ms) * 100.0)
-            if busy > max_busy:
-                max_busy = busy
-
-        self._prev_disk = counters
-        return max_busy, label
-
-    def collect(self, live, transfer_info, current_max_uploads, target_disk=''):
-        now = time.monotonic()
-        dt_sec = max(0.5, now - self._prev_ts) if self._prev_ts else 10.0
-        dt_ms = dt_sec * 1000.0
-        self._prev_ts = now
-
-        qb_up = float(transfer_info.get('up_info_speed') or 0)
-        qb_dl = float(transfer_info.get('dl_info_speed') or 0)
-        max_mbps = max(10, cfg.getint('Max_Channel_Mbps', 1000))
-        max_chan_bps = (max_mbps * 1_000_000) / 8.0
-
-        disk_raw, disk_label = self._measure_disk_busy(dt_ms, live, target_disk)
-        cpu_ext_raw, ram_free_raw, net_ext_raw = 0.0, 100.0, 0.0
-
-        if HAS_PSUTIL:
-            try:
-                tot_cpu = psutil.cpu_percent(interval=None)
-                cores = max(1, psutil.cpu_count(logical=True) or 1)
-                qb_p = self._get_qb_process()
-                qb_cpu_norm = (qb_p.cpu_percent(interval=None) / cores) if qb_p else 0.0
-                cpu_ext_raw = max(0.0, tot_cpu - qb_cpu_norm)
-            except Exception:
-                pass
-
-            try:
-                vm = psutil.virtual_memory()
-                ram_free_raw = (vm.available / max(1, vm.total)) * 100.0
-            except Exception:
-                pass
-
-            try:
-                net_now = psutil.net_io_counters()
-                if self._prev_net is not None and net_now is not None:
-                    d_tot = max(0, (net_now.bytes_sent - self._prev_net.bytes_sent) + (net_now.bytes_recv - self._prev_net.bytes_recv))
-                    tot_bps = d_tot / dt_sec
-                    net_ext_raw = max(0.0, tot_bps - (qb_dl + qb_up))
-                self._prev_net = net_now
-            except Exception:
-                pass
-
-        ema_disk = self._smooth('disk_busy', disk_raw)
-        ema_cpu = self._smooth('cpu_ext', cpu_ext_raw)
-        ema_ram = self._smooth('ram_free', ram_free_raw)
-        ema_net_ext = self._smooth('net_ext_bps', net_ext_raw)
-        ema_qb_up = self._smooth('qb_up_bps', qb_up)
-
-        chan_pct = min(100.0, (ema_qb_up / max_chan_bps) * 100.0) if max_chan_bps > 0 else 0.0
-        net_ext_pct = min(100.0, (ema_net_ext / max_chan_bps) * 100.0) if max_chan_bps > 0 else 0.0
-
-        active_up_peers = sum(int(v.get('num_leechs', 0) or 0) for v in (live or {}).values() if int(v.get('upspeed', 0) or 0) > 0)
-        cur_slots = max(1, int(current_max_uploads or 1))
-        slots_fill_pct = min(100.0, (active_up_peers / cur_slots) * 100.0)
-
-        return {
-            'psutil_available': HAS_PSUTIL,
-            'disk_busy': round(ema_disk, 1),
-            'monitored_disk_label': disk_label,
-            'cpu_ext': round(ema_cpu, 1),
-            'ram_free': round(ema_ram, 1),
-            'net_ext_bps': int(ema_net_ext),
-            'net_ext_pct': round(net_ext_pct, 1),
-            'qb_up_bps': int(ema_qb_up),
-            'channel_pct': round(chan_pct, 1),
-            'active_up_peers': active_up_peers,
-            'slots_fill_pct': round(slots_fill_pct, 1),
-            'max_channel_bps': int(max_chan_bps)
-        }
-
-
-def list_running_processes():
-    if not HAS_PSUTIL:
-        return []
-    names = set()
-    for p in psutil.process_iter(['name']):
-        try:
-            nm = str(p.info.get('name') or '').strip()
-            if nm:
-                names.add(nm)
-        except Exception:
-            continue
-    return sorted(names, key=str.lower)
-
-
-telemetry_collector = TelemetryCollector()
-```
-
----
-
-#### `core/tuner_db.py`
-```python
-# core/tuner_db.py
-import json
-import time
-from copy import deepcopy
-from core.app_state_db import app_state_db
-from utils.helpers import write_error_log
-
-ALLOWED_PREFS_KEYS = (
-    'max_uploads', 'max_uploads_per_torrent',
-    'max_connec', 'max_connec_per_torrent',
-    'max_active_uploads', 'up_limit', 'dl_limit'
-)
-
-DEFAULT_PROFILES = {
-    'performance': {
-        'max_uploads_min': 15, 'max_uploads_max': 150, 'max_uploads_start': 40,
-        'per_torrent_up_min': 4, 'per_torrent_up_max': 40, 'per_torrent_up_auto': True,
-        'max_connec_min': 60, 'max_connec_max': 600, 'max_connec_auto': True,
-        'per_torrent_connec_min': 15, 'per_torrent_connec_max': 150,
-        'active_uploads_mode': 'keep', 'active_uploads_min': 10, 'active_uploads_max': 40,
-        'channel_target_min': 85, 'channel_target_max': 100,
-        'up_limit_pct': 0, 'dl_limit_pct': 0, 'squeeze_enabled': False, 'squeeze_up_pct': 70, 'squeeze_dl_pct': 70,
-        'cooldown_sec': 180, 'step_up_size': 5,
-        'yield_to_turtle': True,
-        'guards': {
-            'disk': {'enabled': False, 'target_disk': '', 'warn': 85, 'crit': 95, 'recover': 70},
-            'cpu':  {'enabled': True,  'warn': 85, 'recover': 65},
-            'ram':  {'enabled': True,  'min_free': 10, 'recover_free': 18},
-            'net':  {'enabled': False, 'warn_pct': 45, 'recover_pct': 25},
-        }
-    },
-    'comfort': {
-        'max_uploads_min': 8, 'max_uploads_max': 45, 'max_uploads_start': 20,
-        'per_torrent_up_min': 3, 'per_torrent_up_max': 15, 'per_torrent_up_auto': True,
-        'max_connec_min': 40, 'max_connec_max': 220, 'max_connec_auto': True,
-        'per_torrent_connec_min': 10, 'per_torrent_connec_max': 50,
-        'active_uploads_mode': 'range', 'active_uploads_min': 4, 'active_uploads_max': 15,
-        'channel_target_min': 55, 'channel_target_max': 75,
-        'up_limit_pct': 75, 'dl_limit_pct': 75, 'squeeze_enabled': True, 'squeeze_up_pct': 40, 'squeeze_dl_pct': 40,
-        'cooldown_sec': 180, 'step_up_size': 3,
-        'yield_to_turtle': True,
-        'guards': {
-            'disk': {'enabled': True, 'target_disk': '', 'warn': 55, 'crit': 80, 'recover': 35},
-            'cpu':  {'enabled': True, 'warn': 45, 'recover': 30},
-            'ram':  {'enabled': True, 'min_free': 20, 'recover_free': 28},
-            'net':  {'enabled': True, 'warn_pct': 20, 'recover_pct': 10},
-        }
-    }
-}
-
-DEFAULT_SWITCH_RULES = {
-    'default_mode': 'performance',
-    'override_policy': '2h',
-    'schedules': [],
-    'processes': {
-        'enabled': False,
-        'target_mode': 'comfort',
-        'names': ['cs2.exe', 'dota2.exe', 'obs64.exe'],
-        'enter_sec': 15,
-        'exit_sec': 180
-    },
-    'external_load': {
-        'enabled': False,
-        'target_mode': 'comfort',
-        'cpu_warn': 45, 'cpu_recover': 25,
-        'net_warn_pct': 25, 'net_recover_pct': 12,
-        'ram_min_free': 15, 'ram_recover_free': 25,
-        'enter_sec': 30,
-        'exit_sec': 300
-    }
-}
-
-
-def _merge_dict(base, patch):
-    res = deepcopy(base)
-    if not isinstance(patch, dict):
-        return res
-    for k, v in patch.items():
-        if k in res and isinstance(res[k], dict) and isinstance(v, dict):
-            res[k] = _merge_dict(res[k], v)
-        else:
-            res[k] = v
-    return res
-
-
-def ensure_tuner_tables():
-    with app_state_db._lock:
-        try:
-            with app_state_db._get_conn() as conn:
-                conn.executescript("""
-                    CREATE TABLE IF NOT EXISTS tuner_state (
-                        id INTEGER PRIMARY KEY CHECK(id = 1),
-                        mode TEXT NOT NULL DEFAULT 'off',
-                        auto_switch_enabled INTEGER NOT NULL DEFAULT 0,
-                        manual_override_until REAL NOT NULL DEFAULT 0,
-                        manual_override_mode TEXT NOT NULL DEFAULT '',
-                        manual_override_policy TEXT NOT NULL DEFAULT '2h',
-                        baseline_json TEXT NOT NULL DEFAULT '{}',
-                        current_limits_json TEXT NOT NULL DEFAULT '{}',
-                        dirty_flag INTEGER NOT NULL DEFAULT 0,
-                        cooldown_until REAL NOT NULL DEFAULT 0,
-                        last_action_ts REAL NOT NULL DEFAULT 0,
-                        last_reason TEXT NOT NULL DEFAULT 'Выключен'
-                    );
-                    CREATE TABLE IF NOT EXISTS tuner_profiles (
-                        mode TEXT PRIMARY KEY,
-                        profile_json TEXT NOT NULL,
-                        updated_at REAL NOT NULL
-                    );
-                    CREATE TABLE IF NOT EXISTS tuner_switch_rules (
-                        id INTEGER PRIMARY KEY CHECK(id = 1),
-                        rules_json TEXT NOT NULL,
-                        updated_at REAL NOT NULL
-                    );
-                    CREATE TABLE IF NOT EXISTS tuner_history (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        ts REAL NOT NULL,
-                        mode TEXT NOT NULL,
-                        event_type TEXT NOT NULL,
-                        reason TEXT NOT NULL,
-                        disk_busy REAL NOT NULL DEFAULT 0,
-                        cpu_ext REAL NOT NULL DEFAULT 0,
-                        ram_free REAL NOT NULL DEFAULT 0,
-                        net_pct REAL NOT NULL DEFAULT 0,
-                        old_slots INTEGER NOT NULL DEFAULT 0,
-                        new_slots INTEGER NOT NULL DEFAULT 0
-                    );
-                    CREATE INDEX IF NOT EXISTS idx_tuner_hist_ts ON tuner_history(ts DESC);
-                """)
-                conn.execute("INSERT OR IGNORE INTO tuner_state (id) VALUES (1)")
-                now = time.time()
-                for m, prof in DEFAULT_PROFILES.items():
-                    conn.execute(
-                        "INSERT OR IGNORE INTO tuner_profiles (mode, profile_json, updated_at) VALUES (?, ?, ?)",
-                        (m, json.dumps(prof, ensure_ascii=False), now)
-                    )
-                conn.execute(
-                    "INSERT OR IGNORE INTO tuner_switch_rules (id, rules_json, updated_at) VALUES (1, ?, ?)",
-                    (json.dumps(DEFAULT_SWITCH_RULES, ensure_ascii=False), now)
-                )
-        except Exception as e:
-            write_error_log("ensure_tuner_tables", e)
-
-
-ensure_tuner_tables()
-
-
-def get_tuner_state():
-    with app_state_db._lock:
-        try:
-            with app_state_db._get_conn() as conn:
-                row = conn.execute("SELECT * FROM tuner_state WHERE id = 1").fetchone()
-                if row:
-                    d = dict(row)
-                    d['baseline'] = json.loads(d.get('baseline_json') or '{}')
-                    d['current_limits'] = json.loads(d.get('current_limits_json') or '{}')
-                    return d
-        except Exception as e:
-            write_error_log("get_tuner_state", e)
-    return {'id': 1, 'mode': 'off', 'auto_switch_enabled': 0, 'dirty_flag': 0, 'baseline': {}, 'current_limits': {}, 'last_reason': 'Выключен'}
-
-
-def update_tuner_state(**fields):
-    allowed = {
-        'mode', 'auto_switch_enabled', 'manual_override_until', 'manual_override_mode',
-        'manual_override_policy', 'baseline_json', 'current_limits_json', 'dirty_flag',
-        'cooldown_until', 'last_action_ts', 'last_reason'
-    }
-    upd = {k: v for k, v in fields.items() if k in allowed}
-    if not upd:
-        return
-    with app_state_db._lock:
-        try:
-            clause = ", ".join(f"{k} = ?" for k in upd)
-            with app_state_db._get_conn() as conn:
-                conn.execute(f"UPDATE tuner_state SET {clause} WHERE id = 1", list(upd.values()))
-        except Exception as e:
-            write_error_log("update_tuner_state", e)
-
-
-def get_tuner_profiles():
-    res = deepcopy(DEFAULT_PROFILES)
-    with app_state_db._lock:
-        try:
-            with app_state_db._get_conn() as conn:
-                for r in conn.execute("SELECT mode, profile_json FROM tuner_profiles").fetchall():
-                    if r['mode'] in res:
-                        res[r['mode']] = _merge_dict(res[r['mode']], json.loads(r['profile_json'] or '{}'))
-        except Exception:
-            pass
-    return res
-
-
-def save_tuner_profile(mode, profile_dict):
-    if mode not in DEFAULT_PROFILES:
-        return None
-    merged = _merge_dict(DEFAULT_PROFILES[mode], profile_dict)
-    with app_state_db._lock:
-        try:
-            with app_state_db._get_conn() as conn:
-                conn.execute(
-                    "INSERT OR REPLACE INTO tuner_profiles (mode, profile_json, updated_at) VALUES (?, ?, ?)",
-                    (mode, json.dumps(merged, ensure_ascii=False), time.time())
-                )
-        except Exception as e:
-            write_error_log("save_tuner_profile", e)
-    return merged
-
-
-def reset_tuner_profile(mode):
-    if mode not in DEFAULT_PROFILES:
-        return None
-    return save_tuner_profile(mode, DEFAULT_PROFILES[mode])
-
-
-def get_switch_rules():
-    with app_state_db._lock:
-        try:
-            with app_state_db._get_conn() as conn:
-                row = conn.execute("SELECT rules_json FROM tuner_switch_rules WHERE id = 1").fetchone()
-                if row:
-                    return _merge_dict(DEFAULT_SWITCH_RULES, json.loads(row['rules_json'] or '{}'))
-        except Exception:
-            pass
-    return deepcopy(DEFAULT_SWITCH_RULES)
-
-
-def save_switch_rules(rules_dict):
-    merged = _merge_dict(DEFAULT_SWITCH_RULES, rules_dict)
-    with app_state_db._lock:
-        try:
-            with app_state_db._get_conn() as conn:
-                conn.execute(
-                    "INSERT OR REPLACE INTO tuner_switch_rules (id, rules_json, updated_at) VALUES (1, ?, ?)",
-                    (json.dumps(merged, ensure_ascii=False), time.time())
-                )
-        except Exception as e:
-            write_error_log("save_switch_rules", e)
-    return merged
-
-
-def add_tuner_history(mode, event_type, reason, metrics, old_slots, new_slots):
-    now = time.time()
-    cutoff = now - (48 * 3600)
-    with app_state_db._lock:
-        try:
-            with app_state_db._get_conn() as conn:
-                conn.execute(
-                    """INSERT INTO tuner_history
-                       (ts, mode, event_type, reason, disk_busy, cpu_ext, ram_free, net_pct, old_slots, new_slots)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        now, str(mode), str(event_type), str(reason)[:220],
-                        round(float(metrics.get('disk_busy', 0)), 1),
-                        round(float(metrics.get('cpu_ext', 0)), 1),
-                        round(float(metrics.get('ram_free', 0)), 1),
-                        round(float(metrics.get('channel_pct', 0)), 1),
-                        int(old_slots or 0), int(new_slots or 0)
-                    )
-                )
-                conn.execute("DELETE FROM tuner_history WHERE ts < ?", (cutoff,))
-        except Exception as e:
-            write_error_log("add_tuner_history", e)
-
-
-def get_tuner_history(limit=30):
-    with app_state_db._lock:
-        try:
-            with app_state_db._get_conn() as conn:
-                rows = conn.execute("SELECT * FROM tuner_history ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()
-                return [dict(r) for r in rows]
-        except Exception:
-            return []
-```
-
----
-
-#### `core/tuner_engine.py`
-```python
-# core/tuner_engine.py
-import json
-import time
-import threading
-from utils.config import cfg
-from utils.helpers import write_log, write_error_log
-from core.qb_api import (
-    detect_qbittorrent_port, check_qb_api_alive, get_live_torrent_info,
-    get_transfer_info, get_qb_preferences, set_qb_preferences
-)
-from core.tuner_db import (
-    ALLOWED_PREFS_KEYS, get_tuner_state, update_tuner_state,
-    get_tuner_profiles, get_switch_rules, add_tuner_history
-)
-from core.tuner_telemetry import telemetry_collector
-from core.tuner_switcher import auto_switch_engine
-
-
-def _pct_to_bps(pct, max_chan_bps):
-    p = max(0, int(pct or 0))
-    if p <= 0 or p >= 100:
-        return 0
-    return max(1024, int(max_chan_bps * (p / 100.0)))
-
-
-def _compute_derived_limits(max_up, prof, max_chan_bps, squeezed=False, act_up_val=None, baseline=None):
-    mu = max(int(prof.get('max_uploads_min', 8)), min(int(prof.get('max_uploads_max', 150)), int(max_up)))
-    if prof.get('per_torrent_up_auto', True):
-        pt_up = max(int(prof.get('per_torrent_up_min', 3)), min(int(prof.get('per_torrent_up_max', 40)), int(round(mu * 0.28))))
-    else:
-        pt_up = int(prof.get('per_torrent_up_max', 15))
-
-    if prof.get('max_connec_auto', True):
-        mc = max(int(prof.get('max_connec_min', 40)), min(int(prof.get('max_connec_max', 600)), mu * 4))
-    else:
-        mc = int(prof.get('max_connec_max', 200))
-
-    pt_con = max(int(prof.get('per_torrent_connec_min', 10)), min(int(prof.get('per_torrent_connec_max', 150)), int(round(mc * 0.22))))
-
-    if squeezed and prof.get('squeeze_enabled'):
-        up_lim = _pct_to_bps(prof.get('squeeze_up_pct', 40), max_chan_bps)
-        dl_lim = _pct_to_bps(prof.get('squeeze_dl_pct', 40), max_chan_bps)
-    else:
-        up_lim = _pct_to_bps(prof.get('up_limit_pct', 0), max_chan_bps)
-        dl_lim = _pct_to_bps(prof.get('dl_limit_pct', 0), max_chan_bps)
-
-    res = {
-        'max_uploads': mu,
-        'max_uploads_per_torrent': pt_up,
-        'max_connec': mc,
-        'max_connec_per_torrent': pt_con,
-        'up_limit': up_lim,
-        'dl_limit': dl_lim,
-    }
-    act_mode = prof.get('active_uploads_mode', 'keep')
-    if act_mode == 'fixed':
-        res['max_active_uploads'] = int(prof.get('active_uploads_min', 10))
-    elif act_mode == 'range':
-        if act_up_val is not None:
-            res['max_active_uploads'] = max(int(prof.get('active_uploads_min', 4)), min(int(prof.get('active_uploads_max', 20)), int(act_up_val)))
-        else:
-            res['max_active_uploads'] = int(prof.get('active_uploads_max', 15))
-    elif baseline and 'max_active_uploads' in baseline:
-        res['max_active_uploads'] = int(baseline['max_active_uploads'])
-    return res
-
-
-def _evaluate_guards(prof, tel):
-    g = prof.get('guards') or {}
-    warn, crit, green = [], False, True
-
-    d = g.get('disk') or {}
-    if d.get('enabled'):
-        if tel['disk_busy'] >= float(d.get('warn', 80)):
-            warn.append(f"Диск {tel['disk_busy']}%")
-        if tel['disk_busy'] >= float(d.get('crit', 95)):
-            crit = True
-        if tel['disk_busy'] > float(d.get('recover', 50)):
-            green = False
-
-    c = g.get('cpu') or {}
-    if c.get('enabled'):
-        if tel['cpu_ext'] >= float(c.get('warn', 70)):
-            warn.append(f"Чужой CPU {tel['cpu_ext']}%")
-        if tel['cpu_ext'] >= 95.0:
-            crit = True
-        if tel['cpu_ext'] > float(c.get('recover', 45)):
-            green = False
-
-    r = g.get('ram') or {}
-    if r.get('enabled'):
-        if tel['ram_free'] < float(r.get('min_free', 15)):
-            warn.append(f"RAM своб. {tel['ram_free']}%")
-        if tel['ram_free'] < max(5.0, float(r.get('min_free', 15)) * 0.5):
-            crit = True
-        if tel['ram_free'] < float(r.get('recover_free', 25)):
-            green = False
-
-    n = g.get('net') or {}
-    if n.get('enabled'):
-        if tel['net_ext_pct'] >= float(n.get('warn_pct', 30)):
-            warn.append(f"Чужая сеть {tel['net_ext_pct']}%")
-        if tel['net_ext_pct'] > float(n.get('recover_pct', 15)):
-            green = False
-
-    return warn, crit, green
-
-
-class AdaptiveTunerEngine:
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._running = False
-        self._thread = None
-        self._warn_streak = 0
-        self._last_step_down_ts = 0.0
-        self._last_step_up_ts = 0.0
-        self._last_telemetry = {}
-        self._last_switch_reason = ''
-
-    def get_live_snapshot(self):
-        st = get_tuner_state()
-        return {
-            'state': st,
-            'telemetry': dict(self._last_telemetry),
-            'switch_reason': self._last_switch_reason
-        }
-
-    def _capture_baseline_if_needed(self, ip, port, st):
-        if st.get('dirty_flag') and st.get('baseline'):
-            return st['baseline']
-        prefs = get_qb_preferences(ip, port)
-        if not prefs:
-            return None
-        base = {k: int(prefs[k]) for k in ALLOWED_PREFS_KEYS if k in prefs and prefs[k] is not None}
-        update_tuner_state(baseline_json=json.dumps(base), dirty_flag=1)
-        return base
-
-    def restore_baseline(self, reason='Возврат эталона'):
-        st = get_tuner_state()
-        base = st.get('baseline') or {}
-        if not st.get('dirty_flag') or not base:
-            update_tuner_state(mode='off', dirty_flag=0, last_reason=reason, current_limits_json='{}')
-            return True, 'Эталон не требовал отката'
-
-        ip, port = detect_qbittorrent_port(cfg.config)
-        if port and check_qb_api_alive(ip, port):
-            if set_qb_preferences(ip, port, base):
-                update_tuner_state(mode='off', dirty_flag=0, last_reason=reason, current_limits_json=json.dumps(base))
-                add_tuner_history('off', 'restore', reason, self._last_telemetry, st.get('current_limits', {}).get('max_uploads', 0), base.get('max_uploads', 0))
-                write_log('automation', f"Авто-тюнер: {reason}")
-                return True, 'Эталонные настройки qB восстановлены'
-        return False, 'qBittorrent недоступен для отката эталона'
-
-    def set_mode(self, new_mode, auto_switch=None, is_manual=True, override_policy=None, clear_override=False):
-        with self._lock:
-            st = get_tuner_state()
-            upd = {}
-            if auto_switch is not None:
-                upd['auto_switch_enabled'] = 1 if auto_switch else 0
-            if clear_override:
-                upd['manual_override_until'] = 0
-                upd['manual_override_mode'] = ''
-
-            if new_mode == 'off':
-                upd['mode'] = 'off'
-                upd['manual_override_until'] = 0
-                upd['manual_override_mode'] = ''
-                update_tuner_state(**upd)
-                ok, msg = self.restore_baseline('Выключен пользователем')
-                return ok, msg
-
-            if new_mode not in ('performance', 'comfort'):
-                return False, 'Некорректный режим'
-
-            if is_manual and (upd.get('auto_switch_enabled', st.get('auto_switch_enabled'))):
-                pol = override_policy or st.get('manual_override_policy') or '2h'
-                upd['manual_override_policy'] = pol
-                upd['manual_override_mode'] = new_mode
-                upd['manual_override_until'] = (time.time() + 7200) if pol == '2h' else 0
-
-            upd['mode'] = new_mode
-            upd['last_reason'] = f"Переключён в режим «{new_mode}»"
-            update_tuner_state(**upd)
-            self._warn_streak = 0
-            return True, f"Режим тюнера: {new_mode}"
-
-    def _apply_if_changed(self, ip, port, cur_limits, new_limits, mode, ev_type, reason):
-        diff = {k: v for k, v in new_limits.items() if cur_limits.get(k) != v}
-        if not diff:
-            return False
-        if set_qb_preferences(ip, port, new_limits):
-            old_slots = cur_limits.get('max_uploads', 0)
-            new_slots = new_limits.get('max_uploads', 0)
-            update_tuner_state(current_limits_json=json.dumps(new_limits), last_action_ts=time.time(), last_reason=reason)
-            add_tuner_history(mode, ev_type, reason, self._last_telemetry, old_slots, new_slots)
-            write_log('automation', f"Авто-тюнер [{mode}] {ev_type}: {reason} (слоты {old_slots}->{new_slots})")
-            return True
-        return False
-
-    def _tick(self):
-        ip, port = detect_qbittorrent_port(cfg.config)
-        qb_up = check_qb_api_alive(ip, port) if port else False
-        live = get_live_torrent_info(ip, port) if qb_up else {}
-        tr = get_transfer_info(ip, port) if qb_up else {}
-        st = get_tuner_state()
-        profiles = get_tuner_profiles()
-        mode = st.get('mode')
-        prof = profiles.get(mode) or profiles.get('performance', {})
-
-        target_disk = prof.get('guards', {}).get('disk', {}).get('target_disk', '')
-        cur_slots = int((st.get('current_limits') or {}).get('max_uploads') or (st.get('baseline') or {}).get('max_uploads') or 20)
-        tel = telemetry_collector.collect(live, tr, cur_slots, target_disk=target_disk)
-        self._last_telemetry = tel
-
-        if not qb_up:
-            return
-
-        if st.get('mode') == 'off':
-            if st.get('dirty_flag'):
-                self.restore_baseline('Аварийное восстановление эталона (dirty_flag=1)')
-            return
-
-        if time.time() < cfg.getint('Panic_Active_Until', 0):
-            update_tuner_state(last_reason='Пауза: активен Panic Killswitch')
-            return
-
-        base = self._capture_baseline_if_needed(ip, port, st)
-        if base is None:
-            return
-
-        if st.get('auto_switch_enabled'):
-            rules = get_switch_rules()
-            sw_mode, sw_reason, _ = auto_switch_engine.evaluate(st, rules, tel)
-            self._last_switch_reason = sw_reason
-            if sw_mode in ('performance', 'comfort') and sw_mode != mode:
-                mode = sw_mode
-                prof = profiles.get(mode, prof)
-                update_tuner_state(mode=mode, last_reason=sw_reason)
-                add_tuner_history(mode, 'auto_switch', sw_reason, tel, cur_slots, cur_slots)
-        else:
-            self._last_switch_reason = ''
-
-        if prof.get('yield_to_turtle', True) and tr.get('use_alt_speed_limits'):
-            update_tuner_state(last_reason='Уступает ручной «Черепахе»')
-            return
-
-        cur_limits = st.get('current_limits') or {}
-        if not cur_limits:
-            init_lim = _compute_derived_limits(prof.get('max_uploads_start', 25), prof, tel['max_channel_bps'], baseline=base)
-            self._apply_if_changed(ip, port, {}, init_lim, mode, 'hold', f"Старт режима {mode}")
-            return
-
-        now = time.time()
-        warn_list, is_crit, all_green = _evaluate_guards(prof, tel)
-        self._warn_streak = (self._warn_streak + 1) if warn_list else 0
-
-        # Шаг ВНИЗ (раз в 20-30 сек при 2 замерах тревоги подряд)
-        if self._warn_streak >= 2 and (now - self._last_step_down_ts) >= 20.0:
-            self._last_step_down_ts = now
-            old_mu = int(cur_limits.get('max_uploads', prof.get('max_uploads_start', 20)))
-            step_d = max(5, int(round(old_mu * 0.2)))
-            new_mu = max(int(prof.get('max_uploads_min', 8)), old_mu - step_d)
-            act_up = cur_limits.get('max_active_uploads')
-            if is_crit and prof.get('active_uploads_mode') == 'range' and act_up is not None:
-                act_up = max(int(prof.get('active_uploads_min', 4)), int(act_up) - 2)
-            new_lim = _compute_derived_limits(new_mu, prof, tel['max_channel_bps'], squeezed=True, act_up_val=act_up, baseline=base)
-            cd = max(30, int(prof.get('cooldown_sec', 180)))
-            update_tuner_state(cooldown_until=now + cd)
-            self._apply_if_changed(ip, port, cur_limits, new_lim, mode, 'step_down', f"Защита: {', '.join(warn_list)}")
-            return
-
-        # Шаг ВВЕРХ (раз в 90-120 сек)
-        if (now - self._last_step_up_ts) >= 90.0 and now >= float(st.get('cooldown_until') or 0):
-            if all_green and tel['channel_pct'] < float(prof.get('channel_target_min', 85)) and tel['slots_fill_pct'] >= 75.0:
-                self._last_step_up_ts = now
-                old_mu = int(cur_limits.get('max_uploads', prof.get('max_uploads_start', 20)))
-                step_u = max(1, int(prof.get('step_up_size', 5)))
-                new_mu = min(int(prof.get('max_uploads_max', 150)), old_mu + step_u)
-                act_up = cur_limits.get('max_active_uploads')
-                if prof.get('active_uploads_mode') == 'range' and act_up is not None:
-                    act_up = min(int(prof.get('active_uploads_max', 15)), int(act_up) + 1)
-                new_lim = _compute_derived_limits(new_mu, prof, tel['max_channel_bps'], squeezed=False, act_up_val=act_up, baseline=base)
-                self._apply_if_changed(ip, port, cur_limits, new_lim, mode, 'step_up', f"Разгон (канал {tel['channel_pct']}%, слоты {tel['slots_fill_pct']}%)")
-
-    def start(self):
-        if self._running:
-            return
-        self._running = True
-
-        def loop():
-            time.sleep(3)
-            st = get_tuner_state()
-            if st.get('dirty_flag') and st.get('mode') == 'off':
-                self.restore_baseline('Восстановление эталона при старте tbr')
-            while self._running:
-                try:
-                    self._tick()
-                except Exception as e:
-                    write_error_log("AdaptiveTunerEngine tick", e)
-                for _ in range(10):
-                    if not self._running:
-                        return
-                    time.sleep(1)
-
-        self._thread = threading.Thread(target=loop, daemon=True)
-        self._thread.start()
-
-    def stop_and_restore(self):
-        self._running = False
-        st = get_tuner_state()
-        if st.get('dirty_flag'):
-            self.restore_baseline('Штатный откат при выходе tbr')
-
-
-tuner_engine = AdaptiveTunerEngine()
-```
-
----
-
-#### `web/routes/tuner_bp.py`
-```python
-# web/routes/tuner_bp.py
-import datetime
-from flask import Blueprint, request, jsonify, g
-from utils.config import cfg
-from core.qb_api import detect_qbittorrent_port, get_live_torrent_info
-from core.disk_monitor import list_active_disks
-from core.tuner_db import (
-    get_tuner_profiles, save_tuner_profile, reset_tuner_profile,
-    get_switch_rules, save_switch_rules, get_tuner_history
-)
-from core.tuner_telemetry import list_running_processes
-from core.tuner_engine import tuner_engine
-
-tuner_bp = Blueprint('tuner_bp', __name__)
-
-
-def _not_admin():
-    return g.get('role') != 'admin'
-
-
-@tuner_bp.route('/api/tuner/state')
-def api_tuner_state():
-    if _not_admin():
-        return jsonify({'error': 'Только для Admin'}), 403
-    snap = tuner_engine.get_live_snapshot()
-    hist = get_tuner_history(limit=30)
-    for h in hist:
-        h['time'] = datetime.datetime.fromtimestamp(h['ts']).strftime('%H:%M:%S')
-    snap['history'] = hist
-    ip, port = detect_qbittorrent_port(cfg.config)
-    live = get_live_torrent_info(ip, port) if port else {}
-    snap['available_disks'] = list_active_disks(live)
-    return jsonify(snap)
-
-
-@tuner_bp.route('/api/tuner/mode', methods=['POST'])
-def api_tuner_mode():
-    if _not_admin():
-        return jsonify({'success': False, 'error': 'Только для Admin'}), 403
-    d = request.get_json(silent=True) or {}
-    mode = str(d.get('mode', 'off')).strip()
-    auto_sw = d.get('auto_switch')
-    clear_ov = bool(d.get('clear_override', False))
-    ov_pol = d.get('override_policy')
-    is_manual = bool(d.get('is_manual', True))
-    ok, msg = tuner_engine.set_mode(
-        mode, auto_switch=auto_sw, is_manual=is_manual,
-        override_policy=ov_pol, clear_override=clear_ov
-    )
-    return jsonify({'success': ok, 'message': msg}), (200 if ok else 400)
-
-
-@tuner_bp.route('/api/tuner/restore_baseline', methods=['POST'])
-def api_tuner_restore_baseline():
-    if _not_admin():
-        return jsonify({'success': False, 'error': 'Только для Admin'}), 403
-    ok, msg = tuner_engine.restore_baseline('Ручной возврат эталона')
-    return jsonify({'success': ok, 'message': msg}), (200 if ok else 400)
-
-
-@tuner_bp.route('/api/tuner/profiles', methods=['GET', 'POST'])
-def api_tuner_profiles():
-    if _not_admin():
-        return jsonify({'error': 'Только для Admin'}), 403
-    if request.method == 'GET':
-        return jsonify({'profiles': get_tuner_profiles()})
-    d = request.get_json(silent=True) or {}
-    reset_mode = d.get('reset_mode')
-    if reset_mode in ('performance', 'comfort'):
-        prof = reset_tuner_profile(reset_mode)
-        return jsonify({'success': True, 'profile': prof})
-    mode = d.get('mode')
-    profile_data = d.get('profile')
-    if mode not in ('performance', 'comfort') or not isinstance(profile_data, dict):
-        return jsonify({'success': False, 'error': 'Некорректные данные профиля'}), 400
-    saved = save_tuner_profile(mode, profile_data)
-    return jsonify({'success': True, 'profile': saved})
-
-
-@tuner_bp.route('/api/tuner/rules', methods=['GET', 'POST'])
-def api_tuner_rules():
-    if _not_admin():
-        return jsonify({'error': 'Только для Admin'}), 403
-    if request.method == 'GET':
-        return jsonify({'rules': get_switch_rules()})
-    d = request.get_json(silent=True) or {}
-    saved = save_switch_rules(d.get('rules') if isinstance(d.get('rules'), dict) else d)
-    return jsonify({'success': True, 'rules': saved})
-
-
-@tuner_bp.route('/api/tuner/processes')
-def api_tuner_processes():
-    if _not_admin():
-        return jsonify({'error': 'Только для Admin'}), 403
-    return jsonify({'processes': list_running_processes()})
-```
+### План (Пачка 3 — конструктор профилей, приоритетные правила, каталог программ и человечный UI)
+1. `web/templates/partials/tab_tuner.html` — полный рефакторинг на человечный язык с подсказками `?`, динамическая панель профилей (`+ Новый`, `Клонировать`, `Имя/Иконка`, `Удалить`, `Сбросить стандартные`), приоритетный список и конструктор правил, плюс модалка выбора программ (чипы + каталог + умный список запущенных на ПК).
+2. `web/static/tuner_ui.js` — CRUD профилей, глобальные настройки (`Частота проверки ПК`, `Профиль по умолчанию`, политика ручного выбора), телеметрия и обновление динамического бейджа в шапке.
+3. `web/static/tuner_rules_ui.js` *(новый)* — приоритетная таблица правил (`↑`/`↓`), комбинированные условия (программы + расписание + нагрузка), управление чипами программ и каталог/пикер процессов.
+4. `web/static/style.css` — стили чипов, кнопок подсказок `?`, строк приоритета правил и адаптив для мобильных экранов PWA.
+5. `web/templates/index.html` — подключаем `tuner_rules_ui.js`.
 
 ---
 
 #### `web/templates/partials/tab_tuner.html`
 ```html
-<!-- Адаптивный авто-тюнер qBittorrent (ТЗ #58) -->
+<!-- Адаптивный авто-тюнер qBittorrent (ТЗ #58 Апгрейд) -->
 <div class="card admin-only" id="tuner-main-card">
     <div class="row-between mb-8">
         <div class="row-gap" style="flex-wrap:wrap;">
@@ -956,57 +18,57 @@ def api_tuner_processes():
             <button id="tuner-btn-clear-ov" class="btn btn-secondary btn-xs hidden" onclick="clearTunerOverride()">🔄 Вернуть авто</button>
         </div>
         <div class="row-gap" style="flex-wrap:wrap;">
-            <button id="tuner-btn-off" class="btn btn-secondary btn-xs" onclick="setTunerMode('off')">Выкл</button>
-            <button id="tuner-btn-comfort" class="btn btn-secondary btn-xs" onclick="setTunerMode('comfort')">🛋️ Комфорт</button>
-            <button id="tuner-btn-performance" class="btn btn-secondary btn-xs" onclick="setTunerMode('performance')">🚀 Производ.</button>
-            <label class="row-gap pointer lbl-xs" style="margin-left:4px; white-space:nowrap;"><input type="checkbox" id="tuner-auto-chk" onchange="toggleTunerAutoSwitch()"> <b>Авто</b></label>
-            <button class="btn btn-secondary btn-xs" onclick="restoreTunerBaseline()" title="Откатить настройки qB к исходному эталону">♻️ Эталон</button>
+            <div id="tuner-mode-pills" class="row-gap" style="flex-wrap:wrap; gap:4px;"></div>
+            <label class="row-gap pointer lbl-xs no-wrap" style="margin-left:4px;"><input type="checkbox" id="tuner-auto-chk" onchange="toggleTunerAutoSwitch()"> <b>Авто</b></label>
+            <button class="btn btn-secondary btn-xs" onclick="restoreTunerBaseline()">♻️ Вернуть исходные настройки qB</button>
         </div>
     </div>
 
     <!-- Метрики в реальном времени -->
     <div class="tuner-telemetry-grid mb-10">
-        <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap" id="tel-disk-title">Диск I/O</div><div id="tel-disk" class="val-sm">—</div></div>
-        <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap">Чужой CPU</div><div id="tel-cpu" class="val-sm">—</div></div>
-        <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap">RAM своб.</div><div id="tel-ram" class="val-sm">—</div></div>
+        <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap" id="tel-disk-title">Загрузка диска</div><div id="tel-disk" class="val-sm">—</div></div>
+        <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap">Проц (другие прог.)</div><div id="tel-cpu" class="val-sm">—</div></div>
+        <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap">Запас памяти (RAM)</div><div id="tel-ram" class="val-sm">—</div></div>
         <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap">Канал qB</div><div id="tel-chan" class="val-sm accent-txt">—</div></div>
-        <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap">Чужая сеть</div><div id="tel-net" class="val-sm">—</div></div>
-        <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap">Слоты / Заполн.</div><div id="tel-slots" class="val-sm blue-txt">—</div></div>
+        <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap">Сеть (другие прог.)</div><div id="tel-net" class="val-sm">—</div></div>
+        <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap">Пиров / Заполн.</div><div id="tel-slots" class="val-sm blue-txt">—</div></div>
     </div>
 
     <!-- Лента решений -->
-    <div class="scroll-box mb-12" style="max-height:140px; border:1px solid var(--border); border-radius:6px;">
+    <div class="scroll-box mb-12" style="max-height:135px; border:1px solid var(--border); border-radius:6px;">
         <table>
-            <thead><tr><th>Время</th><th>Режим</th><th>Событие</th><th>Причина</th><th>Слоты</th></tr></thead>
+            <thead><tr><th>Время</th><th>Профиль</th><th>Событие</th><th>Причина</th><th>Пиры</th></tr></thead>
             <tbody id="tuner-history-tbody"><tr><td colspan="5" class="center-msg">Нет событий</td></tr></tbody>
         </table>
     </div>
 
     <div class="tuner-columns-grid">
-        <!-- Левая колонка: Профили -->
+        <!-- Левая колонка: Конструктор профилей -->
         <div class="tuner-box">
-            <div class="row-between mb-8">
-                <div class="row-gap">
-                    <button id="tp-tab-performance" class="btn btn-xs" onclick="selectTunerProfileTab('performance')">🚀 Производительность</button>
-                    <button id="tp-tab-comfort" class="btn btn-secondary btn-xs" onclick="selectTunerProfileTab('comfort')">🛋️ Комфорт</button>
-                </div>
-                <div class="row-gap">
-                    <button class="btn btn-secondary btn-xs" onclick="resetTunerProfile()" title="Сбросить профиль к заводским">Сброс</button>
-                    <button class="btn btn-xs" onclick="saveTunerProfile()">💾 Сохранить</button>
+            <div class="row-between mb-8" style="gap:6px;">
+                <select id="tp-profile-select" class="form-control grow-1" style="font-weight:700;" onchange="selectTunerProfile(this.value)"></select>
+                <div class="row-gap" style="gap:4px; flex-wrap:wrap;">
+                    <button class="btn btn-secondary btn-xs" onclick="createNewTunerProfile()" title="Создать новый профиль">+ Новый</button>
+                    <button class="btn btn-secondary btn-xs" onclick="cloneTunerProfile()" title="Клонировать текущий профиль">📋 Клон</button>
+                    <button class="btn btn-secondary btn-xs" onclick="renameTunerProfile()" title="Переименовать / сменить иконку">✏️</button>
+                    <button class="btn btn-danger btn-xs" onclick="deleteTunerProfile()" title="Удалить профиль">🗑️</button>
                 </div>
             </div>
+            <div class="row-between mb-8">
+                <button class="btn btn-secondary btn-xs" onclick="resetBuiltinTunerPresets()">🔄 Сбросить стандартные</button>
+                <button class="btn btn-xs" onclick="saveTunerProfile()">💾 Сохранить профиль</button>
+            </div>
 
-            <!-- Главные параметры слотов -->
-            <div class="tuner-section-title">СЛОТЫ ОТДАЧИ (MAX_UPLOADS)</div>
+            <div class="tuner-section-title">ПИРЫ ОТДАЧИ (СЛОТЫ)</div>
             <div class="tuner-fields-row mb-8">
-                <div class="tuner-field"><span class="lbl-micro">Мин. слотов</span><input id="tp-mu-min" type="number" class="form-control tuner-num-input"></div>
-                <div class="tuner-field"><span class="lbl-micro">Макс. слотов</span><input id="tp-mu-max" type="number" class="form-control tuner-num-input"></div>
-                <div class="tuner-field"><span class="lbl-micro">Стартовые</span><input id="tp-mu-start" type="number" class="form-control tuner-num-input"></div>
+                <div class="tuner-field"><span class="lbl-micro">Мин. пиров</span><input id="tp-mu-min" type="number" class="form-control tuner-num-input"></div>
+                <div class="tuner-field"><span class="lbl-micro">Макс. пиров</span><input id="tp-mu-max" type="number" class="form-control tuner-num-input"></div>
+                <div class="tuner-field"><span class="lbl-micro">Стартовых</span><input id="tp-mu-start" type="number" class="form-control tuner-num-input"></div>
             </div>
 
             <div class="tuner-fields-row mb-8">
                 <div class="tuner-field grow-1">
-                    <span class="lbl-micro">max_active_uploads</span>
+                    <span class="lbl-micro">Макс. активных раздач</span>
                     <select id="tp-act-mode" class="form-control" onchange="syncTunerDisabledStates()">
                         <option value="keep">Не менять (эталон)</option>
                         <option value="range">Диапазон Min..Max</option>
@@ -1017,7 +79,6 @@ def api_tuner_processes():
                 <div class="tuner-field" id="wrap-tp-act-max"><span class="lbl-micro">Max</span><input id="tp-act-max" type="number" class="form-control tuner-num-input"></div>
             </div>
 
-            <!-- Скорость и канал -->
             <div class="tuner-section-title">ЦЕЛЬ КАНАЛА И СКОРОСТИ</div>
             <div class="tuner-fields-row mb-8">
                 <div class="tuner-field"><span class="lbl-micro">Цель канала (От %)</span><input id="tp-ch-min" type="number" class="form-control tuner-num-input"></div>
@@ -1034,149 +95,162 @@ def api_tuner_processes():
                 <div class="tuner-field" id="wrap-tp-sq-dl"><span class="lbl-micro">Сжать DL %</span><input id="tp-sq-dl" type="number" class="form-control tuner-num-input"></div>
             </div>
 
-            <!-- Ограничители железа -->
-            <div class="tuner-section-title">ОГРАНИЧИТЕЛИ ЖЕЛЕЗА И СЕТИ</div>
+            <div class="tuner-section-title">ЗАЩИТА ЖЕЛЕЗА И ИНТЕРНЕТА</div>
             <div class="tuner-guards-list mb-8">
-                <!-- Диск -->
                 <div class="tuner-guard-row" id="guard-row-disk">
-                    <label class="row-gap pointer lbl-xs tuner-guard-label no-wrap"><input id="tp-g-disk-en" type="checkbox" onchange="syncTunerDisabledStates()"> <span>Диск I/O</span></label>
-                    <div class="tuner-field" style="flex: 1.5 1 125px; min-width: 110px;">
-                        <span class="lbl-micro">Целевой диск</span>
-                        <select id="tp-g-disk-target" class="form-control" style="padding:4px 6px; font-size:11px;" onchange="syncTunerDisabledStates()"></select>
-                    </div>
+                    <label class="row-gap pointer lbl-xs tuner-guard-label no-wrap"><input id="tp-g-disk-en" type="checkbox" onchange="syncTunerDisabledStates()"> <span>Загрузка диска</span></label>
+                    <div class="tuner-field" style="flex:1.5 1 120px; min-width:105px;"><span class="lbl-micro">Какой диск</span><select id="tp-g-disk-target" class="form-control" style="padding:4px 6px; font-size:11px;" onchange="syncTunerDisabledStates()"></select></div>
                     <div class="tuner-field"><span class="lbl-micro">Тревога %</span><input id="tp-g-disk-warn" type="number" class="form-control tuner-num-input"></div>
                     <div class="tuner-field"><span class="lbl-micro">Крит. %</span><input id="tp-g-disk-crit" type="number" class="form-control tuner-num-input"></div>
                     <div class="tuner-field"><span class="lbl-micro">Возврат %</span><input id="tp-g-disk-rec" type="number" class="form-control tuner-num-input"></div>
                 </div>
-
-                <!-- CPU -->
                 <div class="tuner-guard-row" id="guard-row-cpu">
-                    <label class="row-gap pointer lbl-xs tuner-guard-label no-wrap"><input id="tp-g-cpu-en" type="checkbox" onchange="syncTunerDisabledStates()"> <span>Чужой CPU</span></label>
+                    <label class="row-gap pointer lbl-xs tuner-guard-label no-wrap"><input id="tp-g-cpu-en" type="checkbox" onchange="syncTunerDisabledStates()"> <span>Проц (другие прог.)</span></label>
                     <div class="tuner-field"><span class="lbl-micro">Тревога %</span><input id="tp-g-cpu-warn" type="number" class="form-control tuner-num-input"></div>
                     <div class="tuner-field"><span class="lbl-micro">Возврат %</span><input id="tp-g-cpu-rec" type="number" class="form-control tuner-num-input"></div>
                 </div>
-
-                <!-- RAM -->
                 <div class="tuner-guard-row" id="guard-row-ram">
-                    <label class="row-gap pointer lbl-xs tuner-guard-label no-wrap"><input id="tp-g-ram-en" type="checkbox" onchange="syncTunerDisabledStates()"> <span>Своб. RAM</span></label>
+                    <label class="row-gap pointer lbl-xs tuner-guard-label no-wrap"><input id="tp-g-ram-en" type="checkbox" onchange="syncTunerDisabledStates()"> <span>Запас памяти</span></label>
                     <div class="tuner-field"><span class="lbl-micro">Мин. % (тревога)</span><input id="tp-g-ram-min" type="number" class="form-control tuner-num-input"></div>
                     <div class="tuner-field"><span class="lbl-micro">Возврат %</span><input id="tp-g-ram-rec" type="number" class="form-control tuner-num-input"></div>
                 </div>
-
-                <!-- Сеть -->
                 <div class="tuner-guard-row" id="guard-row-net">
-                    <label class="row-gap pointer lbl-xs tuner-guard-label no-wrap"><input id="tp-g-net-en" type="checkbox" onchange="syncTunerDisabledStates()"> <span>Чужая сеть</span></label>
+                    <label class="row-gap pointer lbl-xs tuner-guard-label no-wrap"><input id="tp-g-net-en" type="checkbox" onchange="syncTunerDisabledStates()"> <span>Сеть (другие прог.)</span></label>
                     <div class="tuner-field"><span class="lbl-micro">Тревога %</span><input id="tp-g-net-warn" type="number" class="form-control tuner-num-input"></div>
                     <div class="tuner-field"><span class="lbl-micro">Возврат %</span><input id="tp-g-net-rec" type="number" class="form-control tuner-num-input"></div>
                 </div>
             </div>
 
-            <!-- Аккордеон: Тонкие настройки -->
             <details class="tuner-details">
-                <summary>⚙️ Тонкие настройки слотов и задержек</summary>
+                <summary>⚙️ Тонкие настройки пиров и задержек</summary>
                 <div class="tuner-details-body">
                     <div class="tuner-fields-row mb-8 align-end">
-                        <div class="tuner-field"><span class="lbl-micro">На торрент (Min)</span><input id="tp-pt-up-min" type="number" class="form-control tuner-num-input"></div>
-                        <div class="tuner-field"><span class="lbl-micro">На торрент (Max)</span><input id="tp-pt-up-max" type="number" class="form-control tuner-num-input"></div>
+                        <div class="tuner-field"><span class="lbl-micro">Пиров отдачи на раздачу (Min)</span><input id="tp-pt-up-min" type="number" class="form-control tuner-num-input"></div>
+                        <div class="tuner-field"><span class="lbl-micro">Пиров отдачи на раздачу (Max)</span><input id="tp-pt-up-max" type="number" class="form-control tuner-num-input"></div>
                         <label class="row-gap pointer lbl-xs no-wrap" style="padding-bottom:5px;"><input id="tp-pt-up-auto" type="checkbox" onchange="syncTunerDisabledStates()"> Авто 28%</label>
                     </div>
-
                     <div class="tuner-fields-row mb-8 align-end">
-                        <div class="tuner-field"><span class="lbl-micro">Соединений (Min)</span><input id="tp-mc-min" type="number" class="form-control tuner-num-input"></div>
-                        <div class="tuner-field"><span class="lbl-micro">Соединений (Max)</span><input id="tp-mc-max" type="number" class="form-control tuner-num-input"></div>
+                        <div class="tuner-field"><span class="lbl-micro">Соединений всего (Min)</span><input id="tp-mc-min" type="number" class="form-control tuner-num-input"></div>
+                        <div class="tuner-field"><span class="lbl-micro">Соединений всего (Max)</span><input id="tp-mc-max" type="number" class="form-control tuner-num-input"></div>
                         <label class="row-gap pointer lbl-xs no-wrap" style="padding-bottom:5px;"><input id="tp-mc-auto" type="checkbox" onchange="syncTunerDisabledStates()"> Авто ×4</label>
                     </div>
-
                     <div class="tuner-fields-row mb-8">
-                        <div class="tuner-field"><span class="lbl-micro">Connec/торр. (Min)</span><input id="tp-pt-con-min" type="number" class="form-control tuner-num-input"></div>
-                        <div class="tuner-field"><span class="lbl-micro">Connec/торр. (Max)</span><input id="tp-pt-con-max" type="number" class="form-control tuner-num-input"></div>
-                        <div class="tuner-field"><span class="lbl-micro">Кулдаун (сек)</span><input id="tp-cd-sec" type="number" class="form-control tuner-num-input"></div>
-                        <div class="tuner-field"><span class="lbl-micro">Шаг разгона (+слоты)</span><input id="tp-step-up" type="number" class="form-control tuner-num-input"></div>
+                        <div class="tuner-field"><span class="lbl-micro">Соед. на раздачу (Min)</span><input id="tp-pt-con-min" type="number" class="form-control tuner-num-input"></div>
+                        <div class="tuner-field"><span class="lbl-micro">Соед. на раздачу (Max)</span><input id="tp-pt-con-max" type="number" class="form-control tuner-num-input"></div>
+                        <div class="tuner-field"><span class="lbl-micro">Пауза перед разгоном (с) <span class="tuner-help" onclick="alert(this.title)" title="Сколько ждать после снижения пиров, прежде чем снова пробовать повышать">?</span></span><input id="tp-cd-sec" type="number" class="form-control tuner-num-input"></div>
+                        <div class="tuner-field"><span class="lbl-micro">Шаг прибавления пиров</span><input id="tp-step-up" type="number" class="form-control tuner-num-input"></div>
                     </div>
-
-                    <label class="row-gap pointer lbl-xs no-wrap">
-                        <input id="tp-yield-turtle" type="checkbox"> Уступать ручной «Черепахе» в клиенте
-                    </label>
+                    <label class="row-gap pointer lbl-xs no-wrap"><input id="tp-yield-turtle" type="checkbox"> Не мешать ручному лимиту скорости в qB</label>
                 </div>
             </details>
         </div>
 
-        <!-- Правая колонка: Правила автопереключения -->
+        <!-- Правая колонка: Общие настройки + Приоритетные правила -->
         <div class="tuner-box">
             <div class="row-between mb-8">
-                <span class="lbl-sm" style="margin:0; font-weight:700;">🧠 ПРАВИЛА АВТОПЕРЕКЛЮЧЕНИЯ</span>
-                <button class="btn btn-xs" onclick="saveTunerRules()">💾 Сохранить</button>
+                <span class="lbl-sm" style="margin:0; font-weight:700;">🧠 АВТОПЕРЕКЛЮЧЕНИЕ ПРОФИЛЕЙ</span>
+                <button class="btn btn-xs" onclick="saveTunerGlobalSettings()">💾 Общие</button>
             </div>
-
             <div class="tuner-fields-row mb-8">
+                <div class="tuner-field grow-1"><span class="lbl-micro">Профиль по умолчанию</span><select id="tr-def-profile" class="form-control"></select></div>
+                <div class="tuner-field"><span class="lbl-micro">Частота проверки ПК (сек) <span class="tuner-help" onclick="alert(this.title)" title="Как часто проверять запущенные игры и загрузку системы (2..30 сек)">?</span></span><input id="tr-poll-sec" type="number" min="2" max="30" class="form-control tuner-num-input" value="3"></div>
                 <div class="tuner-field grow-1">
-                    <span class="lbl-micro">Режим по умолчанию</span>
-                    <select id="tr-def-mode" class="form-control">
-                        <option value="performance">Производительность</option>
-                        <option value="comfort">Комфорт</option>
-                    </select>
-                </div>
-                <div class="tuner-field grow-1">
-                    <span class="lbl-micro">Политика Manual Override</span>
+                    <span class="lbl-micro">Если я переключил вручную:</span>
                     <select id="tr-ov-policy" class="form-control">
-                        <option value="2h">На 2 часа</option>
-                        <option value="until_schedule">До смены расписания</option>
-                        <option value="until_process_exit">До закрытия процесса</option>
+                        <option value="2h">Уступать 2 часа</option>
+                        <option value="until_window">До конца текущего окна</option>
+                        <option value="until_rule">Пока не сработает правило</option>
                     </select>
                 </div>
             </div>
 
-            <!-- Расписание -->
             <div class="tuner-block-divider mb-8">
                 <div class="row-between mb-6">
-                    <span class="lbl-xs"><b>⏰ Расписание (с переходом через полночь)</b></span>
-                    <button class="btn btn-secondary btn-xs" onclick="addTunerScheduleRow()">+ Окно</button>
+                    <span class="lbl-xs"><b>📋 Приоритет правил (сверху вниз):</b></span>
+                    <button class="btn btn-xs" onclick="openNewRuleForm()">+ Добавить правило</button>
                 </div>
-                <div id="tr-sched-list" class="col-gap" style="max-height:110px; overflow-y:auto;"></div>
+                <div id="tuner-rules-list" class="col-gap scroll-box" style="max-height:190px; gap:6px;"></div>
             </div>
 
-            <!-- Процессы (Watchlist) -->
-            <div class="tuner-block-divider mb-8" id="rules-box-proc">
+            <!-- Форма правила -->
+            <div id="tuner-rule-editor" class="tuner-block-divider hidden">
                 <div class="row-between mb-6">
-                    <label class="row-gap pointer lbl-xs no-wrap"><input id="tr-proc-en" type="checkbox" onchange="syncTunerDisabledStates()"> <b>🎮 Процессы (Watchlist)</b></label>
-                    <div class="row-gap">
-                        <select id="tr-proc-mode" class="form-control" style="padding:2px 4px; font-size:11px;">
-                            <option value="comfort">→ Комфорт</option>
-                            <option value="performance">→ Производ.</option>
-                        </select>
-                        <button class="btn btn-secondary btn-xs" onclick="loadRunningProcessesPicker()">🖥️ Процессы ПК</button>
+                    <b id="tr-edit-title" class="lbl-xs accent-txt">Новое правило</b>
+                    <button class="btn btn-secondary btn-xs" onclick="cancelTunerRuleEdit()">✕</button>
+                </div>
+                <div class="tuner-fields-row mb-8">
+                    <div class="tuner-field grow-1"><span class="lbl-micro">Название правила</span><input id="tr-f-name" class="form-control" placeholder="Напр: Контра / Ночной турбо"></div>
+                    <div class="tuner-field grow-1"><span class="lbl-micro">Целевой профиль</span><select id="tr-f-target" class="form-control"></select></div>
+                </div>
+
+                <div class="tuner-rule-cond mb-6">
+                    <div class="row-between mb-6">
+                        <label class="row-gap pointer lbl-xs"><input id="tr-f-proc-en" type="checkbox" onchange="syncRuleFormDisabledStates()"> <b>🎮 Отслеживаемые программы</b></label>
+                        <button type="button" class="btn btn-secondary btn-xs" onclick="openAppsPickerModal()">🔍 Выбрать программы</button>
+                    </div>
+                    <div id="tr-f-proc-chips" class="row-wrap" style="gap:4px;"></div>
+                </div>
+
+                <div class="tuner-rule-cond mb-6" id="tr-f-sched-box">
+                    <label class="row-gap pointer lbl-xs mb-6"><input id="tr-f-sched-en" type="checkbox" onchange="syncRuleFormDisabledStates()"> <b>⏰ Расписание по времени</b></label>
+                    <div class="row-wrap mb-6" style="gap:6px;">
+                        <input id="tr-f-sched-start" type="time" class="form-control" style="width:95px;" value="01:00">
+                        <span>—</span>
+                        <input id="tr-f-sched-end" type="time" class="form-control" style="width:95px;" value="08:00">
+                    </div>
+                    <div class="row-wrap" style="gap:6px;">
+                        <label class="lbl-xs"><input type="checkbox" class="tr-f-day" value="0" checked> Пн</label>
+                        <label class="lbl-xs"><input type="checkbox" class="tr-f-day" value="1" checked> Вт</label>
+                        <label class="lbl-xs"><input type="checkbox" class="tr-f-day" value="2" checked> Ср</label>
+                        <label class="lbl-xs"><input type="checkbox" class="tr-f-day" value="3" checked> Чт</label>
+                        <label class="lbl-xs"><input type="checkbox" class="tr-f-day" value="4" checked> Пт</label>
+                        <label class="lbl-xs"><input type="checkbox" class="tr-f-day" value="5" checked> Сб</label>
+                        <label class="lbl-xs"><input type="checkbox" class="tr-f-day" value="6" checked> Вс</label>
                     </div>
                 </div>
-                <input id="tr-proc-names" class="form-control mb-6" placeholder="cs2.exe, dota2.exe, obs64.exe">
-                <div id="tr-proc-picker" class="hidden row-wrap mb-6" style="max-height:85px; overflow-y:auto; gap:4px;"></div>
-                <div class="tuner-fields-row">
-                    <div class="tuner-field"><span class="lbl-micro">Задержка входа (сек)</span><input id="tr-proc-enter" type="number" class="form-control tuner-num-input"></div>
-                    <div class="tuner-field"><span class="lbl-micro">Задержка выхода (сек)</span><input id="tr-proc-exit" type="number" class="form-control tuner-num-input"></div>
-                </div>
-            </div>
 
-            <!-- Внешняя нагрузка -->
-            <div class="tuner-block-divider" id="rules-box-ext">
-                <div class="row-between mb-6">
-                    <label class="row-gap pointer lbl-xs no-wrap"><input id="tr-ext-en" type="checkbox" onchange="syncTunerDisabledStates()"> <b>⚡ Активность чужих программ</b></label>
-                    <select id="tr-ext-mode" class="form-control" style="width:115px; padding:2px 4px; font-size:11px;">
-                        <option value="comfort">→ Комфорт</option>
-                        <option value="performance">→ Производ.</option>
-                    </select>
+                <div class="tuner-rule-cond mb-8" id="tr-f-ext-box">
+                    <label class="row-gap pointer lbl-xs mb-6"><input id="tr-f-ext-en" type="checkbox" onchange="syncRuleFormDisabledStates()"> <b>⚡ Нагрузка от других программ</b></label>
+                    <div class="tuner-guard-row mb-6"><label class="lbl-xs tuner-guard-label no-wrap"><input id="tr-f-cpu-en" type="checkbox" onchange="syncRuleFormDisabledStates()"> Проц %</label><div class="tuner-field"><span class="lbl-micro">Тревога</span><input id="tr-f-cpu-w" type="number" class="form-control tuner-num-input"></div><div class="tuner-field"><span class="lbl-micro">Возврат</span><input id="tr-f-cpu-r" type="number" class="form-control tuner-num-input"></div></div>
+                    <div class="tuner-guard-row mb-6"><label class="lbl-xs tuner-guard-label no-wrap"><input id="tr-f-net-en" type="checkbox" onchange="syncRuleFormDisabledStates()"> Сеть %</label><div class="tuner-field"><span class="lbl-micro">Тревога</span><input id="tr-f-net-w" type="number" class="form-control tuner-num-input"></div><div class="tuner-field"><span class="lbl-micro">Возврат</span><input id="tr-f-net-r" type="number" class="form-control tuner-num-input"></div></div>
+                    <div class="tuner-guard-row mb-6"><label class="lbl-xs tuner-guard-label no-wrap"><input id="tr-f-ram-en" type="checkbox" onchange="syncRuleFormDisabledStates()"> Память %</label><div class="tuner-field"><span class="lbl-micro">Мин.</span><input id="tr-f-ram-w" type="number" class="form-control tuner-num-input"></div><div class="tuner-field"><span class="lbl-micro">Возврат</span><input id="tr-f-ram-r" type="number" class="form-control tuner-num-input"></div></div>
+                    <div class="tuner-guard-row"><label class="lbl-xs tuner-guard-label no-wrap"><input id="tr-f-disk-en" type="checkbox" onchange="syncRuleFormDisabledStates()"> Диск %</label><div class="tuner-field"><span class="lbl-micro">Тревога</span><input id="tr-f-disk-w" type="number" class="form-control tuner-num-input"></div><div class="tuner-field"><span class="lbl-micro">Возврат</span><input id="tr-f-disk-r" type="number" class="form-control tuner-num-input"></div></div>
                 </div>
-                <div class="tuner-fields-row mb-6">
-                    <div class="tuner-field"><span class="lbl-micro">CPU Вход %</span><input id="tr-ext-cpu-w" type="number" class="form-control tuner-num-input"></div>
-                    <div class="tuner-field"><span class="lbl-micro">CPU Выход %</span><input id="tr-ext-cpu-r" type="number" class="form-control tuner-num-input"></div>
-                    <div class="tuner-field"><span class="lbl-micro">Сеть Вход %</span><input id="tr-ext-net-w" type="number" class="form-control tuner-num-input"></div>
-                    <div class="tuner-field"><span class="lbl-micro">Сеть Выход %</span><input id="tr-ext-net-r" type="number" class="form-control tuner-num-input"></div>
+
+                <div class="tuner-fields-row mb-8">
+                    <div class="tuner-field"><span class="lbl-micro">Ждать при запуске (сек)</span><input id="tr-f-enter" type="number" class="form-control tuner-num-input" value="10"></div>
+                    <div class="tuner-field"><span class="lbl-micro">Ждать после закрытия (сек)</span><input id="tr-f-exit" type="number" class="form-control tuner-num-input" value="180"></div>
                 </div>
-                <div class="tuner-fields-row mb-6">
-                    <div class="tuner-field"><span class="lbl-micro">RAM Мин. %</span><input id="tr-ext-ram-w" type="number" class="form-control tuner-num-input"></div>
-                    <div class="tuner-field"><span class="lbl-micro">RAM Возвр. %</span><input id="tr-ext-ram-r" type="number" class="form-control tuner-num-input"></div>
-                    <div class="tuner-field"><span class="lbl-micro">Вход (сек)</span><input id="tr-ext-enter" type="number" class="form-control tuner-num-input"></div>
-                    <div class="tuner-field"><span class="lbl-micro">Выход (сек)</span><input id="tr-ext-exit" type="number" class="form-control tuner-num-input"></div>
+                <div class="row-end"><button class="btn btn-secondary btn-xs" onclick="cancelTunerRuleEdit()">Отмена</button><button class="btn btn-xs" onclick="saveTunerRuleForm()">💾 Сохранить правило</button></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Диалог дружелюбного выбора программ -->
+<div id="tuner-apps-modal" class="modal-backdrop" onclick="if(event.target===this)closeAppsPickerModal()">
+    <div class="modal" style="max-width:640px; max-height:86vh; display:flex; flex-direction:column;">
+        <div class="row-between mb-8">
+            <div class="card-title" style="margin:0;">🎮 ВЫБОР ПРОГРАММ ДЛЯ ОТСЛЕЖИВАНИЯ</div>
+            <button class="btn btn-secondary btn-xs" onclick="closeAppsPickerModal()">Готово ✕</button>
+        </div>
+        <div id="apps-modal-selected" class="row-wrap mb-8" style="gap:4px;"></div>
+        <div class="row-gap mb-8">
+            <input id="apps-modal-search" class="form-control grow-1" placeholder="🔍 Поиск по названию (Counter-Strike, OBS, Photoshop)..." oninput="filterAppsCatalog()">
+            <input id="apps-modal-manual" class="form-control" style="width:155px;" placeholder="Свой .exe вручную">
+            <button class="btn btn-xs" onclick="addManualAppToRule()">+</button>
+        </div>
+        <div class="scroll-box" style="flex:1; max-height:52vh; border:1px solid var(--border); border-radius:6px; padding:8px;">
+            <div class="lbl-xs accent-txt mb-6"><b>📚 Популярные программы (работает и с телефона):</b></div>
+            <div id="apps-modal-catalog" class="col-gap mb-12" style="gap:8px;"></div>
+            <div class="row-between mb-6" style="border-top:1px dashed var(--border); padding-top:8px;">
+                <span class="lbl-xs blue-txt"><b>🖥️ Сейчас запущено на ПК:</b></span>
+                <div class="row-gap">
+                    <label class="lbl-xs pointer"><input id="apps-modal-sys" type="checkbox" onchange="loadRunningAppsForModal()"> Показать системные</label>
+                    <button class="btn btn-secondary btn-xs" onclick="loadRunningAppsForModal()">🔄</button>
                 </div>
             </div>
+            <div id="apps-modal-running" class="row-wrap" style="gap:5px;"></div>
         </div>
     </div>
 </div>
@@ -1187,20 +261,21 @@ def api_tuner_processes():
 #### `web/static/tuner_ui.js`
 ```javascript
 // web/static/tuner_ui.js
-let _tunerProfiles = {};
-let _tunerCurProfile = 'performance';
-let _tunerRules = {};
+let _tunerProfiles = [];
+let _tunerCurProfileId = 'performance';
 let _tunerAvailableDisks = [];
+let _tunerState = {};
+
+function getProfileLabel(pid) {
+    const p = _tunerProfiles.find(x => x.id === pid);
+    return p ? `${p.icon} ${p.name}` : pid;
+}
 
 function syncTunerDisabledStates() {
     const setGroupState = (chkId, rowId, inputIds) => {
         const en = Boolean(document.getElementById(chkId)?.checked);
-        const row = document.getElementById(rowId);
-        if (row) row.classList.toggle('tuner-row-disabled', !en);
-        inputIds.forEach(id => {
-            const el = document.getElementById(id);
-            if (el) el.disabled = !en;
-        });
+        document.getElementById(rowId)?.classList.toggle('tuner-row-disabled', !en);
+        inputIds.forEach(id => { const el = document.getElementById(id); if (el) el.disabled = !en; });
     };
 
     setGroupState('tp-g-disk-en', 'guard-row-disk', ['tp-g-disk-target', 'tp-g-disk-warn', 'tp-g-disk-crit', 'tp-g-disk-rec']);
@@ -1216,38 +291,38 @@ function syncTunerDisabledStates() {
     });
 
     const actMode = document.getElementById('tp-act-mode')?.value || 'keep';
-    const minEl = document.getElementById('tp-act-min');
-    const maxEl = document.getElementById('tp-act-max');
+    const minEl = document.getElementById('tp-act-min'), maxEl = document.getElementById('tp-act-max');
     if (minEl) minEl.disabled = (actMode === 'keep');
     if (maxEl) maxEl.disabled = (actMode !== 'range');
     document.getElementById('wrap-tp-act-min')?.classList.toggle('tuner-row-disabled', actMode === 'keep');
     document.getElementById('wrap-tp-act-max')?.classList.toggle('tuner-row-disabled', actMode !== 'range');
 
     const ptUpAuto = Boolean(document.getElementById('tp-pt-up-auto')?.checked);
-    ['tp-pt-up-min', 'tp-pt-up-max'].forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.disabled = ptUpAuto;
-    });
+    ['tp-pt-up-min', 'tp-pt-up-max'].forEach(id => { const e = document.getElementById(id); if (e) e.disabled = ptUpAuto; });
 
     const mcAuto = Boolean(document.getElementById('tp-mc-auto')?.checked);
-    ['tp-mc-min', 'tp-mc-max'].forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.disabled = mcAuto;
-    });
+    ['tp-mc-min', 'tp-mc-max'].forEach(id => { const e = document.getElementById(id); if (e) e.disabled = mcAuto; });
+}
 
-    const prEn = Boolean(document.getElementById('tr-proc-en')?.checked);
-    ['tr-proc-mode', 'tr-proc-names', 'tr-proc-enter', 'tr-proc-exit'].forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.disabled = !prEn;
+function _renderProfileSelectors(activeMode) {
+    const pills = document.getElementById('tuner-mode-pills');
+    if (pills) {
+        pills.innerHTML = `<button class="${activeMode === 'off' ? 'btn btn-xs' : 'btn btn-secondary btn-xs'}" onclick="setTunerMode('off')">Выкл</button>` +
+            _tunerProfiles.map(p => `<button class="${activeMode === p.id ? 'btn btn-xs' : 'btn btn-secondary btn-xs'}" onclick="setTunerMode('${escapeHtml(p.id)}')">${escapeHtml(p.icon)} ${escapeHtml(p.name)}</button>`).join('');
+    }
+    const selEdit = document.getElementById('tp-profile-select');
+    if (selEdit) {
+        selEdit.innerHTML = _tunerProfiles.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.icon)} ${escapeHtml(p.name)}</option>`).join('');
+        if (_tunerProfiles.some(p => p.id === _tunerCurProfileId)) selEdit.value = _tunerCurProfileId;
+        else if (_tunerProfiles.length) _tunerCurProfileId = _tunerProfiles[0].id;
+    }
+    ['tr-def-profile', 'tr-f-target'].forEach(id => {
+        const s = document.getElementById(id);
+        if (!s) return;
+        const cur = s.value;
+        s.innerHTML = _tunerProfiles.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.icon)} ${escapeHtml(p.name)}</option>`).join('');
+        if (cur && _tunerProfiles.some(p => p.id === cur)) s.value = cur;
     });
-    document.getElementById('rules-box-proc')?.classList.toggle('tuner-row-disabled', !prEn);
-
-    const extEn = Boolean(document.getElementById('tr-ext-en')?.checked);
-    ['tr-ext-mode', 'tr-ext-cpu-w', 'tr-ext-cpu-r', 'tr-ext-net-w', 'tr-ext-net-r', 'tr-ext-ram-w', 'tr-ext-ram-r', 'tr-ext-enter', 'tr-ext-exit'].forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.disabled = !extEn;
-    });
-    document.getElementById('rules-box-ext')?.classList.toggle('tuner-row-disabled', !extEn);
 }
 
 function _updateDiskSelectorOptions(selectedVal) {
@@ -1256,55 +331,62 @@ function _updateDiskSelectorOptions(selectedVal) {
     sel.innerHTML = '';
     sel.add(new Option('Авто (по раздачам)', ''));
     sel.add(new Option('Все диски (Max)', 'ALL'));
-    _tunerAvailableDisks.forEach(d => {
-        sel.add(new Option(`${d.path} (${d.free_fmt} своб.)`, d.path));
-    });
+    _tunerAvailableDisks.forEach(d => sel.add(new Option(`${d.path} (${d.free_fmt} своб.)`, d.path)));
     sel.value = selectedVal || '';
 }
 
 async function loadTunerTab() {
     if (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE !== 'admin') return;
-    await Promise.all([refreshTunerState(), loadTunerProfiles(), loadTunerRules()]);
+    await refreshTunerState(true);
+    if (typeof loadTunerRulesAndCatalog === 'function') await loadTunerRulesAndCatalog();
 }
 
-async function refreshTunerState() {
+async function refreshTunerState(initEditors = false) {
     if (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE !== 'admin') return;
     try {
         const res = await api('/api/tuner/state');
         if (!res.ok) return;
         const d = await res.json();
-        const st = d.state || {}, tel = d.telemetry || {}, mode = st.mode || 'off';
+        _tunerState = d.state || {};
+        const tel = d.telemetry || {}, mode = _tunerState.mode || 'off';
         _tunerAvailableDisks = d.available_disks || [];
+        if (Array.isArray(d.profiles)) _tunerProfiles = d.profiles;
 
-        ['off', 'comfort', 'performance'].forEach(m => {
-            const b = document.getElementById(`tuner-btn-${m}`);
-            if (b) b.className = (m === mode) ? 'btn btn-xs' : 'btn btn-secondary btn-xs';
-        });
+        _renderProfileSelectors(mode);
+        if (initEditors) {
+            selectTunerProfile(_tunerCurProfileId);
+            const pSec = document.getElementById('tr-poll-sec');
+            if (pSec) pSec.value = _tunerState.poll_interval_sec || 3;
+            const dSel = document.getElementById('tr-def-profile');
+            if (dSel) dSel.value = _tunerState.default_profile_id || 'performance';
+            const ovSel = document.getElementById('tr-ov-policy');
+            if (ovSel) ovSel.value = _tunerState.manual_override_policy || '2h';
+        }
+
         const chk = document.getElementById('tuner-auto-chk');
-        if (chk) chk.checked = Boolean(st.auto_switch_enabled);
+        if (chk) chk.checked = Boolean(_tunerState.auto_switch_enabled);
 
-        const reason = d.switch_reason || st.last_reason || 'Выключен';
+        const reason = d.switch_reason || _tunerState.last_reason || 'Выключен';
         const badge = document.getElementById('tuner-reason-badge');
         if (badge) {
             badge.textContent = reason;
-            badge.className = mode === 'off' ? 'badge badge-pause' : (mode === 'performance' ? 'badge badge-up' : 'badge badge-dl');
+            badge.className = mode === 'off' ? 'badge badge-pause' : 'badge badge-up';
         }
         const hb = document.getElementById('tuner-header-badge');
         if (hb) {
-            hb.textContent = mode === 'off' ? '🎛️ Тюнер: Выкл' : (mode === 'performance' ? '🚀 Тюнер: Произв.' : '🛋️ Тюнер: Комф.');
-            hb.className = mode === 'off' ? 'badge badge-pause pointer admin-only' : (mode === 'performance' ? 'badge badge-up pointer admin-only' : 'badge badge-dl pointer admin-only');
+            hb.textContent = mode === 'off' ? '🎛️ Тюнер: Выкл' : `🎛️ ${getProfileLabel(mode)}`;
+            hb.className = mode === 'off' ? 'badge badge-pause pointer admin-only' : 'badge badge-up pointer admin-only';
         }
-        document.getElementById('tuner-btn-clear-ov')?.classList.toggle('hidden', !st.manual_override_mode);
+        document.getElementById('tuner-btn-clear-ov')?.classList.toggle('hidden', !_tunerState.manual_override_mode);
 
         const setTxt = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
-        const diskTitle = tel.monitored_disk_label ? `Диск I/O (${tel.monitored_disk_label})` : 'Диск I/O';
-        setTxt('tel-disk-title', diskTitle);
+        setTxt('tel-disk-title', tel.monitored_disk_label ? `Загрузка диска (${tel.monitored_disk_label})` : 'Загрузка диска');
         setTxt('tel-disk', tel.psutil_available === false ? 'нет psutil' : `${tel.disk_busy ?? 0}%`);
         setTxt('tel-cpu', `${tel.cpu_ext ?? 0}%`);
         setTxt('tel-ram', `${tel.ram_free ?? 0}%`);
         setTxt('tel-chan', `${tel.channel_pct ?? 0}%`);
         setTxt('tel-net', `${tel.net_ext_pct ?? 0}%`);
-        const curMu = (st.current_limits || {}).max_uploads || (st.baseline || {}).max_uploads || '—';
+        const curMu = (_tunerState.current_limits || {}).max_uploads || (_tunerState.baseline || {}).max_uploads || '—';
         setTxt('tel-slots', `${curMu} (${tel.slots_fill_pct ?? 0}%)`);
 
         const tbody = document.getElementById('tuner-history-tbody');
@@ -1325,33 +407,37 @@ async function setTunerMode(mode) {
 
 async function toggleTunerAutoSwitch() {
     const auto_switch = document.getElementById('tuner-auto-chk')?.checked || false;
-    const mode = auto_switch ? (_tunerRules.default_mode || 'performance') : 'off';
+    const mode = auto_switch ? (_tunerState.default_profile_id || 'performance') : 'off';
     await api('/api/tuner/mode', 'POST', { mode, auto_switch, is_manual: false });
     refreshTunerState();
 }
 
 async function clearTunerOverride() {
-    await api('/api/tuner/mode', 'POST', { mode: _tunerRules.default_mode || 'performance', clear_override: true, is_manual: false });
+    await api('/api/tuner/mode', 'POST', { mode: _tunerState.default_profile_id || 'performance', clear_override: true, is_manual: false });
     refreshTunerState();
 }
 
 async function restoreTunerBaseline() {
-    if (!confirm('Выключить тюнер и восстановить эталонные настройки qBittorrent?')) return;
+    if (!confirm('Выключить тюнер и вернуть исходные настройки qBittorrent?')) return;
     const res = await api('/api/tuner/restore_baseline', 'POST');
     alert((await res.json()).message || 'Готово');
     refreshTunerState();
 }
 
-async function loadTunerProfiles() {
-    const res = await api('/api/tuner/profiles');
-    if (res.ok) { _tunerProfiles = (await res.json()).profiles || {}; selectTunerProfileTab(_tunerCurProfile); }
+async function saveTunerGlobalSettings() {
+    const res = await api('/api/tuner/settings', 'POST', {
+        poll_interval_sec: parseInt(document.getElementById('tr-poll-sec')?.value) || 3,
+        default_profile_id: document.getElementById('tr-def-profile')?.value || 'performance',
+        override_policy: document.getElementById('tr-ov-policy')?.value || '2h'
+    });
+    if (res.ok) { alert('✅ Общие настройки тюнера сохранены'); refreshTunerState(); }
 }
 
-function selectTunerProfileTab(mode) {
-    _tunerCurProfile = mode;
-    document.getElementById('tp-tab-performance').className = mode === 'performance' ? 'btn btn-xs' : 'btn btn-secondary btn-xs';
-    document.getElementById('tp-tab-comfort').className = mode === 'comfort' ? 'btn btn-xs' : 'btn btn-secondary btn-xs';
-    const p = _tunerProfiles[mode] || {}, g = p.guards || {};
+function selectTunerProfile(pid) {
+    _tunerCurProfileId = pid;
+    const pObj = _tunerProfiles.find(x => x.id === pid);
+    if (!pObj) return;
+    const p = pObj.config || {}, g = p.guards || {};
     const sv = (id, v) => { const e = document.getElementById(id); if (e) e.value = v ?? ''; };
     const sc = (id, v) => { const e = document.getElementById(id); if (e) e.checked = Boolean(v); };
 
@@ -1370,14 +456,13 @@ function selectTunerProfileTab(mode) {
     sc('tp-g-cpu-en', g.cpu?.enabled); sv('tp-g-cpu-warn', g.cpu?.warn); sv('tp-g-cpu-rec', g.cpu?.recover);
     sc('tp-g-ram-en', g.ram?.enabled); sv('tp-g-ram-min', g.ram?.min_free); sv('tp-g-ram-rec', g.ram?.recover_free);
     sc('tp-g-net-en', g.net?.enabled); sv('tp-g-net-warn', g.net?.warn_pct); sv('tp-g-net-rec', g.net?.recover_pct);
-
     syncTunerDisabledStates();
 }
 
-async function saveTunerProfile() {
+function _collectProfileFormConfig() {
     const iv = id => parseInt(document.getElementById(id)?.value) || 0;
     const cb = id => Boolean(document.getElementById(id)?.checked);
-    const profile = {
+    return {
         max_uploads_min: iv('tp-mu-min'), max_uploads_max: iv('tp-mu-max'), max_uploads_start: iv('tp-mu-start'),
         per_torrent_up_min: iv('tp-pt-up-min'), per_torrent_up_max: iv('tp-pt-up-max'), per_torrent_up_auto: cb('tp-pt-up-auto'),
         max_connec_min: iv('tp-mc-min'), max_connec_max: iv('tp-mc-max'), max_connec_auto: cb('tp-mc-auto'),
@@ -1389,120 +474,756 @@ async function saveTunerProfile() {
         squeeze_enabled: cb('tp-sq-en'), squeeze_up_pct: iv('tp-sq-up'), squeeze_dl_pct: iv('tp-sq-dl'),
         cooldown_sec: iv('tp-cd-sec'), step_up_size: iv('tp-step-up'), yield_to_turtle: cb('tp-yield-turtle'),
         guards: {
-            disk: {
-                enabled: cb('tp-g-disk-en'),
-                target_disk: document.getElementById('tp-g-disk-target')?.value || '',
-                warn: iv('tp-g-disk-warn'), crit: iv('tp-g-disk-crit'), recover: iv('tp-g-disk-rec')
-            },
+            disk: { enabled: cb('tp-g-disk-en'), target_disk: document.getElementById('tp-g-disk-target')?.value || '', warn: iv('tp-g-disk-warn'), crit: iv('tp-g-disk-crit'), recover: iv('tp-g-disk-rec') },
             cpu:  { enabled: cb('tp-g-cpu-en'), warn: iv('tp-g-cpu-warn'), recover: iv('tp-g-cpu-rec') },
             ram:  { enabled: cb('tp-g-ram-en'), min_free: iv('tp-g-ram-min'), recover_free: iv('tp-g-ram-rec') },
             net:  { enabled: cb('tp-g-net-en'), warn_pct: iv('tp-g-net-warn'), recover_pct: iv('tp-g-net-rec') }
         }
     };
-    const res = await api('/api/tuner/profiles', 'POST', { mode: _tunerCurProfile, profile });
-    if (res.ok) { _tunerProfiles[_tunerCurProfile] = (await res.json()).profile; alert(`✅ Профиль «${_tunerCurProfile}» сохранён`); }
 }
 
-async function resetTunerProfile() {
-    if (!confirm(`Сбросить профиль «${_tunerCurProfile}» к заводским значениям?`)) return;
-    const res = await api('/api/tuner/profiles', 'POST', { reset_mode: _tunerCurProfile });
-    if (res.ok) { _tunerProfiles[_tunerCurProfile] = (await res.json()).profile; selectTunerProfileTab(_tunerCurProfile); }
+async function saveTunerProfile() {
+    const pObj = _tunerProfiles.find(x => x.id === _tunerCurProfileId);
+    if (!pObj) return;
+    const res = await api('/api/tuner/profiles', 'POST', { id: pObj.id, name: pObj.name, icon: pObj.icon, config: _collectProfileFormConfig() });
+    if (res.ok) { _tunerProfiles = (await res.json()).profiles || []; _renderProfileSelectors(_tunerState.mode || 'off'); alert(`✅ Профиль «${pObj.name}» сохранён`); }
 }
 
-async function loadTunerRules() {
-    const res = await api('/api/tuner/rules');
-    if (!res.ok) return;
-    _tunerRules = (await res.json()).rules || {};
-    const sv = (id, v) => { const e = document.getElementById(id); if (e) e.value = v ?? ''; };
-    const sc = (id, v) => { const e = document.getElementById(id); if (e) e.checked = Boolean(v); };
-
-    sv('tr-def-mode', _tunerRules.default_mode || 'performance');
-    sv('tr-ov-policy', _tunerRules.override_policy || '2h');
-    const pr = _tunerRules.processes || {}, ex = _tunerRules.external_load || {};
-    sc('tr-proc-en', pr.enabled); sv('tr-proc-mode', pr.target_mode || 'comfort');
-    sv('tr-proc-names', (pr.names || []).join(', ')); sv('tr-proc-enter', pr.enter_sec); sv('tr-proc-exit', pr.exit_sec);
-    sc('tr-ext-en', ex.enabled); sv('tr-ext-mode', ex.target_mode || 'comfort');
-    sv('tr-ext-cpu-w', ex.cpu_warn); sv('tr-ext-cpu-r', ex.cpu_recover);
-    sv('tr-ext-net-w', ex.net_warn_pct); sv('tr-ext-net-r', ex.net_recover_pct);
-    sv('tr-ext-ram-w', ex.ram_min_free); sv('tr-ext-ram-r', ex.ram_recover_free);
-    sv('tr-ext-enter', ex.enter_sec); sv('tr-ext-exit', ex.exit_sec);
-
-    renderTunerSchedules();
-    syncTunerDisabledStates();
+async function createNewTunerProfile() {
+    const name = prompt('Название нового профиля:');
+    if (!name || !name.trim()) return;
+    const icon = prompt('Иконка (эмодзи):', '⚙️') || '⚙️';
+    const res = await api('/api/tuner/profiles', 'POST', { is_new: true, name: name.trim(), icon: icon.trim(), config: _collectProfileFormConfig() });
+    if (res.ok) { const d = await res.json(); _tunerProfiles = d.profiles; _tunerCurProfileId = d.profile.id; _renderProfileSelectors(_tunerState.mode || 'off'); selectTunerProfile(_tunerCurProfileId); }
 }
 
-function renderTunerSchedules() {
-    const box = document.getElementById('tr-sched-list');
-    if (!box) return;
-    const list = _tunerRules.schedules || [];
-    box.innerHTML = list.map((s, idx) => `
-        <div class="row-gap" style="gap:4px;">
-            <input type="time" class="form-control" style="width:96px; padding:3px 4px;" value="${escapeHtml(s.start)}" onchange="_tunerRules.schedules[${idx}].start=this.value">
-            <span>—</span>
-            <input type="time" class="form-control" style="width:96px; padding:3px 4px;" value="${escapeHtml(s.end)}" onchange="_tunerRules.schedules[${idx}].end=this.value">
-            <select class="form-control grow-1" style="padding:3px 4px;" onchange="_tunerRules.schedules[${idx}].mode=this.value">
-                <option value="performance" ${s.mode==='performance'?'selected':''}>Производ.</option>
-                <option value="comfort" ${s.mode==='comfort'?'selected':''}>Комфорт</option>
-            </select>
-            <button class="btn btn-danger btn-xs" onclick="_tunerRules.schedules.splice(${idx},1);renderTunerSchedules()">✕</button>
-        </div>
-    `).join('') || '<span class="lbl-xs muted-text">Окон расписания нет</span>';
+async function cloneTunerProfile() {
+    const pObj = _tunerProfiles.find(x => x.id === _tunerCurProfileId);
+    const name = prompt('Название копии профиля:', pObj ? `${pObj.name} (копия)` : 'Копия');
+    if (!name || !name.trim()) return;
+    const res = await api('/api/tuner/profiles', 'POST', { clone_from: _tunerCurProfileId, name: name.trim(), icon: pObj?.icon || '⚙️' });
+    if (res.ok) { const d = await res.json(); _tunerProfiles = d.profiles; _tunerCurProfileId = d.profile.id; _renderProfileSelectors(_tunerState.mode || 'off'); selectTunerProfile(_tunerCurProfileId); }
 }
 
-function addTunerScheduleRow() {
-    _tunerRules.schedules = _tunerRules.schedules || [];
-    _tunerRules.schedules.push({ start: '01:00', end: '08:00', days: [0, 1, 2, 3, 4, 5, 6], mode: 'performance' });
-    renderTunerSchedules();
+async function renameTunerProfile() {
+    const pObj = _tunerProfiles.find(x => x.id === _tunerCurProfileId);
+    if (!pObj) return;
+    const name = prompt('Новое название профиля:', pObj.name);
+    if (!name || !name.trim()) return;
+    const icon = prompt('Иконка (эмодзи):', pObj.icon) || pObj.icon;
+    const res = await api('/api/tuner/profiles', 'POST', { id: pObj.id, name: name.trim(), icon: icon.trim(), config: _collectProfileFormConfig() });
+    if (res.ok) { _tunerProfiles = (await res.json()).profiles; _renderProfileSelectors(_tunerState.mode || 'off'); selectTunerProfile(pObj.id); }
 }
 
-async function loadRunningProcessesPicker() {
-    const box = document.getElementById('tr-proc-picker');
-    if (!box) return;
-    box.classList.remove('hidden'); box.innerHTML = '<span class="lbl-xs muted-text">⏳ Сканирую процессы...</span>';
-    const res = await api('/api/tuner/processes');
-    if (!res.ok) return;
-    const list = (await res.json()).processes || [];
-    box.innerHTML = list.map(p => `<button type="button" class="btn btn-secondary btn-xs" onclick="appendProcessToWatchlist('${escapeHtml(p)}')">+ ${escapeHtml(p)}</button>`).join('');
+async function deleteTunerProfile() {
+    const pObj = _tunerProfiles.find(x => x.id === _tunerCurProfileId);
+    if (!pObj || !confirm(`Удалить профиль «${pObj.name}»?\n(Если к нему привязаны правила автопереключения, они будут отключены)`)) return;
+    const res = await api('/api/tuner/profiles', 'POST', { delete_id: pObj.id });
+    const d = await res.json();
+    if (!res.ok || !d.success) return alert(d.message || 'Ошибка удаления');
+    _tunerProfiles = d.profiles;
+    _tunerCurProfileId = _tunerProfiles[0]?.id || 'performance';
+    _renderProfileSelectors(_tunerState.mode || 'off');
+    selectTunerProfile(_tunerCurProfileId);
+    if (typeof loadTunerRulesAndCatalog === 'function') loadTunerRulesAndCatalog();
 }
 
-function appendProcessToWatchlist(name) {
-    const inp = document.getElementById('tr-proc-names');
-    const cur = inp.value.split(',').map(x => x.trim()).filter(Boolean);
-    if (!cur.some(x => x.toLowerCase() === name.toLowerCase())) { cur.push(name); inp.value = cur.join(', '); }
-}
-
-async function saveTunerRules() {
-    const iv = id => parseInt(document.getElementById(id)?.value) || 0;
-    const cb = id => Boolean(document.getElementById(id)?.checked);
-    const rules = {
-        default_mode: document.getElementById('tr-def-mode')?.value || 'performance',
-        override_policy: document.getElementById('tr-ov-policy')?.value || '2h',
-        schedules: _tunerRules.schedules || [],
-        processes: {
-            enabled: cb('tr-proc-en'), target_mode: document.getElementById('tr-proc-mode')?.value || 'comfort',
-            names: (document.getElementById('tr-proc-names')?.value || '').split(',').map(x => x.trim()).filter(Boolean),
-            enter_sec: iv('tr-proc-enter'), exit_sec: iv('tr-proc-exit')
-        },
-        external_load: {
-            enabled: cb('tr-ext-en'), target_mode: document.getElementById('tr-ext-mode')?.value || 'comfort',
-            cpu_warn: iv('tr-ext-cpu-w'), cpu_recover: iv('tr-ext-cpu-r'),
-            net_warn_pct: iv('tr-ext-net-w'), net_recover_pct: iv('tr-ext-net-r'),
-            ram_min_free: iv('tr-ext-ram-w'), ram_recover_free: iv('tr-ext-ram-r'),
-            enter_sec: iv('tr-ext-enter'), exit_sec: iv('tr-ext-exit')
-        }
-    };
-    const res = await api('/api/tuner/rules', 'POST', { rules });
-    if (res.ok) { _tunerRules = (await res.json()).rules; alert('✅ Правила автопереключения сохранены'); }
+async function resetBuiltinTunerPresets() {
+    if (!confirm('Восстановить 5 стандартных пресетов («Турбо / Ночь», «Производительность», «Баланс», «Игровой», «Тихий минимум»)? Пользовательские профили останутся на месте.')) return;
+    const res = await api('/api/tuner/profiles', 'POST', { reset_builtins: true });
+    if (res.ok) { _tunerProfiles = (await res.json()).profiles; _renderProfileSelectors(_tunerState.mode || 'off'); selectTunerProfile(_tunerCurProfileId); }
 }
 
 setInterval(() => {
-    if (!document.hidden && (typeof CURRENT_ROLE === 'undefined' || CURRENT_ROLE === 'admin')) refreshTunerState();
-}, 10000);
+    if (!document.hidden && (typeof CURRENT_ROLE === 'undefined' || CURRENT_ROLE === 'admin')) refreshTunerState(false);
+}, 5000);
 ```
 
 ---
 
-Копируй в `patch.md`, прогоняй `python apply_patch.py`, и обновляй страницу (`Ctrl+F5`):
-1. Прямо в строке «Диск I/O» теперь селектор: можно выбрать **«Авто (по раздачам)»**, **«Все диски (Max)»** или конкретный диск (`D:\ (1.2 TiB своб.)`).
-2. В карточке телеметрии сверху теперь явно пишется: **`Диск I/O (D:)`**, **`Диск I/O (Авто: D:)`** или **`Диск I/O (Все)`** — сразу понятно, кто под наблюдением.
-3. Под капотом Windows отрабатывает IOCTL на уровне ядра, точно привязывая букву диска к правильному счетчику `PhysicalDriveX`!
+#### `web/static/tuner_rules_ui.js` *(новый файл)*
+```javascript
+// web/static/tuner_rules_ui.js
+let _tunerRulesList = [];
+let _editingRuleId = null;
+let _editingRuleApps = [];
+let _appsCatalog = [];
+let _friendlyAppsMap = {};
+
+async function loadTunerRulesAndCatalog() {
+    const [rRes, cRes] = await Promise.all([api('/api/tuner/rules'), api('/api/tuner/catalog')]);
+    if (rRes.ok) { _tunerRulesList = (await rRes.json()).rules || []; renderTunerRulesList(); }
+    if (cRes.ok) {
+        const c = await cRes.json();
+        _appsCatalog = c.catalog || [];
+        _friendlyAppsMap = c.friendly_map || {};
+    }
+}
+
+function _formatRuleSummary(r) {
+    const c = r.config || {}, parts = [];
+    if (c.processes?.enabled && c.processes.names?.length) parts.push(`🎮 Программы (${c.processes.names.length})`);
+    if (c.schedule?.enabled) parts.push(`⏰ ${c.schedule.start}–${c.schedule.end}`);
+    if (c.external_load?.enabled) parts.push('⚡ Нагрузка ПК');
+    return parts.join(' + ') || 'Нет условий';
+}
+
+function renderTunerRulesList() {
+    const box = document.getElementById('tuner-rules-list');
+    if (!box) return;
+    if (!_tunerRulesList.length) {
+        box.innerHTML = '<div class="center-msg lbl-xs muted-text">Правил пока нет. Нажмите «+ Добавить правило».</div>';
+        return;
+    }
+    box.innerHTML = _tunerRulesList.map((r, idx) => `
+        <div class="tuner-rule-row ${r.enabled ? '' : 'tuner-row-disabled'}" style="opacity:${r.enabled ? '1' : '0.5'};">
+            <div class="row-gap" style="gap:6px; min-width:0; flex:1;">
+                <span class="badge badge-pause">#${idx + 1}</span>
+                <input type="checkbox" ${r.enabled ? 'checked' : ''} onchange="toggleTunerRuleEnabled(${r.id}, this.checked)" title="Вкл/Выкл">
+                <div style="min-width:0; flex:1;">
+                    <div style="font-size:12px; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(r.name)} → <span class="accent-txt">${escapeHtml(getProfileLabel(r.target_profile_id))}</span></div>
+                    <div class="lbl-micro">${escapeHtml(_formatRuleSummary(r))}</div>
+                </div>
+            </div>
+            <div class="row-gap" style="gap:3px;">
+                <button class="btn btn-secondary btn-xs" ${idx === 0 ? 'disabled' : ''} onclick="moveTunerRule(${r.id}, 'up')">⬆️</button>
+                <button class="btn btn-secondary btn-xs" ${idx === _tunerRulesList.length - 1 ? 'disabled' : ''} onclick="moveTunerRule(${r.id}, 'down')">⬇️</button>
+                <button class="btn btn-secondary btn-xs" onclick="editTunerRule(${r.id})">✏️</button>
+                <button class="btn btn-danger btn-xs" onclick="deleteTunerRule(${r.id})">🗑️</button>
+            </div>
+        </div>
+    `).join('');
+}
+
+function syncRuleFormDisabledStates() {
+    const prEn = Boolean(document.getElementById('tr-f-proc-en')?.checked);
+    document.getElementById('tr-f-proc-chips')?.classList.toggle('tuner-row-disabled', !prEn);
+
+    const scEn = Boolean(document.getElementById('tr-f-sched-en')?.checked);
+    document.getElementById('tr-f-sched-start').disabled = !scEn;
+    document.getElementById('tr-f-sched-end').disabled = !scEn;
+    document.querySelectorAll('.tr-f-day').forEach(d => { d.disabled = !scEn; });
+
+    const exEn = Boolean(document.getElementById('tr-f-ext-en')?.checked);
+    ['cpu', 'net', 'ram', 'disk'].forEach(k => {
+        const chk = document.getElementById(`tr-f-${k}-en`);
+        if (chk) chk.disabled = !exEn;
+        const subEn = exEn && Boolean(chk?.checked);
+        ['w', 'r'].forEach(s => { const inp = document.getElementById(`tr-f-${k}-${s}`); if (inp) inp.disabled = !subEn; });
+    });
+}
+
+function _renderAppChipHtml(exe, removable = true) {
+    const meta = _friendlyAppsMap[exe.toLowerCase()];
+    const lbl = meta ? `${meta.icon} ${meta.name}` : `🖥️ ${exe}`;
+    const btn = removable ? ` <b class="pointer" onclick="removeAppFromRule('${escapeHtml(exe)}')">×</b>` : '';
+    return `<span class="tuner-chip">${escapeHtml(lbl)}${btn}</span>`;
+}
+
+function renderRuleAppChips() {
+    const box = document.getElementById('tr-f-proc-chips');
+    if (box) box.innerHTML = _editingRuleApps.length ? _editingRuleApps.map(e => _renderAppChipHtml(e, true)).join('') : '<span class="lbl-xs muted-text">Программы не выбраны</span>';
+    const mBox = document.getElementById('apps-modal-selected');
+    if (mBox) mBox.innerHTML = _editingRuleApps.map(e => _renderAppChipHtml(e, true)).join('');
+}
+
+function removeAppFromRule(exe) {
+    _editingRuleApps = _editingRuleApps.filter(x => x.toLowerCase() !== exe.toLowerCase());
+    renderRuleAppChips();
+    filterAppsCatalog();
+}
+
+function toggleAppInRule(exe) {
+    const low = exe.toLowerCase();
+    if (_editingRuleApps.some(x => x.toLowerCase() === low)) _editingRuleApps = _editingRuleApps.filter(x => x.toLowerCase() !== low);
+    else _editingRuleApps.push(exe);
+    renderRuleAppChips();
+    filterAppsCatalog();
+}
+
+function addManualAppToRule() {
+    const inp = document.getElementById('apps-modal-manual');
+    const val = (inp?.value || '').trim();
+    if (!val) return;
+    if (!_editingRuleApps.some(x => x.toLowerCase() === val.toLowerCase())) _editingRuleApps.push(val);
+    inp.value = '';
+    renderRuleAppChips();
+}
+
+function openNewRuleForm() {
+    _editingRuleId = null;
+    _editingRuleApps = [];
+    document.getElementById('tr-edit-title').textContent = 'Новое правило';
+    document.getElementById('tr-f-name').value = '';
+    document.getElementById('tr-f-proc-en').checked = true;
+    document.getElementById('tr-f-sched-en').checked = false;
+    document.getElementById('tr-f-ext-en').checked = false;
+    document.getElementById('tr-f-cpu-en').checked = true; document.getElementById('tr-f-cpu-w').value = 45; document.getElementById('tr-f-cpu-r').value = 25;
+    document.getElementById('tr-f-net-en').checked = true; document.getElementById('tr-f-net-w').value = 25; document.getElementById('tr-f-net-r').value = 12;
+    document.getElementById('tr-f-ram-en').checked = false; document.getElementById('tr-f-ram-w').value = 15; document.getElementById('tr-f-ram-r').value = 25;
+    document.getElementById('tr-f-disk-en').checked = false; document.getElementById('tr-f-disk-w').value = 70; document.getElementById('tr-f-disk-r').value = 45;
+    document.getElementById('tr-f-enter').value = 10; document.getElementById('tr-f-exit').value = 180;
+    renderRuleAppChips();
+    syncRuleFormDisabledStates();
+    document.getElementById('tuner-rule-editor').classList.remove('hidden');
+}
+
+function editTunerRule(rid) {
+    const r = _tunerRulesList.find(x => x.id === rid);
+    if (!r) return;
+    _editingRuleId = rid;
+    const c = r.config || {}, pr = c.processes || {}, sc = c.schedule || {}, ex = c.external_load || {};
+    _editingRuleApps = [...(pr.names || [])];
+    document.getElementById('tr-edit-title').textContent = `Редактирование: ${r.name}`;
+    document.getElementById('tr-f-name').value = r.name || '';
+    document.getElementById('tr-f-target').value = r.target_profile_id || 'comfort';
+    document.getElementById('tr-f-proc-en').checked = Boolean(pr.enabled);
+    document.getElementById('tr-f-sched-en').checked = Boolean(sc.enabled);
+    document.getElementById('tr-f-sched-start').value = sc.start || '01:00';
+    document.getElementById('tr-f-sched-end').value = sc.end || '08:00';
+    document.querySelectorAll('.tr-f-day').forEach(d => { d.checked = (sc.days || [0,1,2,3,4,5,6]).includes(parseInt(d.value)); });
+    document.getElementById('tr-f-ext-en').checked = Boolean(ex.enabled);
+    document.getElementById('tr-f-cpu-en').checked = Boolean(ex.cpu_enabled); document.getElementById('tr-f-cpu-w').value = ex.cpu_warn ?? 45; document.getElementById('tr-f-cpu-r').value = ex.cpu_recover ?? 25;
+    document.getElementById('tr-f-net-en').checked = Boolean(ex.net_enabled); document.getElementById('tr-f-net-w').value = ex.net_warn_pct ?? 25; document.getElementById('tr-f-net-r').value = ex.net_recover_pct ?? 12;
+    document.getElementById('tr-f-ram-en').checked = Boolean(ex.ram_enabled); document.getElementById('tr-f-ram-w').value = ex.ram_min_free ?? 15; document.getElementById('tr-f-ram-r').value = ex.ram_recover_free ?? 25;
+    document.getElementById('tr-f-disk-en').checked = Boolean(ex.disk_enabled); document.getElementById('tr-f-disk-w').value = ex.disk_warn ?? 70; document.getElementById('tr-f-disk-r').value = ex.disk_recover ?? 45;
+    document.getElementById('tr-f-enter').value = c.enter_sec ?? 10; document.getElementById('tr-f-exit').value = c.exit_sec ?? 180;
+    renderRuleAppChips();
+    syncRuleFormDisabledStates();
+    document.getElementById('tuner-rule-editor').classList.remove('hidden');
+}
+
+function cancelTunerRuleEdit() {
+    document.getElementById('tuner-rule-editor').classList.add('hidden');
+}
+
+async function saveTunerRuleForm() {
+    const iv = id => parseInt(document.getElementById(id)?.value) || 0;
+    const cb = id => Boolean(document.getElementById(id)?.checked);
+    const existing = _editingRuleId ? _tunerRulesList.find(x => x.id === _editingRuleId) : null;
+    const payload = {
+        id: _editingRuleId,
+        name: document.getElementById('tr-f-name').value.trim() || 'Новое правило',
+        enabled: existing ? Boolean(existing.enabled) : true,
+        target_profile_id: document.getElementById('tr-f-target').value,
+        config: {
+            processes: { enabled: cb('tr-f-proc-en'), names: _editingRuleApps },
+            schedule: { enabled: cb('tr-f-sched-en'), start: document.getElementById('tr-f-sched-start').value, end: document.getElementById('tr-f-sched-end').value, days: [...document.querySelectorAll('.tr-f-day:checked')].map(d => parseInt(d.value)) },
+            external_load: {
+                enabled: cb('tr-f-ext-en'),
+                cpu_enabled: cb('tr-f-cpu-en'), cpu_warn: iv('tr-f-cpu-w'), cpu_recover: iv('tr-f-cpu-r'),
+                net_enabled: cb('tr-f-net-en'), net_warn_pct: iv('tr-f-net-w'), net_recover_pct: iv('tr-f-net-r'),
+                ram_enabled: cb('tr-f-ram-en'), ram_min_free: iv('tr-f-ram-w'), ram_recover_free: iv('tr-f-ram-r'),
+                disk_enabled: cb('tr-f-disk-en'), disk_warn: iv('tr-f-disk-w'), disk_recover: iv('tr-f-disk-r'),
+            },
+            enter_sec: iv('tr-f-enter'), exit_sec: iv('tr-f-exit')
+        }
+    };
+    const res = await api('/api/tuner/rules', 'POST', payload);
+    if (res.ok) { _tunerRulesList = (await res.json()).rules; cancelTunerRuleEdit(); renderTunerRulesList(); }
+}
+
+async function toggleTunerRuleEnabled(rid, en) {
+    const r = _tunerRulesList.find(x => x.id === rid);
+    if (!r) return;
+    const res = await api('/api/tuner/rules', 'POST', { id: r.id, name: r.name, enabled: en, target_profile_id: r.target_profile_id, config: r.config });
+    if (res.ok) { _tunerRulesList = (await res.json()).rules; renderTunerRulesList(); }
+}
+
+async function moveTunerRule(rid, direction) {
+    const res = await api('/api/tuner/rules', 'POST', { move_id: rid, direction });
+    if (res.ok) { _tunerRulesList = (await res.json()).rules; renderTunerRulesList(); }
+}
+
+async function deleteTunerRule(rid) {
+    if (!confirm('Удалить это правило?')) return;
+    const res = await api('/api/tuner/rules', 'POST', { delete_id: rid });
+    if (res.ok) { _tunerRulesList = (await res.json()).rules; renderTunerRulesList(); }
+}
+
+function openAppsPickerModal() {
+    document.getElementById('apps-modal-search').value = '';
+    document.getElementById('tuner-apps-modal').style.display = 'flex';
+    renderRuleAppChips();
+    filterAppsCatalog();
+    loadRunningAppsForModal();
+}
+
+function closeAppsPickerModal() { document.getElementById('tuner-apps-modal').style.display = 'none'; }
+
+function filterAppsCatalog() {
+    const q = (document.getElementById('apps-modal-search')?.value || '').trim().toLowerCase();
+    const box = document.getElementById('apps-modal-catalog');
+    if (!box) return;
+    box.innerHTML = _appsCatalog.map(grp => {
+        const items = (grp.apps || []).filter(a => !q || a.name.toLowerCase().includes(q) || a.exe.toLowerCase().includes(q));
+        if (!items.length) return '';
+        return `<div><div class="lbl-micro mb-6">${grp.icon} ${escapeHtml(grp.category)}</div><div class="row-wrap" style="gap:4px;">` +
+            items.map(a => {
+                const active = _editingRuleApps.some(x => x.toLowerCase() === a.exe.toLowerCase());
+                return `<button type="button" class="${active ? 'btn btn-xs' : 'btn btn-secondary btn-xs'}" onclick="toggleAppInRule('${escapeHtml(a.exe)}')">${a.icon} ${escapeHtml(a.name)}</button>`;
+            }).join('') + '</div></div>';
+    }).join('');
+}
+
+async function loadRunningAppsForModal() {
+    const box = document.getElementById('apps-modal-running');
+    if (!box) return;
+    box.innerHTML = '<span class="lbl-xs muted-text">⏳ Читаю процессы ПК...</span>';
+    const sys = document.getElementById('apps-modal-sys')?.checked ? '1' : '0';
+    const res = await api(`/api/tuner/processes?system=${sys}`);
+    if (!res.ok) return;
+    const list = (await res.json()).processes || [];
+    box.innerHTML = list.map(p => {
+        const cnt = p.count > 1 ? ` ×${p.count}` : '';
+        return `<button type="button" class="btn btn-secondary btn-xs" onclick="toggleAppInRule('${escapeHtml(p.exe)}')" title="${escapeHtml(p.exe)}">${escapeHtml(p.icon)} ${escapeHtml(p.label)} (${escapeHtml(p.exe)})${cnt}</button>`;
+    }).join('') || '<span class="lbl-xs muted-text">Процессы не найдены</span>';
+}
+```
+
+---
+
+#### `web/static/style.css`
+```css
+:root {
+    --bg-main: #121214; --bg-panel: #1a1a20; --bg-input: #262630; --bg-hover: #22222a;
+    --text: #ffffff; --text-muted: #95a5a6; --accent: #2ecc71; --th-bg: #1e1e26;
+    --danger: #e74c3c; --warning: #f39c12; --info: #3498db; --border: #2a2a34;
+    --app-font: 'Segoe UI', system-ui, sans-serif;
+}
+html, body { width: 100%; max-width: 100vw; overflow-x: hidden; }
+* { box-sizing: border-box; margin: 0; padding: 0; font-family: var(--app-font); }
+body { background: var(--bg-main); color: var(--text); display: flex; flex-direction: column; min-height: 100vh; }
+
+::-webkit-scrollbar { width: 7px; height: 7px; }
+::-webkit-scrollbar-track { background: var(--bg-main); }
+::-webkit-scrollbar-thumb { background: var(--bg-input); border-radius: 4px; border: 1px solid var(--border); }
+::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+
+header { background: var(--bg-panel); padding: 10px 16px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; width: 100%; max-width: 100vw; }
+.logo-svg { width: 32px; height: 32px; filter: drop-shadow(0 0 6px rgba(46, 204, 113, 0.4)); }
+.logo-text { font-size: 1.15rem; font-weight: 800; color: var(--accent); }
+
+.nav-tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+.tab-btn { background: transparent; border: none; color: var(--text-muted); padding: 7px 12px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 13px; transition: 0.15s; }
+.tab-btn:hover { background: var(--bg-input); color: var(--text); }
+.tab-btn.active { background: var(--accent); color: #000; font-weight: 700; }
+
+.btn { background: var(--accent); color: #000; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 700; display: inline-flex; align-items: center; gap: 5px; text-decoration: none; transition: 0.15s; }
+.btn:hover { filter: brightness(1.1); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn-danger { background: var(--danger); color: #fff; }
+.btn-secondary { background: var(--bg-input); color: var(--text); border: 1px solid var(--border); }
+.btn-xs { padding: 4px 8px; font-size: 11px; }
+.center-btn { justify-content: center; padding: 8px; }
+
+#btn-panic-killswitch.holding { animation: panicPulse 0.4s infinite alternate; transform: scale(0.96); }
+@keyframes panicPulse { from { box-shadow: 0 0 0 0 rgba(231,76,60,0.6); } to { box-shadow: 0 0 12px 4px rgba(231,76,60,0.9); } }
+
+main { flex: 1; display: flex; flex-direction: column; width: 100%; max-width: 100vw; overflow-x: hidden; }
+.tab-content { display: none; height: 100%; padding: 14px; overflow-y: auto; width: 100%; max-width: 100%; }
+.tab-content.active { display: flex; gap: 14px; }
+.col-center { flex-direction: column; max-width: 850px; margin: 0 auto; width: 100%; }
+.col-wide { flex-direction: column; max-width: 1400px; margin: 0 auto; width: 100%; gap: 12px; }
+
+.app-footer { background: var(--bg-panel); border-top: 1px solid var(--border); padding: 8px 16px; display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; width: 100%; }
+.version-pill { color: var(--accent); font-weight: 700; text-decoration: none; padding: 3px 9px; background: var(--bg-input); border-radius: 6px; border: 1px solid var(--border); }
+.version-pill:hover { filter: brightness(1.15); }
+.tools-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; width: 100%; max-width: 100%; }
+
+.heatmap-scroll { overflow-x: auto; padding-bottom: 6px; max-width: 100%; }
+.heatmap-grid { display: grid; grid-template-rows: repeat(7, 12px); grid-auto-flow: column; grid-auto-columns: 12px; gap: 3px; width: max-content; }
+.hm-cell { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+.hm-empty { background: transparent; }
+.hm-l0 { background: var(--bg-input); border: 1px solid var(--border); }
+.hm-l1 { background: rgba(46, 204, 113, 0.28); }
+.hm-l2 { background: rgba(46, 204, 113, 0.52); }
+.hm-l3 { background: rgba(46, 204, 113, 0.78); }
+.hm-l4 { background: #2ecc71; }
+
+.diff-row-exact td { background: rgba(46, 204, 113, 0.08); }
+.diff-row-changed td { background: rgba(243, 156, 18, 0.12); }
+.diff-row-removed td { background: rgba(231, 76, 60, 0.12); }
+.diff-row-added td { background: rgba(52, 152, 219, 0.12); }
+
+.torrent-left { flex: 3.5; display: flex; flex-direction: column; background: var(--bg-panel); border-radius: 8px; border: 1px solid var(--border); overflow: hidden; min-width: 0; }
+.torrent-right { flex: 1; min-width: 280px; display: flex; flex-direction: column; gap: 12px; }
+.table-toolbar { padding: 8px 12px; display: flex; gap: 8px; border-bottom: 1px solid var(--border); align-items: center; flex-wrap: wrap; }
+.search-input { flex: 1; min-width: 140px; background: var(--bg-input); border: 1px solid var(--border); color: var(--text); padding: 7px 10px; border-radius: 6px; outline: none; font-size: 13px; }
+.table-container { flex: 1; overflow: auto; min-height: 250px; max-width: 100%; }
+
+table { width: 100%; border-collapse: collapse; text-align: left; font-size: 12px; }
+th { background: var(--th-bg); color: var(--text-muted); padding: 9px 10px; position: sticky; top: 0; border-bottom: 2px solid var(--border); cursor: pointer; user-select: none; white-space: nowrap; font-size: 11.5px; }
+th:hover { color: var(--accent); }
+td { padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+tr:hover td { background: var(--bg-hover); }
+tr.selected td { background: rgba(46, 204, 113, 0.15) !important; border-left: 3px solid var(--accent); }
+
+.badge { display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.badge-up { background: rgba(46, 204, 113, 0.15); color: #2ecc71; border: 1px solid rgba(46, 204, 113, 0.3); }
+.badge-dl { background: rgba(52, 152, 219, 0.15); color: #3498db; border: 1px solid rgba(52, 152, 219, 0.3); }
+.badge-pause { background: rgba(149, 165, 166, 0.15); color: #95a5a6; border: 1px solid rgba(149, 165, 166, 0.3); }
+.badge-stall { background: rgba(243, 156, 18, 0.15); color: #f39c12; border: 1px solid rgba(243, 156, 18, 0.3); }
+.badge-stop { background: rgba(231, 76, 60, 0.15); color: #e74c3c; border: 1px solid rgba(231, 76, 60, 0.3); }
+.badge-force { background: rgba(230, 126, 34, 0.15); color: #e67e22; border: 1px solid rgba(230, 126, 34, 0.3); }
+.badge-err { background: rgba(231, 76, 60, 0.25); color: #ff5252; border: 1px solid #ff5252; }
+
+.card { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; width: 100%; max-width: 100%; }
+.card-title { font-size: 12px; font-weight: 800; margin-bottom: 8px; color: var(--accent); letter-spacing: 0.5px; }
+.danger-border { border-color: rgba(231, 76, 60, 0.4); }
+.form-group { margin-bottom: 8px; }
+.form-group label { display: block; font-size: 11px; color: var(--text-muted); margin-bottom: 4px; font-weight: 600; }
+.form-control { width: 100%; background: var(--bg-input); border: 1px solid var(--border); color: var(--text); padding: 7px 10px; border-radius: 6px; outline: none; font-size: 13px; }
+
+/* === АВТО-ТЮНЕР СТИЛИ === */
+.tuner-columns-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 12px; width: 100%; }
+.tuner-box { background: var(--bg-input); padding: 12px; border-radius: 6px; border: 1px solid var(--border); display: flex; flex-direction: column; }
+.tuner-telemetry-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
+.tuner-stat-card { background: var(--bg-input); padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border); }
+.tuner-section-title { font-size: 10.5px; font-weight: 800; color: var(--text-muted); letter-spacing: 0.5px; margin: 6px 0 4px; }
+.tuner-block-divider { border-top: 1px dashed var(--border); padding-top: 8px; }
+.tuner-fields-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; }
+.tuner-field { display: flex; flex-direction: column; gap: 2px; flex: 1 1 72px; min-width: 70px; }
+.tuner-num-input { padding: 5px 6px !important; font-size: 12px !important; text-align: center; }
+.lbl-micro { font-size: 9.5px; color: var(--text-muted); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.no-wrap { white-space: nowrap !important; }
+.align-end { align-items: flex-end !important; }
+.tuner-help { display: inline-flex; justify-content: center; align-items: center; width: 14px; height: 14px; border-radius: 50%; background: var(--bg-panel); border: 1px solid var(--border); color: var(--info); font-size: 9px; font-weight: 800; cursor: pointer; margin-left: 2px; }
+.tuner-chip { display: inline-flex; align-items: center; gap: 5px; background: var(--bg-panel); border: 1px solid var(--accent); color: var(--text); padding: 3px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+.tuner-rule-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; background: rgba(0,0,0,0.18); padding: 7px 9px; border-radius: 6px; border: 1px solid var(--border); }
+.tuner-rule-cond { background: rgba(0,0,0,0.14); padding: 8px; border-radius: 6px; border: 1px solid var(--border); }
+
+.tuner-guards-list { display: flex; flex-direction: column; gap: 6px; border-top: 1px dashed var(--border); padding-top: 8px; }
+.tuner-guard-row { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; background: rgba(0,0,0,0.15); padding: 6px 8px; border-radius: 6px; transition: opacity 0.2s; }
+.tuner-guard-label { width: 128px; padding-bottom: 6px; flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; }
+.tuner-row-disabled { opacity: 0.38 !important; }
+.tuner-row-disabled input:not([type=checkbox]), .tuner-row-disabled select { pointer-events: none; background: rgba(0,0,0,0.2) !important; color: var(--text-muted) !important; }
+.tuner-details { border-top: 1px dashed var(--border); padding-top: 8px; margin-top: 6px; }
+.tuner-details summary { font-size: 11.5px; font-weight: 700; color: var(--info); cursor: pointer; user-select: none; padding: 4px 0; }
+.tuner-details-body { padding-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+
+.terminal { background: #0c0c0f; color: #2ecc71; font-family: 'Consolas', monospace; font-size: 12px; padding: 12px; border-radius: 6px; height: 170px; overflow-y: auto; white-space: pre-wrap; line-height: 1.45; border: 1px solid var(--border); }
+.scroll-box { max-height: 220px; overflow-y: auto; }
+.flex-scroll { flex: 1; overflow: auto; }
+.modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.75); display: none; justify-content: center; align-items: center; z-index: 999; padding: 14px; }
+.modal { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; width: 100%; max-width: 480px; padding: 18px; }
+.autostart-box { background: var(--bg-input); padding: 10px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.login-body { justify-content: center; align-items: center; padding: 16px; }
+.login-card { width: 100%; max-width: 380px; padding: 24px; text-align: center; }
+.login-title { font-size: 1.5rem; font-weight: 800; color: var(--accent); margin-bottom: 8px; }
+.alert-err { background: rgba(231, 76, 60, 0.2); border: 1px solid var(--danger); color: #ff6b6b; padding: 8px; border-radius: 6px; font-size: 12px; margin-bottom: 12px; }
+
+.row-gap { display: flex; gap: 8px; align-items: center; }
+.row-wrap { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.row-between { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+.row-end { display: flex; justify-content: flex-end; gap: 8px; }
+.col-gap { display: flex; flex-direction: column; gap: 8px; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+.grid-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+.grid-calc { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
+.w-full { width: 100%; } .grow-1 { flex: 1; min-width: 140px; }
+.mb-6 { margin-bottom: 6px; } .mb-8 { margin-bottom: 8px; } .mb-10 { margin-bottom: 10px; } .mb-12 { margin-bottom: 12px; }
+.mt-10 { margin-top: 10px; } .mt-12 { margin-top: 12px; }
+.hidden { display: none !important; } .pointer { cursor: pointer; }
+.center-msg { text-align: center; padding: 20px; color: var(--text-muted); }
+.muted-text { font-size: 12px; color: var(--text-muted); }
+.lbl-sm { display: block; font-size: 11px; color: var(--text-muted); margin-bottom: 3px; font-weight: 600; }
+.lbl-xs { font-size: 11px; font-weight: 600; }
+.val-lg { font-size: 18px; font-weight: 800; } .val-md { font-size: 15px; font-weight: 800; } .val-sm { font-size: 13px; font-weight: 700; margin-top: 3px; }
+.accent-txt { color: var(--accent); } .purple-txt { color: #9b59b6; } .orange-txt { color: #e67e22; } .blue-txt { color: #3498db; }
+.col-resizer { position: absolute; right: 0; top: 0; width: 6px; height: 100%; cursor: col-resize; user-select: none; }
+
+@media (max-width: 900px) {
+    .tab-content.active { flex-direction: column; overflow-y: auto; }
+    .torrent-right { min-width: 100%; }
+    body { height: auto; overflow-y: auto; }
+    main { overflow: visible; }
+}
+
+@media (max-width: 768px) {
+    header { padding: 8px 10px; }
+    header .row-gap { width: 100%; justify-content: flex-start; flex-wrap: wrap; gap: 6px; }
+    .nav-tabs { width: 100%; overflow-x: auto; flex-wrap: nowrap; padding-bottom: 4px; }
+    .nav-tabs .tab-btn { flex: 0 0 auto; white-space: nowrap; }
+    .tools-grid, .grid-2, .tuner-columns-grid { grid-template-columns: 1fr; }
+    .tab-content { padding: 8px; }
+    .tuner-guard-row { flex-direction: column; align-items: stretch; gap: 4px; }
+    .tuner-guard-label { width: 100%; }
+    .tuner-fields-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .tuner-fields-row.align-end { grid-template-columns: 1fr; }
+    body.mobile-cards-on .grid-cards, body.mobile-cards-on #analytics-charts-grid { grid-template-columns: 1fr !important; }
+    body.mobile-cards-on .btn, body.mobile-cards-on .tab-btn { padding: 8px 10px; font-size: 12px; }
+    body.mobile-cards-on #summary-table thead { display: none; }
+    body.mobile-cards-on #summary-table, body.mobile-cards-on #summary-table tbody { display: block; width: 100%; }
+    body.mobile-cards-on #summary-table tr { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; padding: 8px 10px; }
+    body.mobile-cards-on #summary-table tr.selected { border-color: var(--accent); }
+    body.mobile-cards-on #summary-table td { display: flex; flex-direction: column; gap: 2px; padding: 2px 0; border-bottom: none; white-space: normal; min-width: 0; }
+    body.mobile-cards-on #summary-table td::before { content: attr(data-label); color: var(--text-muted); font-size: 10px; font-weight: 600; text-transform: uppercase; }
+    body.mobile-cards-on #summary-table td[data-col="name"] { grid-column: 1 / -1; flex-direction: row; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 6px; margin-bottom: 2px; }
+    body.mobile-cards-on #summary-table td[data-col="name"]::before { display: none; }
+    body.mobile-cards-on #summary-table td[data-col="name"] strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+    body.mobile-cards-on #summary-table td[data-col="ratio"] { grid-column: 1 / -1; flex-direction: row; justify-content: space-between; align-items: center; background: rgba(46, 204, 113, 0.08); padding: 4px 8px; border-radius: 5px; }
+}
+```
+
+---
+
+#### `web/templates/index.html`
+```html
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="csrf-token" content="{{ csrf_token }}">
+    <meta name="theme-color" content="#1a1a20">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <title>tbr PRO — Швейцарский нож qBittorrent</title>
+    <link rel="stylesheet" href="/static/style.css?v={{ v }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+</head>
+<body>
+<header>
+    <div class="row-gap">
+        <svg class="logo-svg" viewBox="0 0 48 48" fill="none">
+            <rect width="48" height="48" rx="10" fill="#1A1A20"/>
+            <path d="M26 6L12 26H24L20 42L36 22H24L26 6Z" fill="#2ECC71" stroke="#2ECC71" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="logo-text">tbr PRO</span>
+        <span id="qb-status-badge" class="badge badge-pause pointer" onclick="toggleQbPower()" data-i18n="qb_loading">⏳ qB...</span>
+        <span id="tuner-header-badge" class="badge badge-pause pointer admin-only" onclick="switchTab('automation')" title="Адаптивный авто-тюнер qB">🎛️ Тюнер: Выкл</span>
+        <button id="update-available-badge" class="btn btn-xs hidden" style="background:var(--warning); color:#000;" onclick="openUpdateModal(false)">⬆️ Доступно обновление</button>
+    </div>
+    <div class="nav-tabs">
+        <button class="tab-btn active" data-tab="torrents" onclick="switchTab('torrents')" data-i18n="tab_torrents">⚡ Раздачи</button>
+        <button class="tab-btn" data-tab="merger" onclick="switchTab('merger')" data-i18n="tab_merger">🔀 Подменщик</button>
+        <button class="tab-btn" data-tab="summary" onclick="switchTab('summary')" data-i18n="tab_summary">📊 Сводка</button>
+        <button class="tab-btn" data-tab="analytics" onclick="switchTab('analytics')" data-i18n="tab_analytics">📈 Аналитика</button>
+        <button class="tab-btn" data-tab="automation" onclick="switchTab('automation')" data-i18n="tab_automation">🤖 Автопилот</button>
+        <button class="tab-btn" data-tab="tools" onclick="switchTab('tools')" data-i18n="tab_tools">🛠️ Инструменты</button>
+    </div>
+    <div class="row-gap">
+        <button class="btn btn-secondary" title="Палитра команд (Ctrl+K)" onclick="openCommandPalette()">🔍 Ctrl+K</button>
+        <button id="btn-smart-freeze" class="btn btn-secondary admin-only" title="Заморозить/возобновить только активные раздачи" onclick="toggleSmartFreeze()">❄️ Заморозка</button>
+        <button id="btn-snooze-timer" class="btn btn-secondary admin-only" title="Таймер сна для торрентов" onclick="openSnoozeModal()">😴 Сон</button>
+        <button id="btn-panic-killswitch" class="btn btn-danger admin-only" title="Экстренная остановка всех раздач (на мобильном удерживайте 2с)" onclick="onPanicBtnClick()">🚨 Экстренная пауза</button>
+        <button class="btn btn-secondary" title="Обновить текущую вкладку" onclick="refreshActiveTab()">↻</button>
+        <button id="lang-toggle-btn" class="btn btn-secondary" onclick="toggleLang()">🌐 RU</button>
+        <button class="btn btn-secondary" onclick="openCustomizeModal()">🎨 Оформление</button>
+        <button class="btn btn-secondary" title="Сменить свой пароль" onclick="changeSelfPassword()">🔑</button>
+        <button class="btn btn-secondary admin-only" onclick="openSettingsModal()" data-i18n="btn_settings">⚙️ Настройки</button>
+        <button class="btn btn-secondary admin-only" onclick="restartQb()" data-i18n="btn_restart_qb">🔄 Перезапуск qB</button>
+        {% if auth_enabled %}
+        <a href="/logout" class="btn btn-danger" data-i18n="btn_logout">🚪 Выйти</a>
+        {% endif %}
+    </div>
+</header>
+
+<main>
+    <div id="tab-torrents" class="tab-content active">
+        <div class="torrent-left">
+            <div class="table-toolbar">
+                <input type="text" id="search-box" class="search-input" placeholder="🔍 Поиск раздач..." data-i18n-ph="search_ph" oninput="filterTorrents()">
+                <select id="filter-tag-select" class="form-control" style="width:120px; font-size:12px;" onchange="filterTorrents()"><option value="">Все теги</option></select>
+                <select id="filter-tracker-select" class="form-control" style="width:130px; font-size:12px;" onchange="filterTorrents()"><option value="">Все трекеры</option></select>
+                <select id="filter-tracker-err-select" class="form-control" style="width:165px; font-size:12px;" onchange="filterTorrents()">
+                    <option value="">Проблемы с трекерами</option><option value="any">⚠️ Любая ошибка</option>
+                    <option value="unregistered">🚫 Не зарегистрирована</option><option value="auth">🔑 Ошибка passkey/авторизации</option>
+                    <option value="timeout">⏱️ Превышен таймаут</option><option value="other">❓ Прочие ошибки</option>
+                </select>
+                <button class="btn btn-xs admin-only" onclick="openPreflightModal()">➕ Добавить</button>
+                <button class="btn btn-secondary admin-only" onclick="scanDeadTorrents()" data-i18n="btn_scan_dead">🩺 Мёртвые</button>
+                <button class="btn btn-secondary" onclick="loadTorrents(true)" data-i18n="btn_refresh">🔄</button>
+            </div>
+            <div id="saved-views-bar" class="row-wrap" style="padding:5px 12px; border-bottom:1px solid var(--border); gap:6px;"></div>
+            <div id="bulk-actions-bar" class="row-between hidden" style="background:var(--bg-input); padding:6px 12px; border-bottom:1px solid var(--border);">
+                <span class="lbl-xs">Выбрано раздач: <b id="bulk-selected-count" class="accent-txt">0</b></span>
+                <div class="row-gap" style="gap:6px;">
+                    <button class="btn btn-secondary btn-xs" onclick="bulkTorrentAction('stop')">⏸️ Пауза</button>
+                    <button class="btn btn-secondary btn-xs" onclick="bulkTorrentAction('start')">▶️ Пуск</button>
+                    <button class="btn btn-secondary btn-xs" onclick="bulkTorrentAction('addTags')">🏷️ +Тег</button>
+                    <button class="btn btn-secondary btn-xs" onclick="bulkTorrentAction('removeTags')">✂️ -Тег</button>
+                </div>
+            </div>
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width:28px;"><input type="checkbox" onchange="toggleSelectAllVisible(this)" title="Выбрать все видимые"></th>
+                            <th onclick="sortTable('name')"><span data-i18n="th_name">Имя раздачи</span> <span id="sort-icon-name"></span></th>
+                            <th onclick="sortTable('size')"><span data-i18n="th_size">Размер</span> <span id="sort-icon-size"></span></th>
+                            <th onclick="sortTable('uploaded')"><span data-i18n="th_uploaded">Отдано</span> <span id="sort-icon-uploaded"></span></th>
+                            <th onclick="sortTable('ratio')"><span data-i18n="th_ratio">Ratio</span> <span id="sort-icon-ratio"></span></th>
+                            <th onclick="sortTable('health_score')"><span>💎 Ценность</span> <span id="sort-icon-health_score"></span></th>
+                            <th onclick="sortTable('state')"><span data-i18n="th_state">Состояние</span> <span id="sort-icon-state"></span></th>
+                            <th onclick="sortTable('save_path')"><span data-i18n="th_path">Путь</span> <span id="sort-icon-save_path"></span></th>
+                        </tr>
+                    </thead>
+                    <tbody id="torrents-tbody"><tr><td colspan="8" class="center-msg" data-i18n="loading_torrents">Загрузка раздач...</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+        <div class="torrent-right">
+            <div class="card">
+                <div class="card-title" data-i18n="card_selected">ВЫБРАННАЯ РАЗДАЧА</div>
+                <div id="selected-title" class="muted-text" style="margin-bottom: 10px; overflow:hidden; text-overflow:ellipsis;" data-i18n="select_left">Выберите раздачу слева</div>
+                <div class="grid-3 mb-10">
+                    <button class="btn btn-secondary admin-only" onclick="torrentAction('stop')" data-i18n="btn_pause">⏸️ Пауза</button>
+                    <button class="btn btn-secondary admin-only" onclick="torrentAction('start')" data-i18n="btn_start">▶️ Пуск</button>
+                    <button class="btn btn-secondary admin-only" onclick="torrentAction('setForceStart')" data-i18n="btn_force">⚡ Форс</button>
+                </div>
+                <button class="btn w-full center-btn mb-8" onclick="goToAnalyticsWithTorrent()" data-i18n="btn_forecast">🔮 Рассчитать прогноз</button>
+                <button class="btn btn-secondary w-full center-btn mb-8" onclick="openTorrentInspectorModal()">🔬 Пиры, заметки и файлы</button>
+                <div class="grid-2 mb-8">
+                    <button class="btn btn-secondary center-btn admin-only" onclick="openTargetModal()">🎯 Цель</button>
+                    <button class="btn btn-secondary center-btn admin-only" onclick="openExpirationModal()">⏳ Срок</button>
+                </div>
+                <div class="grid-2 mb-8">
+                    <button class="btn btn-secondary center-btn admin-only" onclick="toggleSelectedSniper()">📡 Маячок</button>
+                    <button class="btn btn-secondary center-btn admin-only" onclick="enqueueSelectedRecheck()">💽 Речек (очер.)</button>
+                </div>
+                <button class="btn btn-danger w-full center-btn admin-only" onclick="deleteSelectedTorrent()">🗑️ Удалить раздачу</button>
+            </div>
+            <div class="card danger-border admin-only">
+                <div class="card-title" style="color: var(--danger);" data-i18n="card_seedbox">УПРАВЛЕНИЕ ВСЕМ СИДБОКСОМ</div>
+                <p class="muted-text mb-10" data-i18n="seedbox_desc">Остановить или запустить все раздачи в клиенте:</p>
+                <div class="col-gap">
+                    <button class="btn btn-danger w-full center-btn" onclick="globalTorrentAction('stop')" data-i18n="btn_pause_all">⏸️ ОСТАНОВИТЬ ВСЕ</button>
+                    <button class="btn w-full center-btn" onclick="globalTorrentAction('start')" data-i18n="btn_resume_all">▶️ ВОЗОБНОВИТЬ ВСЕ</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="tab-merger" class="tab-content col-center">
+        <div id="smart-match-card" class="card mb-12">
+            <div class="row-between mb-8">
+                <div class="card-title" style="margin:0;">✨ НАЙДЕНЫ КАНДИДАТЫ НА ОБЪЕДИНЕНИЕ (SMART MATCH)</div>
+                <button class="btn btn-secondary btn-xs" onclick="loadSmartMatchCandidates()">🔎 Обновить подбор</button>
+            </div>
+            <div id="smart-match-list" class="col-gap" style="max-height:160px; overflow-y:auto; font-size:12px;"><span class="muted-text">Поиск похожих раздач...</span></div>
+        </div>
+        <div class="card">
+            <div class="card-title" data-i18n="card_merger">🔄 ПОДМЕНЩИК РАЗДАЧ (.FASTRESUME)</div>
+            <p class="muted-text mb-10" data-i18n="merger_desc">qBittorrent выгружается перед подменой и перезапускается автоматически — бенкод не пострадает.</p>
+            <div class="form-group"><label data-i18n="lbl_old_tor">1. Исходная раздача (старая):</label><select id="merger-old" class="form-control" onchange="onMergerSelectionChange()"></select></div>
+            <div class="form-group"><label data-i18n="lbl_new_tor">2. Целевая раздача (приёмник):</label><select id="merger-new" class="form-control" onchange="onMergerSelectionChange()"></select></div>
+            <div class="form-group"><label>3. Режим переноса статистики:</label><select id="merger-mode" class="form-control" onchange="updateMergerCalcPreview()"><option value="add" selected>➕ Сложить (рекомендуется, если на цели уже есть отдача)</option><option value="replace">🔄 Заменить (переписать статистику цели начисто)</option></select></div>
+            <div id="merger-calc-preview" class="card mb-8" style="background:var(--bg-input); padding:8px 12px; border-radius:6px; border:1px solid var(--border);"><div class="row-between"><span class="lbl-xs">Итоговый расчёт отдачи:</span><b id="merger-calc-txt" class="accent-txt">—</b></div></div>
+            <div id="merger-dup-warn" class="lbl-xs hidden mb-8" style="color:var(--warning); background:rgba(243,156,18,0.12); padding:6px 10px; border-radius:6px; border:1px solid rgba(243,156,18,0.3);">⚠️ Внимание: эти раздачи уже объединялись ранее!</div>
+            <div class="form-group"><label data-i18n="lbl_del_mode">4. Исходная раздача после переноса:</label><select id="merger-delete-mode" class="form-control" onchange="onMergerDeleteModeChange()"><option value="none" data-i18n="del_mode_none">Не удалять (оставить всё)</option><option value="safe" data-i18n="del_mode_safe">Удалить всё (безопасно: с проверкой путей)</option><option value="force" data-i18n="del_mode_force">Удалить всё (принудительно: файлы с диска)</option></select></div>
+            <div id="merger-force-warn" class="lbl-xs hidden" style="color: var(--danger); margin-bottom: 8px;" data-i18n="del_force_warn">⚠️ ОПАСНО: принудительный режим удалит файлы с диска, даже если пути исходника и получателя совпадают!</div>
+            <div class="grid-2 mt-10"><button id="btn-merger-diff" class="btn btn-secondary w-full center-btn" onclick="openTorrentDiffModal()">🔍 Сравнить файлы раздач</button><button class="btn w-full center-btn" onclick="runMerger()" data-i18n="btn_merge">🚀 ПЕРЕНЕСТИ СТАТИСТИКУ</button></div>
+        </div>
+        <div class="card mt-12"><div class="card-title" data-i18n="card_op_log">ЛОГ ОПЕРАЦИИ</div><div id="merger-log" class="terminal" data-i18n="ready">Готов к работе...</div></div>
+    </div>
+
+    <div id="tab-summary" class="tab-content col-wide">
+        <div class="grid-cards mb-12">
+            <div class="card"><div class="lbl-sm" data-i18n="sum_count">Раздач:</div><div id="sum-count" class="val-lg">-</div></div>
+            <div class="card"><div class="lbl-sm" data-i18n="sum_size">Общий объем:</div><div id="sum-size" class="val-lg">-</div></div>
+            <div class="card"><div class="lbl-sm" data-i18n="sum_uploaded">Всего отдано:</div><div id="sum-uploaded" class="val-lg accent-txt">-</div></div>
+            <div class="card"><div class="lbl-sm" data-i18n="sum_1h">Сумма за 1 час:</div><div id="sum-global-hour" class="val-md purple-txt">-</div><div id="sum-global-hour-speed" class="lbl-xs purple-txt">-</div><div id="sum-global-hour-note" class="lbl-xs muted-text"></div></div>
+            <div class="card"><div class="lbl-sm" data-i18n="sum_day">Объем в день:</div><div id="sum-global-day" class="val-md orange-txt">-</div><div id="sum-global-day-speed" class="lbl-xs orange-txt">-</div></div>
+            <div class="card"><div class="lbl-sm" data-i18n="sum_ratio_h">Ratio/ч (всего / 24ч):</div><div id="sum-ratio-h" class="val-sm blue-txt">-</div></div>
+        </div>
+        <div id="summary-equivalents-bar" class="card mb-12 hidden" style="padding:8px 12px; font-size:12px;"></div>
+        <div class="card row-wrap mb-12">
+            <div class="grow-1"><label class="lbl-sm" data-i18n="lbl_search">Поиск:</label><input type="text" id="sum-filter-search" class="form-control" placeholder="Фильтр..." data-i18n-ph="filter_ph" oninput="applySummaryFilters()"></div>
+            <div style="width:110px"><label class="lbl-sm" data-i18n="lbl_min_ratio">Мин. Ratio:</label><input type="number" step="0.5" id="sum-filter-ratio" class="form-control" oninput="applySummaryFilters()"></div>
+            <div style="width:130px"><label class="lbl-sm" data-i18n="lbl_min_up">Мин. отдано (ГБ):</label><input type="number" id="sum-filter-uploaded" class="form-control" oninput="applySummaryFilters()"></div>
+            <div class="row-gap" style="align-self:flex-end; flex-wrap:wrap;">
+                <button id="btn-live-filter" class="btn btn-secondary" onclick="toggleSummaryLiveFilter()">📡 Прямой эфир</button>
+                <button id="btn-last-seed-filter" class="btn btn-secondary" onclick="toggleSummaryLastSeedFilter()">🛡️ Последний сид</button>
+                <button class="btn btn-secondary" onclick="sortSummary('health_score')">💎 По ценности</button>
+                <button class="btn btn-secondary" onclick="loadSummary(true)" data-i18n="btn_refresh">🔄 Обновить</button>
+                <button id="btn-toggle-mobile-cards" class="btn btn-secondary" onclick="toggleMobileCardsMode()">📋 Таблица</button>
+                <div style="position:relative;"><button class="btn btn-secondary" onclick="toggleSummaryColsMenu()">🧱 Столбцы</button><div id="summary-cols-menu" class="card hidden" style="position:absolute; right:0; top:34px; z-index:50; min-width:160px;"></div></div>
+                <button class="btn btn-secondary" onclick="resetSummaryFilters()" data-i18n="btn_reset">Сброс</button>
+                <button class="btn" onclick="exportFilteredSummaryCSV()" data-i18n="btn_export_csv">📥 Экспорт выборки</button>
+            </div>
+        </div>
+        <div id="summary-table-wrap" class="card flex-scroll"><table id="summary-table"><thead id="summary-thead"><tr id="summary-thead-row"></tr></thead><tbody id="summary-tbody"></tbody></table></div>
+    </div>
+
+    {% include 'partials/tab_analytics.html' %}
+    {% include 'partials/tab_automation.html' %}
+    {% include 'partials/tab_tools.html' %}
+</main>
+
+<footer class="app-footer">
+    <a href="{{ releases_url }}" target="_blank" class="version-pill" title="Открыть релизы на GitHub">⚡ tbr PRO v{{ app_version }}</a>
+    <a href="/kiosk" target="_blank" class="btn btn-secondary btn-xs">🖥️ Режим Киоск</a>
+    <span id="autopilot-freeze-badge" class="badge badge-stall hidden">❄️ Автопилот заморожен</span>
+    <button class="btn btn-secondary btn-xs admin-only" onclick="openUpdateModal(true)">🔄 Ченджлог и обновление</button>
+</footer>
+
+{% include 'partials/modals.html' %}
+
+<div id="dry-run-modal" class="modal-backdrop"><div class="modal" style="max-width:740px; max-height:85vh; display:flex; flex-direction:column;">
+    <div class="row-between mb-8"><div class="card-title" style="margin:0;">🧪 ПЕСОЧНИЦА АВТОПИЛОТА (DRY-RUN)</div><button class="btn btn-secondary btn-xs" onclick="document.getElementById('dry-run-modal').style.display='none'">✕</button></div>
+    <div id="dry-run-summary" class="lbl-xs muted-text mb-8">—</div>
+    <div class="scroll-box" style="flex:1; max-height:55vh; border:1px solid var(--border); border-radius:6px;">
+        <table><thead><tr><th>Раздача / Правило</th><th>Ratio</th><th>Отдано</th><th>Планируемые действия</th></tr></thead><tbody id="dry-run-tbody"></tbody></table>
+    </div>
+</div></div>
+
+<div id="qb-diff-modal" class="modal-backdrop"><div class="modal" style="max-width:780px; max-height:85vh; display:flex; flex-direction:column;">
+    <div class="row-between mb-8"><div class="card-title" style="margin:0;">🔍 DIFF КОНФИГОВ qBITTORRENT</div><button class="btn btn-secondary btn-xs" onclick="document.getElementById('qb-diff-modal').style.display='none'">✕</button></div>
+    <div class="row-wrap mb-8" style="gap:6px;">
+        <select id="qb-diff-a" class="form-control grow-1" onchange="runQbConfigDiff()"></select>
+        <select id="qb-diff-b" class="form-control grow-1" onchange="runQbConfigDiff()"></select>
+        <select id="qb-diff-file" class="form-control" style="width:160px;" onchange="runQbConfigDiff()"><option>qBittorrent.ini</option><option>qBittorrent.conf</option><option>categories.json</option><option>watched_folders.json</option></select>
+    </div>
+    <pre id="qb-diff-out" class="terminal" style="height:320px; color:var(--text);">—</pre>
+</div></div>
+
+<div id="onboarding-modal" class="modal-backdrop"><div class="modal" style="max-width:480px;">
+    <div class="card-title">🚀 МАСТЕР ПЕРВОГО ЗАПУСКА tbr PRO</div>
+    <div id="onb-step-1"><p class="muted-text mb-10">Шаг 1/4: Автопоиск qBittorrent и окружения</p><div id="onb-probe-status" class="card mb-10" style="background:var(--bg-input); font-size:12px;">Проверка...</div><div class="row-between"><button class="btn btn-secondary" onclick="finishOnboarding(true)">Пропустить</button><button class="btn" onclick="_setOnbStep(2)">Далее →</button></div></div>
+    <div id="onb-step-2" class="hidden"><p class="muted-text mb-10">Шаг 2/4: Подключение к WebUI qBittorrent</p><div class="grid-2 mb-8"><input id="onb-qb-ip" class="form-control" placeholder="IP"><input id="onb-qb-port" class="form-control" placeholder="Порт"></div><div class="grid-2 mb-10"><input id="onb-qb-user" class="form-control" placeholder="Логин (admin)"><input id="onb-qb-pass" type="password" class="form-control" placeholder="Пароль"></div><div class="row-between"><button class="btn btn-secondary" onclick="_setOnbStep(1)">← Назад</button><button class="btn" onclick="_setOnbStep(3)">Далее →</button></div></div>
+    <div id="onb-step-3" class="hidden"><p class="muted-text mb-10">Шаг 3/4: Диски и потолок канала</p><div class="form-group"><label>Основной диск:</label><select id="onb-disk" class="form-control"></select></div><div class="form-group"><label>Потолок канала (Мбит/с):</label><input id="onb-mbps" type="number" class="form-control" value="1000"></div><div class="row-between"><button class="btn btn-secondary" onclick="_setOnbStep(2)">← Назад</button><button class="btn" onclick="_setOnbStep(4)">Далее →</button></div></div>
+    <div id="onb-step-4" class="hidden"><p class="muted-text mb-12">Шаг 4/4: Всё готово к взлёту! Нажмите «Завершить», чтобы сохранить параметры и начать работу.</p><div class="row-between"><button class="btn btn-secondary" onclick="_setOnbStep(3)">← Назад</button><button class="btn" onclick="finishOnboarding(false)">✅ Завершить</button></div></div>
+</div></div>
+
+<script src="/static/common.js?v={{ v }}"></script>
+<script src="/static/i18n_ru.js?v={{ v }}"></script>
+<script src="/static/i18n_en.js?v={{ v }}"></script>
+<script src="/static/i18n.js?v={{ v }}"></script>
+<script src="/static/settings.js?v={{ v }}"></script>
+<script src="/static/profiles.js?v={{ v }}"></script>
+<script src="/static/customizer.js?v={{ v }}"></script>
+<script src="/static/torrents_merger.js?v={{ v }}"></script>
+<script src="/static/torrents.js?v={{ v }}"></script>
+<script src="/static/summary.js?v={{ v }}"></script>
+<script src="/static/analytics_logs.js?v={{ v }}"></script>
+<script src="/static/analytics_insights.js?v={{ v }}"></script>
+<script src="/static/smart_calc.js?v={{ v }}"></script>
+<script src="/static/analytics_charts_render.js?v={{ v }}"></script>
+<script src="/static/analytics.js?v={{ v }}"></script>
+<script src="/static/tuner_ui.js?v={{ v }}"></script>
+<script src="/static/tuner_rules_ui.js?v={{ v }}"></script>
+<script src="/static/automation.js?v={{ v }}"></script>
+<script src="/static/system_tools.js?v={{ v }}"></script>
+<script src="/static/merger_tools.js?v={{ v }}"></script>
+<script src="/static/timers_ui.js?v={{ v }}"></script>
+<script src="/static/palette_targets.js?v={{ v }}"></script>
+<script src="/static/social_ui.js?v={{ v }}"></script>
+<script src="/static/safety_ui.js?v={{ v }}"></script>
+<script src="/static/hygiene_ui.js?v={{ v }}"></script>
+<script src="/static/phase3_ui.js?v={{ v }}"></script>
+<script src="/static/phase4_ui.js?v={{ v }}"></script>
+<script src="/static/hardcore_ui.js?v={{ v }}"></script>
+</body>
+</html>
+```
+
+---
+
+Закидывай в `patch.md`, прогоняй `python apply_patch.py`, проверяй `python v` и жми `Ctrl+F5` в браузере!
+Теперь у тебя конструктор с 5 встроенными пресетами (+ свои любые), приоритетной лесенкой правил, частотой опроса ПК от 2 секунд, чипами с каталогом игр и 100% человечным UI без жаргона. Если что-то захочется подкрутить по месту — скидывай скрин или отзыв!

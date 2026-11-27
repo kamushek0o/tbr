@@ -1,4 +1,4 @@
-<!-- Адаптивный авто-тюнер qBittorrent (ТЗ #58) -->
+<!-- Адаптивный авто-тюнер qBittorrent (ТЗ #58 Апгрейд) -->
 <div class="card admin-only" id="tuner-main-card">
     <div class="row-between mb-8">
         <div class="row-gap" style="flex-wrap:wrap;">
@@ -7,57 +7,57 @@
             <button id="tuner-btn-clear-ov" class="btn btn-secondary btn-xs hidden" onclick="clearTunerOverride()">🔄 Вернуть авто</button>
         </div>
         <div class="row-gap" style="flex-wrap:wrap;">
-            <button id="tuner-btn-off" class="btn btn-secondary btn-xs" onclick="setTunerMode('off')">Выкл</button>
-            <button id="tuner-btn-comfort" class="btn btn-secondary btn-xs" onclick="setTunerMode('comfort')">🛋️ Комфорт</button>
-            <button id="tuner-btn-performance" class="btn btn-secondary btn-xs" onclick="setTunerMode('performance')">🚀 Производ.</button>
-            <label class="row-gap pointer lbl-xs" style="margin-left:4px; white-space:nowrap;"><input type="checkbox" id="tuner-auto-chk" onchange="toggleTunerAutoSwitch()"> <b>Авто</b></label>
-            <button class="btn btn-secondary btn-xs" onclick="restoreTunerBaseline()" title="Откатить настройки qB к исходному эталону">♻️ Эталон</button>
+            <div id="tuner-mode-pills" class="row-gap" style="flex-wrap:wrap; gap:4px;"></div>
+            <label class="row-gap pointer lbl-xs no-wrap" style="margin-left:4px;"><input type="checkbox" id="tuner-auto-chk" onchange="toggleTunerAutoSwitch()"> <b>Авто</b></label>
+            <button class="btn btn-secondary btn-xs" onclick="restoreTunerBaseline()">♻️ Вернуть исходные настройки qB</button>
         </div>
     </div>
 
     <!-- Метрики в реальном времени -->
     <div class="tuner-telemetry-grid mb-10">
-        <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap" id="tel-disk-title">Диск I/O</div><div id="tel-disk" class="val-sm">—</div></div>
-        <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap">Чужой CPU</div><div id="tel-cpu" class="val-sm">—</div></div>
-        <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap">RAM своб.</div><div id="tel-ram" class="val-sm">—</div></div>
+        <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap" id="tel-disk-title">Загрузка диска</div><div id="tel-disk" class="val-sm">—</div></div>
+        <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap">Проц (другие прог.)</div><div id="tel-cpu" class="val-sm">—</div></div>
+        <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap">Запас памяти (RAM)</div><div id="tel-ram" class="val-sm">—</div></div>
         <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap">Канал qB</div><div id="tel-chan" class="val-sm accent-txt">—</div></div>
-        <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap">Чужая сеть</div><div id="tel-net" class="val-sm">—</div></div>
-        <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap">Слоты / Заполн.</div><div id="tel-slots" class="val-sm blue-txt">—</div></div>
+        <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap">Сеть (другие прог.)</div><div id="tel-net" class="val-sm">—</div></div>
+        <div class="tuner-stat-card"><div class="lbl-xs muted-text no-wrap">Пиров / Заполн.</div><div id="tel-slots" class="val-sm blue-txt">—</div></div>
     </div>
 
     <!-- Лента решений -->
-    <div class="scroll-box mb-12" style="max-height:140px; border:1px solid var(--border); border-radius:6px;">
+    <div class="scroll-box mb-12" style="max-height:135px; border:1px solid var(--border); border-radius:6px;">
         <table>
-            <thead><tr><th>Время</th><th>Режим</th><th>Событие</th><th>Причина</th><th>Слоты</th></tr></thead>
+            <thead><tr><th>Время</th><th>Профиль</th><th>Событие</th><th>Причина</th><th>Пиры</th></tr></thead>
             <tbody id="tuner-history-tbody"><tr><td colspan="5" class="center-msg">Нет событий</td></tr></tbody>
         </table>
     </div>
 
     <div class="tuner-columns-grid">
-        <!-- Левая колонка: Профили -->
+        <!-- Левая колонка: Конструктор профилей -->
         <div class="tuner-box">
-            <div class="row-between mb-8">
-                <div class="row-gap">
-                    <button id="tp-tab-performance" class="btn btn-xs" onclick="selectTunerProfileTab('performance')">🚀 Производительность</button>
-                    <button id="tp-tab-comfort" class="btn btn-secondary btn-xs" onclick="selectTunerProfileTab('comfort')">🛋️ Комфорт</button>
-                </div>
-                <div class="row-gap">
-                    <button class="btn btn-secondary btn-xs" onclick="resetTunerProfile()" title="Сбросить профиль к заводским">Сброс</button>
-                    <button class="btn btn-xs" onclick="saveTunerProfile()">💾 Сохранить</button>
+            <div class="row-between mb-8" style="gap:6px;">
+                <select id="tp-profile-select" class="form-control grow-1" style="font-weight:700;" onchange="selectTunerProfile(this.value)"></select>
+                <div class="row-gap" style="gap:4px; flex-wrap:wrap;">
+                    <button class="btn btn-secondary btn-xs" onclick="createNewTunerProfile()" title="Создать новый профиль">+ Новый</button>
+                    <button class="btn btn-secondary btn-xs" onclick="cloneTunerProfile()" title="Клонировать текущий профиль">📋 Клон</button>
+                    <button class="btn btn-secondary btn-xs" onclick="renameTunerProfile()" title="Переименовать / сменить иконку">✏️</button>
+                    <button class="btn btn-danger btn-xs" onclick="deleteTunerProfile()" title="Удалить профиль">🗑️</button>
                 </div>
             </div>
+            <div class="row-between mb-8">
+                <button class="btn btn-secondary btn-xs" onclick="resetBuiltinTunerPresets()">🔄 Сбросить стандартные</button>
+                <button class="btn btn-xs" onclick="saveTunerProfile()">💾 Сохранить профиль</button>
+            </div>
 
-            <!-- Главные параметры слотов -->
-            <div class="tuner-section-title">СЛОТЫ ОТДАЧИ (MAX_UPLOADS)</div>
+            <div class="tuner-section-title">ПИРЫ ОТДАЧИ (СЛОТЫ)</div>
             <div class="tuner-fields-row mb-8">
-                <div class="tuner-field"><span class="lbl-micro">Мин. слотов</span><input id="tp-mu-min" type="number" class="form-control tuner-num-input"></div>
-                <div class="tuner-field"><span class="lbl-micro">Макс. слотов</span><input id="tp-mu-max" type="number" class="form-control tuner-num-input"></div>
-                <div class="tuner-field"><span class="lbl-micro">Стартовые</span><input id="tp-mu-start" type="number" class="form-control tuner-num-input"></div>
+                <div class="tuner-field"><span class="lbl-micro">Мин. пиров</span><input id="tp-mu-min" type="number" class="form-control tuner-num-input"></div>
+                <div class="tuner-field"><span class="lbl-micro">Макс. пиров</span><input id="tp-mu-max" type="number" class="form-control tuner-num-input"></div>
+                <div class="tuner-field"><span class="lbl-micro">Стартовых</span><input id="tp-mu-start" type="number" class="form-control tuner-num-input"></div>
             </div>
 
             <div class="tuner-fields-row mb-8">
                 <div class="tuner-field grow-1">
-                    <span class="lbl-micro">max_active_uploads</span>
+                    <span class="lbl-micro">Макс. активных раздач</span>
                     <select id="tp-act-mode" class="form-control" onchange="syncTunerDisabledStates()">
                         <option value="keep">Не менять (эталон)</option>
                         <option value="range">Диапазон Min..Max</option>
@@ -68,7 +68,6 @@
                 <div class="tuner-field" id="wrap-tp-act-max"><span class="lbl-micro">Max</span><input id="tp-act-max" type="number" class="form-control tuner-num-input"></div>
             </div>
 
-            <!-- Скорость и канал -->
             <div class="tuner-section-title">ЦЕЛЬ КАНАЛА И СКОРОСТИ</div>
             <div class="tuner-fields-row mb-8">
                 <div class="tuner-field"><span class="lbl-micro">Цель канала (От %)</span><input id="tp-ch-min" type="number" class="form-control tuner-num-input"></div>
@@ -85,149 +84,162 @@
                 <div class="tuner-field" id="wrap-tp-sq-dl"><span class="lbl-micro">Сжать DL %</span><input id="tp-sq-dl" type="number" class="form-control tuner-num-input"></div>
             </div>
 
-            <!-- Ограничители железа -->
-            <div class="tuner-section-title">ОГРАНИЧИТЕЛИ ЖЕЛЕЗА И СЕТИ</div>
+            <div class="tuner-section-title">ЗАЩИТА ЖЕЛЕЗА И ИНТЕРНЕТА</div>
             <div class="tuner-guards-list mb-8">
-                <!-- Диск -->
                 <div class="tuner-guard-row" id="guard-row-disk">
-                    <label class="row-gap pointer lbl-xs tuner-guard-label no-wrap"><input id="tp-g-disk-en" type="checkbox" onchange="syncTunerDisabledStates()"> <span>Диск I/O</span></label>
-                    <div class="tuner-field" style="flex: 1.5 1 125px; min-width: 110px;">
-                        <span class="lbl-micro">Целевой диск</span>
-                        <select id="tp-g-disk-target" class="form-control" style="padding:4px 6px; font-size:11px;" onchange="syncTunerDisabledStates()"></select>
-                    </div>
+                    <label class="row-gap pointer lbl-xs tuner-guard-label no-wrap"><input id="tp-g-disk-en" type="checkbox" onchange="syncTunerDisabledStates()"> <span>Загрузка диска</span></label>
+                    <div class="tuner-field" style="flex:1.5 1 120px; min-width:105px;"><span class="lbl-micro">Какой диск</span><select id="tp-g-disk-target" class="form-control" style="padding:4px 6px; font-size:11px;" onchange="syncTunerDisabledStates()"></select></div>
                     <div class="tuner-field"><span class="lbl-micro">Тревога %</span><input id="tp-g-disk-warn" type="number" class="form-control tuner-num-input"></div>
                     <div class="tuner-field"><span class="lbl-micro">Крит. %</span><input id="tp-g-disk-crit" type="number" class="form-control tuner-num-input"></div>
                     <div class="tuner-field"><span class="lbl-micro">Возврат %</span><input id="tp-g-disk-rec" type="number" class="form-control tuner-num-input"></div>
                 </div>
-
-                <!-- CPU -->
                 <div class="tuner-guard-row" id="guard-row-cpu">
-                    <label class="row-gap pointer lbl-xs tuner-guard-label no-wrap"><input id="tp-g-cpu-en" type="checkbox" onchange="syncTunerDisabledStates()"> <span>Чужой CPU</span></label>
+                    <label class="row-gap pointer lbl-xs tuner-guard-label no-wrap"><input id="tp-g-cpu-en" type="checkbox" onchange="syncTunerDisabledStates()"> <span>Проц (другие прог.)</span></label>
                     <div class="tuner-field"><span class="lbl-micro">Тревога %</span><input id="tp-g-cpu-warn" type="number" class="form-control tuner-num-input"></div>
                     <div class="tuner-field"><span class="lbl-micro">Возврат %</span><input id="tp-g-cpu-rec" type="number" class="form-control tuner-num-input"></div>
                 </div>
-
-                <!-- RAM -->
                 <div class="tuner-guard-row" id="guard-row-ram">
-                    <label class="row-gap pointer lbl-xs tuner-guard-label no-wrap"><input id="tp-g-ram-en" type="checkbox" onchange="syncTunerDisabledStates()"> <span>Своб. RAM</span></label>
+                    <label class="row-gap pointer lbl-xs tuner-guard-label no-wrap"><input id="tp-g-ram-en" type="checkbox" onchange="syncTunerDisabledStates()"> <span>Запас памяти</span></label>
                     <div class="tuner-field"><span class="lbl-micro">Мин. % (тревога)</span><input id="tp-g-ram-min" type="number" class="form-control tuner-num-input"></div>
                     <div class="tuner-field"><span class="lbl-micro">Возврат %</span><input id="tp-g-ram-rec" type="number" class="form-control tuner-num-input"></div>
                 </div>
-
-                <!-- Сеть -->
                 <div class="tuner-guard-row" id="guard-row-net">
-                    <label class="row-gap pointer lbl-xs tuner-guard-label no-wrap"><input id="tp-g-net-en" type="checkbox" onchange="syncTunerDisabledStates()"> <span>Чужая сеть</span></label>
+                    <label class="row-gap pointer lbl-xs tuner-guard-label no-wrap"><input id="tp-g-net-en" type="checkbox" onchange="syncTunerDisabledStates()"> <span>Сеть (другие прог.)</span></label>
                     <div class="tuner-field"><span class="lbl-micro">Тревога %</span><input id="tp-g-net-warn" type="number" class="form-control tuner-num-input"></div>
                     <div class="tuner-field"><span class="lbl-micro">Возврат %</span><input id="tp-g-net-rec" type="number" class="form-control tuner-num-input"></div>
                 </div>
             </div>
 
-            <!-- Аккордеон: Тонкие настройки -->
             <details class="tuner-details">
-                <summary>⚙️ Тонкие настройки слотов и задержек</summary>
+                <summary>⚙️ Тонкие настройки пиров и задержек</summary>
                 <div class="tuner-details-body">
                     <div class="tuner-fields-row mb-8 align-end">
-                        <div class="tuner-field"><span class="lbl-micro">На торрент (Min)</span><input id="tp-pt-up-min" type="number" class="form-control tuner-num-input"></div>
-                        <div class="tuner-field"><span class="lbl-micro">На торрент (Max)</span><input id="tp-pt-up-max" type="number" class="form-control tuner-num-input"></div>
+                        <div class="tuner-field"><span class="lbl-micro">Пиров отдачи на раздачу (Min)</span><input id="tp-pt-up-min" type="number" class="form-control tuner-num-input"></div>
+                        <div class="tuner-field"><span class="lbl-micro">Пиров отдачи на раздачу (Max)</span><input id="tp-pt-up-max" type="number" class="form-control tuner-num-input"></div>
                         <label class="row-gap pointer lbl-xs no-wrap" style="padding-bottom:5px;"><input id="tp-pt-up-auto" type="checkbox" onchange="syncTunerDisabledStates()"> Авто 28%</label>
                     </div>
-
                     <div class="tuner-fields-row mb-8 align-end">
-                        <div class="tuner-field"><span class="lbl-micro">Соединений (Min)</span><input id="tp-mc-min" type="number" class="form-control tuner-num-input"></div>
-                        <div class="tuner-field"><span class="lbl-micro">Соединений (Max)</span><input id="tp-mc-max" type="number" class="form-control tuner-num-input"></div>
+                        <div class="tuner-field"><span class="lbl-micro">Соединений всего (Min)</span><input id="tp-mc-min" type="number" class="form-control tuner-num-input"></div>
+                        <div class="tuner-field"><span class="lbl-micro">Соединений всего (Max)</span><input id="tp-mc-max" type="number" class="form-control tuner-num-input"></div>
                         <label class="row-gap pointer lbl-xs no-wrap" style="padding-bottom:5px;"><input id="tp-mc-auto" type="checkbox" onchange="syncTunerDisabledStates()"> Авто ×4</label>
                     </div>
-
                     <div class="tuner-fields-row mb-8">
-                        <div class="tuner-field"><span class="lbl-micro">Connec/торр. (Min)</span><input id="tp-pt-con-min" type="number" class="form-control tuner-num-input"></div>
-                        <div class="tuner-field"><span class="lbl-micro">Connec/торр. (Max)</span><input id="tp-pt-con-max" type="number" class="form-control tuner-num-input"></div>
-                        <div class="tuner-field"><span class="lbl-micro">Кулдаун (сек)</span><input id="tp-cd-sec" type="number" class="form-control tuner-num-input"></div>
-                        <div class="tuner-field"><span class="lbl-micro">Шаг разгона (+слоты)</span><input id="tp-step-up" type="number" class="form-control tuner-num-input"></div>
+                        <div class="tuner-field"><span class="lbl-micro">Соед. на раздачу (Min)</span><input id="tp-pt-con-min" type="number" class="form-control tuner-num-input"></div>
+                        <div class="tuner-field"><span class="lbl-micro">Соед. на раздачу (Max)</span><input id="tp-pt-con-max" type="number" class="form-control tuner-num-input"></div>
+                        <div class="tuner-field"><span class="lbl-micro">Пауза перед разгоном (с) <span class="tuner-help" onclick="alert(this.title)" title="Сколько ждать после снижения пиров, прежде чем снова пробовать повышать">?</span></span><input id="tp-cd-sec" type="number" class="form-control tuner-num-input"></div>
+                        <div class="tuner-field"><span class="lbl-micro">Шаг прибавления пиров</span><input id="tp-step-up" type="number" class="form-control tuner-num-input"></div>
                     </div>
-
-                    <label class="row-gap pointer lbl-xs no-wrap">
-                        <input id="tp-yield-turtle" type="checkbox"> Уступать ручной «Черепахе» в клиенте
-                    </label>
+                    <label class="row-gap pointer lbl-xs no-wrap"><input id="tp-yield-turtle" type="checkbox"> Не мешать ручному лимиту скорости в qB</label>
                 </div>
             </details>
         </div>
 
-        <!-- Правая колонка: Правила автопереключения -->
+        <!-- Правая колонка: Общие настройки + Приоритетные правила -->
         <div class="tuner-box">
             <div class="row-between mb-8">
-                <span class="lbl-sm" style="margin:0; font-weight:700;">🧠 ПРАВИЛА АВТОПЕРЕКЛЮЧЕНИЯ</span>
-                <button class="btn btn-xs" onclick="saveTunerRules()">💾 Сохранить</button>
+                <span class="lbl-sm" style="margin:0; font-weight:700;">🧠 АВТОПЕРЕКЛЮЧЕНИЕ ПРОФИЛЕЙ</span>
+                <button class="btn btn-xs" onclick="saveTunerGlobalSettings()">💾 Общие</button>
             </div>
-
             <div class="tuner-fields-row mb-8">
+                <div class="tuner-field grow-1"><span class="lbl-micro">Профиль по умолчанию</span><select id="tr-def-profile" class="form-control"></select></div>
+                <div class="tuner-field"><span class="lbl-micro">Частота проверки ПК (сек) <span class="tuner-help" onclick="alert(this.title)" title="Как часто проверять запущенные игры и загрузку системы (2..30 сек)">?</span></span><input id="tr-poll-sec" type="number" min="2" max="30" class="form-control tuner-num-input" value="3"></div>
                 <div class="tuner-field grow-1">
-                    <span class="lbl-micro">Режим по умолчанию</span>
-                    <select id="tr-def-mode" class="form-control">
-                        <option value="performance">Производительность</option>
-                        <option value="comfort">Комфорт</option>
-                    </select>
-                </div>
-                <div class="tuner-field grow-1">
-                    <span class="lbl-micro">Политика Manual Override</span>
+                    <span class="lbl-micro">Если я переключил вручную:</span>
                     <select id="tr-ov-policy" class="form-control">
-                        <option value="2h">На 2 часа</option>
-                        <option value="until_schedule">До смены расписания</option>
-                        <option value="until_process_exit">До закрытия процесса</option>
+                        <option value="2h">Уступать 2 часа</option>
+                        <option value="until_window">До конца текущего окна</option>
+                        <option value="until_rule">Пока не сработает правило</option>
                     </select>
                 </div>
             </div>
 
-            <!-- Расписание -->
             <div class="tuner-block-divider mb-8">
                 <div class="row-between mb-6">
-                    <span class="lbl-xs"><b>⏰ Расписание (с переходом через полночь)</b></span>
-                    <button class="btn btn-secondary btn-xs" onclick="addTunerScheduleRow()">+ Окно</button>
+                    <span class="lbl-xs"><b>📋 Приоритет правил (сверху вниз):</b></span>
+                    <button class="btn btn-xs" onclick="openNewRuleForm()">+ Добавить правило</button>
                 </div>
-                <div id="tr-sched-list" class="col-gap" style="max-height:110px; overflow-y:auto;"></div>
+                <div id="tuner-rules-list" class="col-gap scroll-box" style="max-height:190px; gap:6px;"></div>
             </div>
 
-            <!-- Процессы (Watchlist) -->
-            <div class="tuner-block-divider mb-8" id="rules-box-proc">
+            <!-- Форма правила -->
+            <div id="tuner-rule-editor" class="tuner-block-divider hidden">
                 <div class="row-between mb-6">
-                    <label class="row-gap pointer lbl-xs no-wrap"><input id="tr-proc-en" type="checkbox" onchange="syncTunerDisabledStates()"> <b>🎮 Процессы (Watchlist)</b></label>
-                    <div class="row-gap">
-                        <select id="tr-proc-mode" class="form-control" style="padding:2px 4px; font-size:11px;">
-                            <option value="comfort">→ Комфорт</option>
-                            <option value="performance">→ Производ.</option>
-                        </select>
-                        <button class="btn btn-secondary btn-xs" onclick="loadRunningProcessesPicker()">🖥️ Процессы ПК</button>
+                    <b id="tr-edit-title" class="lbl-xs accent-txt">Новое правило</b>
+                    <button class="btn btn-secondary btn-xs" onclick="cancelTunerRuleEdit()">✕</button>
+                </div>
+                <div class="tuner-fields-row mb-8">
+                    <div class="tuner-field grow-1"><span class="lbl-micro">Название правила</span><input id="tr-f-name" class="form-control" placeholder="Напр: Контра / Ночной турбо"></div>
+                    <div class="tuner-field grow-1"><span class="lbl-micro">Целевой профиль</span><select id="tr-f-target" class="form-control"></select></div>
+                </div>
+
+                <div class="tuner-rule-cond mb-6">
+                    <div class="row-between mb-6">
+                        <label class="row-gap pointer lbl-xs"><input id="tr-f-proc-en" type="checkbox" onchange="syncRuleFormDisabledStates()"> <b>🎮 Отслеживаемые программы</b></label>
+                        <button type="button" class="btn btn-secondary btn-xs" onclick="openAppsPickerModal()">🔍 Выбрать программы</button>
+                    </div>
+                    <div id="tr-f-proc-chips" class="row-wrap" style="gap:4px;"></div>
+                </div>
+
+                <div class="tuner-rule-cond mb-6" id="tr-f-sched-box">
+                    <label class="row-gap pointer lbl-xs mb-6"><input id="tr-f-sched-en" type="checkbox" onchange="syncRuleFormDisabledStates()"> <b>⏰ Расписание по времени</b></label>
+                    <div class="row-wrap mb-6" style="gap:6px;">
+                        <input id="tr-f-sched-start" type="time" class="form-control" style="width:95px;" value="01:00">
+                        <span>—</span>
+                        <input id="tr-f-sched-end" type="time" class="form-control" style="width:95px;" value="08:00">
+                    </div>
+                    <div class="row-wrap" style="gap:6px;">
+                        <label class="lbl-xs"><input type="checkbox" class="tr-f-day" value="0" checked> Пн</label>
+                        <label class="lbl-xs"><input type="checkbox" class="tr-f-day" value="1" checked> Вт</label>
+                        <label class="lbl-xs"><input type="checkbox" class="tr-f-day" value="2" checked> Ср</label>
+                        <label class="lbl-xs"><input type="checkbox" class="tr-f-day" value="3" checked> Чт</label>
+                        <label class="lbl-xs"><input type="checkbox" class="tr-f-day" value="4" checked> Пт</label>
+                        <label class="lbl-xs"><input type="checkbox" class="tr-f-day" value="5" checked> Сб</label>
+                        <label class="lbl-xs"><input type="checkbox" class="tr-f-day" value="6" checked> Вс</label>
                     </div>
                 </div>
-                <input id="tr-proc-names" class="form-control mb-6" placeholder="cs2.exe, dota2.exe, obs64.exe">
-                <div id="tr-proc-picker" class="hidden row-wrap mb-6" style="max-height:85px; overflow-y:auto; gap:4px;"></div>
-                <div class="tuner-fields-row">
-                    <div class="tuner-field"><span class="lbl-micro">Задержка входа (сек)</span><input id="tr-proc-enter" type="number" class="form-control tuner-num-input"></div>
-                    <div class="tuner-field"><span class="lbl-micro">Задержка выхода (сек)</span><input id="tr-proc-exit" type="number" class="form-control tuner-num-input"></div>
-                </div>
-            </div>
 
-            <!-- Внешняя нагрузка -->
-            <div class="tuner-block-divider" id="rules-box-ext">
-                <div class="row-between mb-6">
-                    <label class="row-gap pointer lbl-xs no-wrap"><input id="tr-ext-en" type="checkbox" onchange="syncTunerDisabledStates()"> <b>⚡ Активность чужих программ</b></label>
-                    <select id="tr-ext-mode" class="form-control" style="width:115px; padding:2px 4px; font-size:11px;">
-                        <option value="comfort">→ Комфорт</option>
-                        <option value="performance">→ Производ.</option>
-                    </select>
+                <div class="tuner-rule-cond mb-8" id="tr-f-ext-box">
+                    <label class="row-gap pointer lbl-xs mb-6"><input id="tr-f-ext-en" type="checkbox" onchange="syncRuleFormDisabledStates()"> <b>⚡ Нагрузка от других программ</b></label>
+                    <div class="tuner-guard-row mb-6"><label class="lbl-xs tuner-guard-label no-wrap"><input id="tr-f-cpu-en" type="checkbox" onchange="syncRuleFormDisabledStates()"> Проц %</label><div class="tuner-field"><span class="lbl-micro">Тревога</span><input id="tr-f-cpu-w" type="number" class="form-control tuner-num-input"></div><div class="tuner-field"><span class="lbl-micro">Возврат</span><input id="tr-f-cpu-r" type="number" class="form-control tuner-num-input"></div></div>
+                    <div class="tuner-guard-row mb-6"><label class="lbl-xs tuner-guard-label no-wrap"><input id="tr-f-net-en" type="checkbox" onchange="syncRuleFormDisabledStates()"> Сеть %</label><div class="tuner-field"><span class="lbl-micro">Тревога</span><input id="tr-f-net-w" type="number" class="form-control tuner-num-input"></div><div class="tuner-field"><span class="lbl-micro">Возврат</span><input id="tr-f-net-r" type="number" class="form-control tuner-num-input"></div></div>
+                    <div class="tuner-guard-row mb-6"><label class="lbl-xs tuner-guard-label no-wrap"><input id="tr-f-ram-en" type="checkbox" onchange="syncRuleFormDisabledStates()"> Память %</label><div class="tuner-field"><span class="lbl-micro">Мин.</span><input id="tr-f-ram-w" type="number" class="form-control tuner-num-input"></div><div class="tuner-field"><span class="lbl-micro">Возврат</span><input id="tr-f-ram-r" type="number" class="form-control tuner-num-input"></div></div>
+                    <div class="tuner-guard-row"><label class="lbl-xs tuner-guard-label no-wrap"><input id="tr-f-disk-en" type="checkbox" onchange="syncRuleFormDisabledStates()"> Диск %</label><div class="tuner-field"><span class="lbl-micro">Тревога</span><input id="tr-f-disk-w" type="number" class="form-control tuner-num-input"></div><div class="tuner-field"><span class="lbl-micro">Возврат</span><input id="tr-f-disk-r" type="number" class="form-control tuner-num-input"></div></div>
                 </div>
-                <div class="tuner-fields-row mb-6">
-                    <div class="tuner-field"><span class="lbl-micro">CPU Вход %</span><input id="tr-ext-cpu-w" type="number" class="form-control tuner-num-input"></div>
-                    <div class="tuner-field"><span class="lbl-micro">CPU Выход %</span><input id="tr-ext-cpu-r" type="number" class="form-control tuner-num-input"></div>
-                    <div class="tuner-field"><span class="lbl-micro">Сеть Вход %</span><input id="tr-ext-net-w" type="number" class="form-control tuner-num-input"></div>
-                    <div class="tuner-field"><span class="lbl-micro">Сеть Выход %</span><input id="tr-ext-net-r" type="number" class="form-control tuner-num-input"></div>
+
+                <div class="tuner-fields-row mb-8">
+                    <div class="tuner-field"><span class="lbl-micro">Ждать при запуске (сек)</span><input id="tr-f-enter" type="number" class="form-control tuner-num-input" value="10"></div>
+                    <div class="tuner-field"><span class="lbl-micro">Ждать после закрытия (сек)</span><input id="tr-f-exit" type="number" class="form-control tuner-num-input" value="180"></div>
                 </div>
-                <div class="tuner-fields-row mb-6">
-                    <div class="tuner-field"><span class="lbl-micro">RAM Мин. %</span><input id="tr-ext-ram-w" type="number" class="form-control tuner-num-input"></div>
-                    <div class="tuner-field"><span class="lbl-micro">RAM Возвр. %</span><input id="tr-ext-ram-r" type="number" class="form-control tuner-num-input"></div>
-                    <div class="tuner-field"><span class="lbl-micro">Вход (сек)</span><input id="tr-ext-enter" type="number" class="form-control tuner-num-input"></div>
-                    <div class="tuner-field"><span class="lbl-micro">Выход (сек)</span><input id="tr-ext-exit" type="number" class="form-control tuner-num-input"></div>
+                <div class="row-end"><button class="btn btn-secondary btn-xs" onclick="cancelTunerRuleEdit()">Отмена</button><button class="btn btn-xs" onclick="saveTunerRuleForm()">💾 Сохранить правило</button></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Диалог дружелюбного выбора программ -->
+<div id="tuner-apps-modal" class="modal-backdrop" onclick="if(event.target===this)closeAppsPickerModal()">
+    <div class="modal" style="max-width:640px; max-height:86vh; display:flex; flex-direction:column;">
+        <div class="row-between mb-8">
+            <div class="card-title" style="margin:0;">🎮 ВЫБОР ПРОГРАММ ДЛЯ ОТСЛЕЖИВАНИЯ</div>
+            <button class="btn btn-secondary btn-xs" onclick="closeAppsPickerModal()">Готово ✕</button>
+        </div>
+        <div id="apps-modal-selected" class="row-wrap mb-8" style="gap:4px;"></div>
+        <div class="row-gap mb-8">
+            <input id="apps-modal-search" class="form-control grow-1" placeholder="🔍 Поиск по названию (Counter-Strike, OBS, Photoshop)..." oninput="filterAppsCatalog()">
+            <input id="apps-modal-manual" class="form-control" style="width:155px;" placeholder="Свой .exe вручную">
+            <button class="btn btn-xs" onclick="addManualAppToRule()">+</button>
+        </div>
+        <div class="scroll-box" style="flex:1; max-height:52vh; border:1px solid var(--border); border-radius:6px; padding:8px;">
+            <div class="lbl-xs accent-txt mb-6"><b>📚 Популярные программы (работает и с телефона):</b></div>
+            <div id="apps-modal-catalog" class="col-gap mb-12" style="gap:8px;"></div>
+            <div class="row-between mb-6" style="border-top:1px dashed var(--border); padding-top:8px;">
+                <span class="lbl-xs blue-txt"><b>🖥️ Сейчас запущено на ПК:</b></span>
+                <div class="row-gap">
+                    <label class="lbl-xs pointer"><input id="apps-modal-sys" type="checkbox" onchange="loadRunningAppsForModal()"> Показать системные</label>
+                    <button class="btn btn-secondary btn-xs" onclick="loadRunningAppsForModal()">🔄</button>
                 </div>
             </div>
+            <div id="apps-modal-running" class="row-wrap" style="gap:5px;"></div>
         </div>
     </div>
 </div>

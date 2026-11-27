@@ -3,6 +3,7 @@ import os
 import time
 from utils.config import cfg
 from core.disk_monitor import get_monitored_disk_info
+from core.tuner_presets import APP_FRIENDLY_NAMES
 
 try:
     import psutil
@@ -10,6 +11,15 @@ try:
 except ImportError:
     psutil = None
     HAS_PSUTIL = False
+
+_SYS_EXE_NAMES = {
+    'system', 'system idle process', 'registry', 'smss.exe', 'csrss.exe', 'wininit.exe',
+    'services.exe', 'lsass.exe', 'svchost.exe', 'fontdrvhost.exe', 'dwm.exe', 'conhost.exe',
+    'sihost.exe', 'taskhostw.exe', 'runtimebroker.exe', 'searchindexer.exe', 'searchhost.exe',
+    'dllhost.exe', 'audiodg.exe', 'spoolsv.exe', 'ctfmon.exe', 'WmiPrvSE.exe'.lower(),
+    'memory compression', 'vmmem', 'vmmemwsl', 'msedgewebview2.exe', 'crashpad_handler.exe'
+}
+_SKIP_DIR_NAMES = {'bin', 'x64', 'x86', 'win64', 'win32', 'release', 'debug', 'binaries', 'application', 'app', 'program files', 'program files (x86)'}
 
 
 def _get_windows_physical_drive(drive_letter):
@@ -25,11 +35,7 @@ def _get_windows_physical_drive(drive_letter):
             h_dev = kernel32.CreateFileW(f"\\\\.\\{letter}:", 0x80000000, 3, None, 3, 0, None)
         if h_dev != -1 and h_dev != wintypes.HANDLE(-1).value:
             class STORAGE_DEVICE_NUMBER(ctypes.Structure):
-                _fields_ = [
-                    ('DeviceType', wintypes.DWORD),
-                    ('DeviceNumber', wintypes.DWORD),
-                    ('PartitionNumber', wintypes.DWORD)
-                ]
+                _fields_ = [('DeviceType', wintypes.DWORD), ('DeviceNumber', wintypes.DWORD), ('PartitionNumber', wintypes.DWORD)]
             dev_num = STORAGE_DEVICE_NUMBER()
             bytes_ret = wintypes.DWORD()
             ok = kernel32.DeviceIoControl(h_dev, 0x002D1080, None, 0, ctypes.byref(dev_num), ctypes.sizeof(dev_num), ctypes.byref(bytes_ret), None)
@@ -46,12 +52,9 @@ def _get_linux_block_device(path):
         return None
     try:
         st = os.stat(path)
-        major = os.major(st.st_dev)
-        minor = os.minor(st.st_dev)
-        sys_path = f"/sys/dev/block/{major}:{minor}"
+        sys_path = f"/sys/dev/block/{os.major(st.st_dev)}:{os.minor(st.st_dev)}"
         if os.path.exists(sys_path):
-            real = os.path.realpath(sys_path)
-            parts = real.split(os.sep)
+            parts = os.path.realpath(sys_path).split(os.sep)
             if 'block' in parts:
                 idx = parts.index('block')
                 if idx + 1 < len(parts):
@@ -68,13 +71,34 @@ class TelemetryCollector:
         self._prev_disk = None
         self._prev_net = None
         self._ema = {}
+        self._proc_cache_ts = 0.0
+        self._proc_cache_map = {}
 
     def _smooth(self, key, val):
-        if key not in self._ema:
-            self._ema[key] = float(val)
-        else:
-            self._ema[key] = 0.3 * float(val) + 0.7 * self._ema[key]
+        self._ema[key] = float(val) if key not in self._ema else (0.3 * float(val) + 0.7 * self._ema[key])
         return self._ema[key]
+
+    def get_running_exe_map(self):
+        """Легковесный кэшируемый опрос имён процессов для 2–3с цикла без нагрузки на CPU."""
+        if not HAS_PSUTIL:
+            return {}
+        now = time.monotonic()
+        if (now - self._proc_cache_ts) < 1.5 and self._proc_cache_map:
+            return self._proc_cache_map
+        found = {}
+        for p in psutil.process_iter(['name']):
+            try:
+                nm = str(p.info.get('name') or '').strip()
+                if nm:
+                    low = nm.lower()
+                    found[low] = nm
+                    if low.endswith('.exe'):
+                        found[low[:-4]] = nm
+            except Exception:
+                continue
+        self._proc_cache_map = found
+        self._proc_cache_ts = now
+        return found
 
     def _get_qb_process(self):
         if not HAS_PSUTIL:
@@ -121,8 +145,7 @@ class TelemetryCollector:
             clean_p = os.path.splitdrive(chosen_path)[0].upper() or chosen_path
             label = f"Авто: {clean_p}" if is_auto else clean_p
             if os.name == 'nt':
-                drive_letter = clean_p.rstrip(':\\/')
-                target_key = _get_windows_physical_drive(drive_letter)
+                target_key = _get_windows_physical_drive(clean_p.rstrip(':\\/'))
             else:
                 target_key = _get_linux_block_device(chosen_path)
 
@@ -143,7 +166,7 @@ class TelemetryCollector:
 
     def collect(self, live, transfer_info, current_max_uploads, target_disk=''):
         now = time.monotonic()
-        dt_sec = max(0.5, now - self._prev_ts) if self._prev_ts else 10.0
+        dt_sec = max(0.5, now - self._prev_ts) if self._prev_ts else 3.0
         dt_ms = dt_sec * 1000.0
         self._prev_ts = now
 
@@ -164,19 +187,16 @@ class TelemetryCollector:
                 cpu_ext_raw = max(0.0, tot_cpu - qb_cpu_norm)
             except Exception:
                 pass
-
             try:
                 vm = psutil.virtual_memory()
                 ram_free_raw = (vm.available / max(1, vm.total)) * 100.0
             except Exception:
                 pass
-
             try:
                 net_now = psutil.net_io_counters()
                 if self._prev_net is not None and net_now is not None:
                     d_tot = max(0, (net_now.bytes_sent - self._prev_net.bytes_sent) + (net_now.bytes_recv - self._prev_net.bytes_recv))
-                    tot_bps = d_tot / dt_sec
-                    net_ext_raw = max(0.0, tot_bps - (qb_dl + qb_up))
+                    net_ext_raw = max(0.0, (d_tot / dt_sec) - (qb_dl + qb_up))
                 self._prev_net = net_now
             except Exception:
                 pass
@@ -189,39 +209,58 @@ class TelemetryCollector:
 
         chan_pct = min(100.0, (ema_qb_up / max_chan_bps) * 100.0) if max_chan_bps > 0 else 0.0
         net_ext_pct = min(100.0, (ema_net_ext / max_chan_bps) * 100.0) if max_chan_bps > 0 else 0.0
-
         active_up_peers = sum(int(v.get('num_leechs', 0) or 0) for v in (live or {}).values() if int(v.get('upspeed', 0) or 0) > 0)
         cur_slots = max(1, int(current_max_uploads or 1))
         slots_fill_pct = min(100.0, (active_up_peers / cur_slots) * 100.0)
 
         return {
             'psutil_available': HAS_PSUTIL,
-            'disk_busy': round(ema_disk, 1),
-            'monitored_disk_label': disk_label,
-            'cpu_ext': round(ema_cpu, 1),
-            'ram_free': round(ema_ram, 1),
-            'net_ext_bps': int(ema_net_ext),
-            'net_ext_pct': round(net_ext_pct, 1),
-            'qb_up_bps': int(ema_qb_up),
-            'channel_pct': round(chan_pct, 1),
-            'active_up_peers': active_up_peers,
-            'slots_fill_pct': round(slots_fill_pct, 1),
+            'disk_busy': round(ema_disk, 1), 'monitored_disk_label': disk_label,
+            'cpu_ext': round(ema_cpu, 1), 'ram_free': round(ema_ram, 1),
+            'net_ext_bps': int(ema_net_ext), 'net_ext_pct': round(net_ext_pct, 1),
+            'qb_up_bps': int(ema_qb_up), 'channel_pct': round(chan_pct, 1),
+            'active_up_peers': active_up_peers, 'slots_fill_pct': round(slots_fill_pct, 1),
             'max_channel_bps': int(max_chan_bps)
         }
 
 
-def list_running_processes():
+def _guess_friendly_name(exe_name, exe_path):
+    low = exe_name.lower()
+    if low in APP_FRIENDLY_NAMES:
+        return APP_FRIENDLY_NAMES[low]['name'], APP_FRIENDLY_NAMES[low]['icon']
+    if exe_path:
+        parts = [p for p in os.path.dirname(exe_path).replace('\\', '/').split('/') if p]
+        for folder in reversed(parts):
+            fl = folder.lower()
+            if fl not in _SKIP_DIR_NAMES and not fl.endswith(':'):
+                return folder[:32], '📦'
+    base = exe_name[:-4] if low.endswith('.exe') else exe_name
+    return base.replace('_', ' ').title()[:32], '🖥️'
+
+
+def list_running_processes_smart(include_system=False):
     if not HAS_PSUTIL:
         return []
-    names = set()
-    for p in psutil.process_iter(['name']):
+    grouped = {}
+    for p in psutil.process_iter(['name', 'exe']):
         try:
             nm = str(p.info.get('name') or '').strip()
-            if nm:
-                names.add(nm)
+            if not nm:
+                continue
+            low = nm.lower()
+            exe_path = str(p.info.get('exe') or '').strip()
+            path_low = exe_path.lower().replace('/', '\\')
+            is_sys = (low in _SYS_EXE_NAMES) or ('\\windows\\system32\\' in path_low) or ('\\windows\\syswow64\\' in path_low) or ('\\windows\\winsxs\\' in path_low)
+            if not include_system and is_sys:
+                continue
+            if low in grouped:
+                grouped[low]['count'] += 1
+            else:
+                label, icon = _guess_friendly_name(nm, exe_path)
+                grouped[low] = {'exe': nm, 'label': label, 'icon': icon, 'is_system': is_sys, 'count': 1}
         except Exception:
             continue
-    return sorted(names, key=str.lower)
+    return sorted(grouped.values(), key=lambda x: (x['is_system'], x['label'].lower()))
 
 
 telemetry_collector = TelemetryCollector()
